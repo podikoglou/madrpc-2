@@ -1,8 +1,12 @@
 use quinn::{ClientConfig, Connection, Endpoint, EndpointConfig};
 use std::sync::Arc;
+use std::time::Duration;
 use crate::protocol::{Request, Response};
 use crate::transport::codec::PostcardCodec;
-use crate::protocol::error::Result;
+use crate::protocol::error::{Result, MadrpcError};
+
+/// Default timeout for QUIC operations
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// QUIC transport wrapper for MaDRPC
 pub struct QuicTransport {
@@ -37,7 +41,17 @@ impl QuicTransport {
     /// Connect to a remote endpoint
     pub async fn connect(&self, addr: &str) -> Result<Connection> {
         let connecting = self.endpoint.connect(addr.parse()?, "madrpc")?;
-        let connection = connecting.await?;
+
+        // Add timeout to prevent hanging if server doesn't respond
+        let connection = tokio::time::timeout(DEFAULT_TIMEOUT, connecting)
+            .await
+            .map_err(|_| MadrpcError::Connection(format!(
+                "Connection to {} timed out after {}s",
+                addr,
+                DEFAULT_TIMEOUT.as_secs()
+            )))?
+            .map_err(|e| MadrpcError::Connection(format!("Connection failed: {}", e)))?;
+
         Ok(connection)
     }
 
@@ -47,26 +61,55 @@ impl QuicTransport {
         connection: &Connection,
         request: &Request,
     ) -> Result<Response> {
-        // Open bidirectional stream
-        let (mut send, mut recv) = connection.open_bi().await?;
+        // Open bidirectional stream with timeout
+        let (mut send, mut recv) = tokio::time::timeout(
+            DEFAULT_TIMEOUT,
+            connection.open_bi()
+        )
+        .await
+        .map_err(|_| MadrpcError::Connection(
+            format!("Timed out opening stream after {}s", DEFAULT_TIMEOUT.as_secs())
+        ))??;
 
         // Encode and send request
         let encoded = PostcardCodec::encode_request(request)?;
 
-        // Send length prefix + data
+        // Send length prefix + data with timeout
         let len = encoded.len() as u32;
-        send.write_all(&len.to_be_bytes()).await?;
-        send.write_all(&encoded).await?;
+        tokio::time::timeout(
+            DEFAULT_TIMEOUT,
+            send.write_all(&len.to_be_bytes())
+        )
+        .await
+        .map_err(|_| MadrpcError::Connection("Timed out sending length".to_string()))??;
+
+        tokio::time::timeout(
+            DEFAULT_TIMEOUT,
+            send.write_all(&encoded)
+        )
+        .await
+        .map_err(|_| MadrpcError::Connection("Timed out sending data".to_string()))??;
+
         send.finish()?;
 
-        // Read response length
+        // Read response length with timeout
         let mut len_buf = [0u8; 4];
-        recv.read_exact(&mut len_buf).await?;
+        tokio::time::timeout(
+            DEFAULT_TIMEOUT,
+            recv.read_exact(&mut len_buf)
+        )
+        .await
+        .map_err(|_| MadrpcError::Connection("Timed out reading response length".to_string()))??;
         let len = u32::from_be_bytes(len_buf) as usize;
 
-        // Read response data
+        // Read response data with timeout
         let mut buf = vec![0u8; len];
-        recv.read_exact(&mut buf).await?;
+        tokio::time::timeout(
+            DEFAULT_TIMEOUT,
+            recv.read_exact(&mut buf)
+        )
+        .await
+        .map_err(|_| MadrpcError::Connection("Timed out reading response".to_string()))??;
 
         // Decode response
         let response = PostcardCodec::decode_response(&buf)?;
