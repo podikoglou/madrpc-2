@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/madrpc-common", "crates/madrpc-server", "crates/madrpc-client", "crates/madrpc-orchestrator", "crates/madrpc-cli", "crates/madrpc-metrics", "examples/monte-carlo-pi", "examples/simple-test", "tests"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+# Dev dependencies for integration tests
+tempfile = "3.0"

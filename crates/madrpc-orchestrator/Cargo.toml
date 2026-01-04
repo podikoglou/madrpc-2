@@ -1,0 +1,11 @@
+[package]
+name = "madrpc-orchestrator"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+madrpc-common = { path = "../madrpc-common" }
+madrpc-metrics = { path = "../madrpc-metrics" }
+tokio = { version = "1", features = ["full"] }
+quinn = "0.11"
+rustls = { version = "0.23", features = ["ring"] }
