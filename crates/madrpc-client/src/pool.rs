@@ -1,0 +1,146 @@
+use madrpc_common::transport::QuicTransport;
+use quinn::Connection;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use madrpc_common::protocol::error::Result;
+
+/// Pooled connection wrapper
+#[derive(Clone)]
+pub struct PooledConnection {
+    pub connection: Connection,
+    pub addr: String,
+}
+
+/// Connection pool configuration
+#[derive(Clone)]
+pub struct PoolConfig {
+    /// Maximum number of connections per node
+    pub max_connections: usize,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: 10,
+        }
+    }
+}
+
+/// Connection pool for QUIC connections
+pub struct ConnectionPool {
+    transport: QuicTransport,
+    inner: Arc<Mutex<PoolInner>>,
+}
+
+struct PoolInner {
+    connections: HashMap<String, Vec<PooledConnection>>,
+    available: HashMap<String, usize>,
+    config: PoolConfig,
+}
+
+impl ConnectionPool {
+    /// Create a new connection pool
+    pub fn new(config: PoolConfig) -> Result<Self> {
+        let transport = QuicTransport::new_client()?;
+
+        Ok(Self {
+            transport,
+            inner: Arc::new(Mutex::new(PoolInner {
+                connections: HashMap::new(),
+                available: HashMap::new(),
+                config,
+            })),
+        })
+    }
+
+    /// Get a connection from the pool or create a new one
+    pub async fn acquire(&self, addr: &str) -> Result<PooledConnection> {
+        let mut inner = self.inner.lock().await;
+
+        // Check if we have an available connection
+        if let Some(conns) = inner.connections.get(addr) {
+            let avail_count = inner.available.get(addr).copied().unwrap_or(0);
+
+            if avail_count > 0 {
+                // Return an available connection
+                let count = conns.len();
+                for i in 0..count {
+                    if i < conns.len() {
+                        let conn = conns[i].clone();
+                        *inner.available.get_mut(addr).unwrap() -= 1;
+                        return Ok(conn);
+                    }
+                }
+            }
+        }
+
+        // Create new connection
+        let connection = self.transport.connect(addr).await?;
+        let pooled = PooledConnection {
+            connection,
+            addr: addr.to_string(),
+        };
+
+        // Add to pool
+        inner.connections
+            .entry(addr.to_string())
+            .or_insert_with(Vec::new)
+            .push(pooled.clone());
+
+        inner.available.entry(addr.to_string()).or_insert(0);
+
+        Ok(pooled)
+    }
+
+    /// Return a connection to the pool
+    pub async fn release(&self, conn: PooledConnection) {
+        let mut inner = self.inner.lock().await;
+
+        if let Some(avail) = inner.available.get_mut(&conn.addr) {
+            *avail += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: Full integration tests require a running QUIC server
+    // These are unit tests for the pool logic
+
+    #[tokio::test]
+    async fn test_pool_creation() {
+        // Install default crypto provider for rustls
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let pool = ConnectionPool::new(PoolConfig::default());
+        assert!(pool.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_config_default() {
+        let config = PoolConfig::default();
+        assert_eq!(config.max_connections, 10);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_nonexistent_addr_fails() {
+        // Install default crypto provider for rustls
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let pool = ConnectionPool::new(PoolConfig::default()).unwrap();
+        let result = pool.acquire("localhost:9999").await;
+        // Will fail because no server is running
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pool_config_custom() {
+        let config = PoolConfig {
+            max_connections: 5,
+        };
+        assert_eq!(config.max_connections, 5);
+    }
+}

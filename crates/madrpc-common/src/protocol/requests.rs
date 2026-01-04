@@ -1,0 +1,37 @@
+use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
+
+pub type RequestId = u64;
+pub type MethodName = String;
+pub type RpcArgs = serde_json::Value;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Request {
+    pub id: RequestId,
+    pub method: MethodName,
+    pub args: RpcArgs,
+    pub timeout_ms: Option<u64>,
+}
+
+impl Request {
+    pub fn new(method: impl Into<String>, args: RpcArgs) -> Self {
+        Request {
+            id: generate_request_id(),
+            method: method.into(),
+            args,
+            timeout_ms: None,
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = Some(timeout_ms);
+        self
+    }
+}
+
+fn generate_request_id() -> RequestId {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as RequestId
+}

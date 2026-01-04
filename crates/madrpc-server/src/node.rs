@@ -15,9 +15,9 @@ pub struct Node {
 
 impl Node {
     /// Create a new node with a JavaScript script
-    /// Uses num_cpus::get() as the default pool size
+    /// Uses pool_size = 1 by default due to QuickJS threading limitations
     pub async fn new(script_path: PathBuf) -> Result<Self> {
-        Self::with_pool_size(script_path, num_cpus::get()).await
+        Self::with_pool_size(script_path, 1).await
     }
 
     /// Create a new node with a specific pool size
