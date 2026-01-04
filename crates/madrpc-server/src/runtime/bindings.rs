@@ -5,10 +5,10 @@ use madrpc_common::protocol::error::{Result, MadrpcError};
 /// This is the SINGLE place where we expose custom functions to the JavaScript VM.
 pub fn install_madrpc_bindings(ctx: &mut Context) -> Result<()> {
     // Create madrpc global object
-    let madrpc_object = JsObject::default();
+    let madrpc_object = JsObject::default(ctx.intrinsics());
 
     // Create private storage for registered functions
-    let registry = JsObject::default();
+    let registry = JsObject::default(ctx.intrinsics());
     madrpc_object.set(js_string!("__registry"), registry.clone(), false, ctx)
         .map_err(|e| MadrpcError::JavaScriptExecution(e.to_string()))?;
 
