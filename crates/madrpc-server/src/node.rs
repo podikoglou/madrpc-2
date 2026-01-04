@@ -5,12 +5,16 @@ use madrpc_metrics::{MetricsCollector, NodeMetricsCollector};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Semaphore;
 
 /// MaDRPC Node - runs QuickJS and executes JavaScript RPCs
 pub struct Node {
     runtime: Arc<MadrpcContext>,
     script_path: PathBuf,
     metrics_collector: Arc<NodeMetricsCollector>,
+    /// Semaphore to limit concurrent access to QuickJS context
+    /// QuickJS is NOT thread-safe, so we only allow one request at a time
+    concurrency_limiter: Arc<Semaphore>,
 }
 
 impl Node {
@@ -36,12 +40,17 @@ impl Node {
         // Initialize metrics
         let metrics_collector = Arc::new(NodeMetricsCollector::new());
 
+        // Create a semaphore to limit concurrent access to QuickJS context
+        // QuickJS is NOT thread-safe, so we only allow one request at a time
+        let concurrency_limiter = Arc::new(Semaphore::new(1));
+
         // TODO: Set up client after runtime creation if orchestrator_addr is provided
 
         Ok(Self {
             runtime,
             script_path,
             metrics_collector,
+            concurrency_limiter,
         })
     }
 
@@ -51,6 +60,11 @@ impl Node {
         if self.metrics_collector.is_metrics_request(&request.method) {
             return self.metrics_collector.handle_metrics_request(&request.method, request.id);
         }
+
+        // Acquire semaphore permit to ensure only one request accesses QuickJS at a time
+        // This is critical because QuickJS is NOT thread-safe
+        let _permit = self.concurrency_limiter.acquire().await
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to acquire concurrency permit: {}", e)))?;
 
         let start_time = Instant::now();
         let method = request.method.clone();
@@ -165,5 +179,36 @@ mod tests {
 
         assert!(response.success);
         assert_eq!(response.result, Some(json!({"result": 42})));
+    }
+
+    #[tokio::test]
+    async fn test_node_concurrent_requests() {
+        let script = create_test_script(r#"
+            madrpc.register('compute', function(args) {
+                return { result: args.x * args.y };
+            });
+        "#);
+        let node = Arc::new(Node::new(script).await.unwrap());
+
+        // Spawn 3 concurrent requests
+        let mut tasks = Vec::new();
+        for i in 0..3 {
+            let node = Arc::clone(&node);
+            let task = tokio::spawn(async move {
+                let request = Request::new("compute", json!({"x": i, "y": 2}));
+                node.handle_request(&request).await
+            });
+            tasks.push(task);
+        }
+
+        // Wait for all results
+        let mut results = Vec::new();
+        for task in tasks {
+            let response = task.await.unwrap().unwrap();
+            assert!(response.success);
+            results.push(response.result);
+        }
+
+        assert_eq!(results.len(), 3);
     }
 }
