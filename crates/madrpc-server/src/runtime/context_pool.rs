@@ -13,11 +13,9 @@ pub struct PoolConfig {
 
 impl Default for PoolConfig {
     fn default() -> Self {
-        // Use pool_size = 1 for now due to QuickJS threading limitations
-        // QuickJS contexts may not be safe to use from multiple threads
-        // even with mutex protection. The infrastructure is in place to
-        // increase this once we understand the limitations better.
-        Self { pool_size: 1 }
+        // Boa contexts are independent per thread
+        // Pool size defaults to num_cpus for true parallelism
+        Self { pool_size: num_cpus::get() }
     }
 }
 
@@ -51,7 +49,7 @@ impl Drop for PooledContext {
     }
 }
 
-/// Pool of QuickJS contexts for parallel RPC execution
+/// Pool of Boa contexts for parallel RPC execution
 pub struct ContextPool {
     /// Available contexts (not currently in use)
     available: Arc<Mutex<Vec<Arc<MadrpcContext>>>>,
@@ -157,7 +155,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "QuickJS contexts have threading limitations when accessed from different blocking threads"]
     async fn test_pool_acquire_release() {
         let script = create_test_script(r#"
             madrpc.register('test', function() {
@@ -185,7 +182,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "QuickJS contexts have threading limitations when accessed from different blocking threads"]
     async fn test_pool_exhaustion_waits() {
         let script = create_test_script(r#"
             madrpc.register('test', function() {
@@ -224,7 +220,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "QuickJS contexts have threading limitations when accessed from different blocking threads"]
     async fn test_parallel_execution() {
         let script = create_test_script(r#"
             madrpc.register('compute', function(args) {

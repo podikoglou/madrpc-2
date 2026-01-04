@@ -122,7 +122,10 @@ mod tests {
         let request = Request::new("echo", json!({"msg": "hello"}));
         let response = node.handle_request(&request).await.unwrap();
 
-        assert!(response.success);
+        if !response.success {
+            eprintln!("Error: {:?}", response.error);
+        }
+        assert!(response.success, "Response was not successful: {:?}", response.error);
         assert_eq!(response.result, Some(json!({"msg": "hello"})));
     }
 

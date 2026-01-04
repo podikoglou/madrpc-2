@@ -37,17 +37,23 @@ pub fn install_madrpc_bindings(ctx: &mut Context) -> Result<()> {
                 .map_err(|e| boa_engine::JsNativeError::typ()
                     .with_message(format!("Failed to get madrpc: {}", e)))?;
 
-            let registry_obj = madrpc.as_object()
-                .and_then(|o| o.get(js_string!("__registry"), context).ok())
-                .and_then(|v| v.as_object().cloned())
+            let madrpc_obj = madrpc.as_object()
                 .ok_or_else(|| boa_engine::JsNativeError::typ()
-                    .with_message("Registry not found"))?;
+                    .with_message("madrpc is not an object"))?;
+
+            let registry_val = madrpc_obj.get(js_string!("__registry"), context)
+                .map_err(|e| boa_engine::JsNativeError::typ()
+                    .with_message(format!("Failed to get registry: {}", e)))?;
+
+            let registry_obj = registry_val.as_object()
+                .ok_or_else(|| boa_engine::JsNativeError::typ()
+                    .with_message("Registry is not an object"))?;
 
             registry_obj.set(name.clone(), func.clone(), true, context)
                 .map_err(|e| boa_engine::JsNativeError::typ()
                     .with_message(format!("Failed to register: {}", e)))?;
 
-            Ok(JsValue::Undefined)
+            Ok(JsValue::undefined())
         }),
     ).build();
 
