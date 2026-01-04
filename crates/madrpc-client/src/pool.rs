@@ -56,33 +56,39 @@ impl ConnectionPool {
 
     /// Get a connection from the pool or create a new one
     pub async fn acquire(&self, addr: &str) -> Result<PooledConnection> {
-        let mut inner = self.inner.lock().await;
+        // First, try to get an available connection (with short lock)
+        {
+            let inner = self.inner.lock().await;
+            if let Some(conns) = inner.connections.get(addr) {
+                let avail_count = inner.available.get(addr).copied().unwrap_or(0);
 
-        // Check if we have an available connection
-        if let Some(conns) = inner.connections.get(addr) {
-            let avail_count = inner.available.get(addr).copied().unwrap_or(0);
+                if avail_count > 0 {
+                    // Return an available connection
+                    let count = conns.len();
+                    for i in 0..count {
+                        if i < conns.len() {
+                            let conn = conns[i].clone();
+                            drop(inner); // Release lock before returning
 
-            if avail_count > 0 {
-                // Return an available connection
-                let count = conns.len();
-                for i in 0..count {
-                    if i < conns.len() {
-                        let conn = conns[i].clone();
-                        *inner.available.get_mut(addr).unwrap() -= 1;
-                        return Ok(conn);
+                            // Need to decrement available count
+                            let mut inner = self.inner.lock().await;
+                            *inner.available.get_mut(addr).unwrap() -= 1;
+                            return Ok(conn);
+                        }
                     }
                 }
             }
         }
 
-        // Create new connection
+        // No available connection - create new one (without holding lock)
         let connection = self.transport.connect(addr).await?;
         let pooled = PooledConnection {
             connection,
             addr: addr.to_string(),
         };
 
-        // Add to pool
+        // Add to pool (with lock)
+        let mut inner = self.inner.lock().await;
         inner.connections
             .entry(addr.to_string())
             .or_insert_with(Vec::new)
