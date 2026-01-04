@@ -2,8 +2,8 @@ use crate::runtime::MadrpcContext;
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use std::sync::{Arc, Mutex};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Configuration for the context pool
 #[derive(Clone, Debug)]
@@ -38,12 +38,10 @@ impl Drop for PooledContext {
         // Return the context to the pool synchronously
         // We need to do this before the permit is released to avoid race conditions
         if let Some(pool) = &self.pool {
-            // Use a synchronous approach by directly accessing the available contexts
-            // We're in a Drop context, so we can't block, but we can use try_lock
-            if let Ok(mut available) = pool.available.try_lock() {
+            // Use std::sync::Mutex which works reliably in Drop context
+            if let Ok(mut available) = pool.available.lock() {
                 available.push(self.context.clone());
             }
-            // If try_lock fails, the context will be leaked (not ideal, but safe)
         }
         // The semaphore permit is automatically released when _permit is dropped
     }
@@ -89,8 +87,9 @@ impl ContextPool {
             .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to acquire pool permit: {}", e)))?;
 
         // Take a context from the available pool
+        // Using std::sync::Mutex for short-lived critical section
         let context = {
-            let mut available = self.available.lock().await;
+            let mut available = self.available.lock().unwrap();
             available.pop()
                 .ok_or_else(|| MadrpcError::InvalidRequest("No contexts available in pool".to_string()))?
         };
