@@ -27,6 +27,10 @@ struct NodeArgs {
     /// address to bind to
     #[argh(option, short = 'b', default = "\"0.0.0.0:0\".into()")]
     bind: String,
+
+    /// number of QuickJS contexts in the pool (default: num_cpus)
+    #[argh(option, long = "pool-size")]
+    pool_size: Option<usize>,
 }
 
 #[derive(FromArgs)]
@@ -69,8 +73,15 @@ async fn main() -> Result<()> {
             tracing::info!("Starting MaDRPC node with script: {}", args.script);
             tracing::info!("Binding to: {}", args.bind);
 
-            // Create the node
-            let node = madrpc_server::Node::new(std::path::PathBuf::from(&args.script)).await?;
+            // Determine pool size (use CLI flag or default to num_cpus)
+            let pool_size = args.pool_size.unwrap_or_else(num_cpus::get);
+            tracing::info!("Context pool size: {}", pool_size);
+
+            // Create the node with specified pool size
+            let node = madrpc_server::Node::with_pool_size(
+                std::path::PathBuf::from(&args.script),
+                pool_size
+            ).await?;
             tracing::info!("Node created successfully from script");
 
             // Create QUIC server
@@ -131,9 +142,10 @@ mod tests {
     fn test_cli_parse_node() {
         let args: Cli = Cli::from_args(&["madrpc"], &["node", "-s", "test.js", "-b", "0.0.0.0:9001"]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind }) => {
+            Commands::Node(NodeArgs { script, bind, pool_size }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
+                assert!(pool_size.is_none());
             }
             _ => panic!("Expected Node command"),
         }

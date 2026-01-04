@@ -22,3 +22,4 @@ serde_json = "1.0"
 rustls = { version = "0.23", features = ["ring"] }
 ratatui = "0.29"
 crossterm = "0.28"
+num_cpus = "1.16"

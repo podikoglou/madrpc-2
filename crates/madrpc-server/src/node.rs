@@ -1,56 +1,45 @@
 use madrpc_common::protocol::{Request, Response};
 use madrpc_common::protocol::error::{Result, MadrpcError};
-use crate::runtime::MadrpcContext;
+use crate::runtime::{ContextPool, PoolConfig};
 use madrpc_metrics::{MetricsCollector, NodeMetricsCollector};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Semaphore;
 
 /// MaDRPC Node - runs QuickJS and executes JavaScript RPCs
 pub struct Node {
-    runtime: Arc<MadrpcContext>,
+    pool: Arc<ContextPool>,
     script_path: PathBuf,
     metrics_collector: Arc<NodeMetricsCollector>,
-    /// Semaphore to limit concurrent access to QuickJS context
-    /// QuickJS is NOT thread-safe, so we only allow one request at a time
-    concurrency_limiter: Arc<Semaphore>,
 }
 
 impl Node {
     /// Create a new node with a JavaScript script
+    /// Uses num_cpus::get() as the default pool size
     pub async fn new(script_path: PathBuf) -> Result<Self> {
-        Self::with_orchestrator(script_path, None).await
+        Self::with_pool_size(script_path, num_cpus::get()).await
     }
 
-    /// Create a new node with optional orchestrator for distributed calls
-    pub async fn with_orchestrator(
-        script_path: PathBuf,
-        _orchestrator_addr: Option<String>,
-    ) -> Result<Self> {
-        // Create the QuickJS context in a blocking task to avoid async issues
-        let script_path_clone = script_path.clone();
-        let runtime = tokio::task::spawn_blocking(move || {
-            MadrpcContext::with_client(&script_path_clone, None)
-        }).await
-        .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create runtime: {}", e)))??;
+    /// Create a new node with a specific pool size
+    pub async fn with_pool_size(script_path: PathBuf, pool_size: usize) -> Result<Self> {
+        let config = PoolConfig { pool_size };
 
-        let runtime = Arc::new(runtime);
+        // Create the context pool in a blocking task to avoid async issues
+        let script_path_clone = script_path.clone();
+        let pool = tokio::task::spawn_blocking(move || {
+            ContextPool::new(script_path_clone, config)
+        }).await
+        .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create context pool: {}", e)))??;
+
+        let pool = Arc::new(pool);
 
         // Initialize metrics
         let metrics_collector = Arc::new(NodeMetricsCollector::new());
 
-        // Create a semaphore to limit concurrent access to QuickJS context
-        // QuickJS is NOT thread-safe, so we only allow one request at a time
-        let concurrency_limiter = Arc::new(Semaphore::new(1));
-
-        // TODO: Set up client after runtime creation if orchestrator_addr is provided
-
         Ok(Self {
-            runtime,
+            pool,
             script_path,
             metrics_collector,
-            concurrency_limiter,
         })
     }
 
@@ -61,33 +50,32 @@ impl Node {
             return self.metrics_collector.handle_metrics_request(&request.method, request.id);
         }
 
-        // Acquire semaphore permit to ensure only one request accesses QuickJS at a time
-        // This is critical because QuickJS is NOT thread-safe
-        let _permit = self.concurrency_limiter.acquire().await
-            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to acquire concurrency permit: {}", e)))?;
-
         let start_time = Instant::now();
         let method = request.method.clone();
 
+        // Acquire a context from the pool
+        // If pool is exhausted, this will async wait until one becomes available
+        let pooled_ctx = self.pool.acquire().await?;
+
         // Call the registered function in a blocking task
-        let runtime = self.runtime.clone();
-        let args = request.args.clone();
-        let id = request.id;
         let method_clone = method.clone();
+        let args = request.args.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            runtime.call_rpc(&method_clone, args)
+            pooled_ctx.call_rpc(&method_clone, args)
         }).await
         .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to execute RPC: {}", e)))?;
+
+        // pooled_ctx is dropped here, automatically releasing it back to the pool
 
         match result {
             Ok(result) => {
                 self.metrics_collector.record_call(&method, start_time, true);
-                Ok(Response::success(id, result))
+                Ok(Response::success(request.id, result))
             }
             Err(e) => {
                 self.metrics_collector.record_call(&method, start_time, false);
-                Ok(Response::error(id, e.to_string()))
+                Ok(Response::error(request.id, e.to_string()))
             }
         }
     }
