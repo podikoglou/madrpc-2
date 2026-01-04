@@ -24,12 +24,9 @@ impl Node {
     pub async fn with_pool_size(script_path: PathBuf, pool_size: usize) -> Result<Self> {
         let config = PoolConfig { pool_size };
 
-        // Create the context pool in a blocking task to avoid async issues
-        let script_path_clone = script_path.clone();
-        let pool = tokio::task::spawn_blocking(move || {
-            ContextPool::new(script_path_clone, config)
-        }).await
-        .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create context pool: {}", e)))??;
+        // Create the context pool directly (not in spawn_blocking)
+        // This ensures the Boa Context is created on the same thread that will use it
+        let pool = ContextPool::new(script_path.clone(), config)?;
 
         let pool = Arc::new(pool);
 
@@ -45,6 +42,8 @@ impl Node {
 
     /// Handle an incoming RPC request
     pub async fn handle_request(&self, request: &Request) -> Result<Response> {
+        tracing::debug!("Handling request for method: {}", request.method);
+
         // Check for metrics/info requests
         if self.metrics_collector.is_metrics_request(&request.method) {
             return self.metrics_collector.handle_metrics_request(&request.method, request.id);
@@ -53,18 +52,19 @@ impl Node {
         let start_time = Instant::now();
         let method = request.method.clone();
 
+        tracing::debug!("Acquiring context from pool...");
         // Acquire a context from the pool
         // If pool is exhausted, this will async wait until one becomes available
         let pooled_ctx = self.pool.acquire().await?;
+        tracing::debug!("Context acquired");
 
-        // Call the registered function in a blocking task
-        let method_clone = method.clone();
-        let args = request.args.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            pooled_ctx.call_rpc(&method_clone, args)
-        }).await
-        .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to execute RPC: {}", e)))?;
+        // Call the registered function
+        // NOTE: We don't use spawn_blocking here because Boa Context has thread-local state
+        // and must be accessed from the same thread it was created on.
+        // The Context is already protected by a Mutex in MadrpcContext.
+        tracing::debug!("Calling RPC method: {}", method);
+        let result = pooled_ctx.call_rpc(&method, request.args.clone());
+        tracing::debug!("RPC call completed");
 
         // pooled_ctx is dropped here, automatically releasing it back to the pool
 
