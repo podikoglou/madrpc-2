@@ -1,0 +1,24 @@
+[package]
+name = "madrpc-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "madrpc"
+path = "src/main.rs"
+
+[dependencies]
+madrpc-common = { path = "../madrpc-common" }
+madrpc-server = { path = "../madrpc-server" }
+madrpc-orchestrator = { path = "../madrpc-orchestrator" }
+madrpc-client = { path = "../madrpc-client" }
+madrpc-metrics = { path = "../madrpc-metrics" }
+argh = "0.1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+serde_json = "1.0"
+rustls = { version = "0.23", features = ["ring"] }
+ratatui = "0.29"
+crossterm = "0.28"
