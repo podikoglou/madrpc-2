@@ -1,50 +1,50 @@
 use madrpc_common::protocol::{Request, Response};
 use madrpc_common::protocol::error::{Result, MadrpcError};
-use crate::runtime::{ContextPool, PoolConfig};
+use crate::runtime::MadrpcContext;
 use madrpc_metrics::{MetricsCollector, NodeMetricsCollector};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// MaDRPC Node - runs QuickJS and executes JavaScript RPCs
+/// MaDRPC Node - runs Boa and executes JavaScript RPCs
 pub struct Node {
-    pool: Arc<ContextPool>,
     script_path: PathBuf,
     metrics_collector: Arc<NodeMetricsCollector>,
 }
 
 impl Node {
     /// Create a new node with a JavaScript script
-    /// Uses pool_size = 1 by default due to QuickJS threading limitations
-    pub async fn new(script_path: PathBuf) -> Result<Self> {
-        Self::with_pool_size(script_path, 1).await
+    pub fn new(script_path: PathBuf) -> Result<Self> {
+        Self::with_thread_limit(script_path, num_cpus::get() * 2)
     }
 
-    /// Create a new node with a specific pool size
-    pub async fn with_pool_size(script_path: PathBuf, pool_size: usize) -> Result<Self> {
-        let config = PoolConfig { pool_size };
+    /// Create a new node with a specific thread limit
+    pub fn with_thread_limit(script_path: PathBuf, _max_threads: usize) -> Result<Self> {
+        // Validate the script path exists
+        if !script_path.exists() {
+            return Err(MadrpcError::InvalidRequest(format!(
+                "Script path does not exist: {}",
+                script_path.display()
+            )));
+        }
 
-        // Create the context pool directly (not in spawn_blocking)
-        // This ensures the Boa Context is created on the same thread that will use it
-        let pool = ContextPool::new(script_path.clone(), config)?;
-
-        let pool = Arc::new(pool);
-
-        // Initialize metrics
+        // Initialize metrics collector
         let metrics_collector = Arc::new(NodeMetricsCollector::new());
 
         Ok(Self {
-            pool,
             script_path,
             metrics_collector,
         })
     }
 
-    /// Handle an incoming RPC request
-    pub async fn handle_request(&self, request: &Request) -> Result<Response> {
+    /// Handle an incoming RPC request (synchronous)
+    ///
+    /// Each worker thread calls this method, which creates a fresh Boa Context
+    /// on the calling thread. This ensures thread safety without needing a pool.
+    pub fn handle_request(&self, request: &Request) -> Result<Response> {
         tracing::debug!("Handling request for method: {}", request.method);
 
-        // Check for metrics/info requests
+        // Check for metrics/info requests first
         if self.metrics_collector.is_metrics_request(&request.method) {
             return self.metrics_collector.handle_metrics_request(&request.method, request.id);
         }
@@ -52,21 +52,17 @@ impl Node {
         let start_time = Instant::now();
         let method = request.method.clone();
 
-        tracing::debug!("Acquiring context from pool...");
-        // Acquire a context from the pool
-        // If pool is exhausted, this will async wait until one becomes available
-        let pooled_ctx = self.pool.acquire().await?;
-        tracing::debug!("Context acquired");
+        // Create Boa context on THIS thread (not pooled)
+        // This is the key change - context is created fresh each time
+        tracing::debug!("Creating new Boa context for request...");
+        let ctx = MadrpcContext::new(&self.script_path)?;
 
-        // Call the registered function
-        // NOTE: We don't use spawn_blocking here because Boa Context has thread-local state
-        // and must be accessed from the same thread it was created on.
-        // The Context is already protected by a Mutex in MadrpcContext.
+        // Call the RPC function
         tracing::debug!("Calling RPC method: {}", method);
-        let result = pooled_ctx.call_rpc(&method, request.args.clone());
+        let result = ctx.call_rpc(&method, request.args.clone());
         tracing::debug!("RPC call completed");
 
-        // pooled_ctx is dropped here, automatically releasing it back to the pool
+        // Context is dropped here
 
         match result {
             Ok(result) => {
@@ -93,6 +89,7 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::path::PathBuf;
+    use std::sync::Mutex;
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -103,26 +100,26 @@ mod tests {
         path
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
-    async fn test_node_creation() {
+    fn test_node_creation() {
         let script = create_test_script("// empty");
-        let node = Node::new(script).await;
+        let node = Node::new(script);
         assert!(node.is_ok());
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
-    async fn test_node_handles_request() {
+    fn test_node_handles_request() {
         let script = create_test_script(r#"
             madrpc.register('echo', function(args) {
                 return args;
             });
         "#);
-        let node = Node::new(script).await.unwrap();
+        let node = Node::new(script).unwrap();
 
         let request = Request::new("echo", json!({"msg": "hello"}));
-        let response = node.handle_request(&request).await.unwrap();
+        let response = node.handle_request(&request).unwrap();
 
         if !response.success {
             eprintln!("Error: {:?}", response.error);
@@ -131,81 +128,83 @@ mod tests {
         assert_eq!(response.result, Some(json!({"msg": "hello"})));
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
-    async fn test_node_returns_error_on_invalid_method() {
+    fn test_node_returns_error_on_invalid_method() {
         let script = create_test_script("// no functions");
-        let node = Node::new(script).await.unwrap();
+        let node = Node::new(script).unwrap();
 
         let request = Request::new("nonexistent", json!({}));
-        let response = node.handle_request(&request).await.unwrap();
+        let response = node.handle_request(&request).unwrap();
 
         assert!(!response.success);
         assert!(response.error.is_some());
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
-    async fn test_node_returns_js_execution_error() {
+    fn test_node_returns_js_execution_error() {
         let script = create_test_script(r#"
             madrpc.register('broken', function() {
                 throw new Error('intentional error');
             });
         "#);
-        let node = Node::new(script).await.unwrap();
+        let node = Node::new(script).unwrap();
 
         let request = Request::new("broken", json!({}));
-        let response = node.handle_request(&request).await.unwrap();
+        let response = node.handle_request(&request).unwrap();
 
         assert!(!response.success);
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
-    async fn test_node_with_computation() {
+    fn test_node_with_computation() {
         let script = create_test_script(r#"
             madrpc.register('compute', function(args) {
                 return { result: args.x * args.y };
             });
         "#);
-        let node = Node::new(script).await.unwrap();
+        let node = Node::new(script).unwrap();
 
         let request = Request::new("compute", json!({"x": 7, "y": 6}));
-        let response = node.handle_request(&request).await.unwrap();
+        let response = node.handle_request(&request).unwrap();
 
         assert!(response.success);
         assert_eq!(response.result, Some(json!({"result": 42})));
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
-    async fn test_node_concurrent_requests() {
+    fn test_node_concurrent_requests() {
         let script = create_test_script(r#"
             madrpc.register('compute', function(args) {
                 return { result: args.x * args.y };
             });
         "#);
-        let node = Arc::new(Node::new(script).await.unwrap());
+        let node = Arc::new(Node::new(script).unwrap());
 
-        // Spawn 3 concurrent requests
-        let mut tasks = Vec::new();
+        // Spawn 3 concurrent requests using std::thread
+        let mut handles = Vec::new();
+        let results = Arc::new(Mutex::new(Vec::new()));
+
         for i in 0..3 {
             let node = Arc::clone(&node);
-            let task = tokio::spawn(async move {
+            let results = Arc::clone(&results);
+            let handle = std::thread::spawn(move || {
                 let request = Request::new("compute", json!({"x": i, "y": 2}));
-                node.handle_request(&request).await
+                let response = node.handle_request(&request).unwrap();
+                assert!(response.success);
+                results.lock().unwrap().push(response.result);
             });
-            tasks.push(task);
+            handles.push(handle);
         }
 
-        // Wait for all results
-        let mut results = Vec::new();
-        for task in tasks {
-            let response = task.await.unwrap().unwrap();
-            assert!(response.success);
-            results.push(response.result);
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
         }
 
-        assert_eq!(results.len(), 3);
+        assert_eq!(results.lock().unwrap().len(), 3);
     }
 }
