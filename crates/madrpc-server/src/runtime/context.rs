@@ -62,14 +62,17 @@ impl MadrpcContext {
 
     /// Call a registered RPC function
     pub fn call_rpc(&self, method: &str, args: JsonValue) -> Result<JsonValue> {
+        tracing::debug!("call_rpc: Locking context mutex...");
         let mut ctx_opt = self.ctx.lock().unwrap();
         let ctx = ctx_opt.as_mut().unwrap();
+        tracing::debug!("call_rpc: Context locked");
 
         // Get madrpc object and registry
         let madrpc = ctx.global_object()
             .get(js_string!("madrpc"), &mut *ctx)
             .map_err(|e| MadrpcError::JavaScriptExecution(e.to_string()))?;
 
+        tracing::debug!("call_rpc: Getting registry...");
         let registry_val = madrpc.as_object()
             .and_then(|o| o.get(js_string!("__registry"), &mut *ctx).ok())
             .ok_or_else(|| MadrpcError::InvalidRequest("Failed to access registry".into()))?;
@@ -78,6 +81,7 @@ impl MadrpcContext {
             .ok_or_else(|| MadrpcError::InvalidRequest("Registry is not an object".into()))?;
 
         // Get registered function
+        tracing::debug!("call_rpc: Getting function '{}' from registry...", method);
         let func = registry.get(js_string!(method), &mut *ctx)
             .map_err(|e| MadrpcError::InvalidRequest(format!("Method '{}' lookup error: {}", method, e)))?;
 
@@ -89,10 +93,12 @@ impl MadrpcContext {
             .ok_or_else(|| MadrpcError::InvalidRequest("Registered value is not a function".into()))?;
 
         // Convert args to JsValue and call
+        tracing::debug!("call_rpc: Converting args and calling function...");
         let args_js = json_to_js_value(args, &mut *ctx)?;
         let result = func_obj.call(&JsValue::undefined(), &[args_js], &mut *ctx)
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Function execution error: {}", e)))?;
 
+        tracing::debug!("call_rpc: Converting result to JSON...");
         js_value_to_json(result, &mut *ctx)
     }
 
