@@ -1,6 +1,7 @@
 use anyhow::Result;
 use madrpc_client::MadrpcClient;
 use serde_json::json;
+use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,6 +30,7 @@ async fn main() -> Result<()> {
 
     for i in 0..num_nodes {
         let client = client.clone();
+        let start = Instant::now();
         let task = tokio::spawn(async move {
             let args = json!({
                 "samples": samples_per_node,
@@ -37,18 +39,22 @@ async fn main() -> Result<()> {
 
             client.call("monte_carlo_sample", args).await
         });
-        tasks.push(task);
+        tasks.push((i, start, task));
     }
 
     // Wait for all results and aggregate
     let mut total_inside = 0u64;
 
-    for (i, task) in tasks.into_iter().enumerate() {
+    for (i, start, task) in tasks.into_iter() {
         match task.await {
             Ok(Ok(result)) => {
                 let inside: u64 = serde_json::from_value(result["inside"].clone()).unwrap_or(0);
                 let total: u64 = serde_json::from_value(result["total"].clone()).unwrap_or(0);
-                println!("Node {}: {} inside out of {} samples", i, inside, total);
+                let elapsed = start.elapsed().as_millis();
+                println!(
+                    "Node {}: {} inside out of {} samples ({}ms)",
+                    i, inside, total, elapsed
+                );
                 total_inside += inside;
             }
             Ok(Err(e)) => {
