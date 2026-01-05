@@ -101,7 +101,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
     fn test_node_creation() {
         let script = create_test_script("// empty");
         let node = Node::new(script);
@@ -109,7 +108,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
     fn test_node_handles_request() {
         let script = create_test_script(r#"
             madrpc.register('echo', function(args) {
@@ -129,7 +127,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
     fn test_node_returns_error_on_invalid_method() {
         let script = create_test_script("// no functions");
         let node = Node::new(script).unwrap();
@@ -142,7 +139,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
     fn test_node_returns_js_execution_error() {
         let script = create_test_script(r#"
             madrpc.register('broken', function() {
@@ -158,7 +154,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
     fn test_node_with_computation() {
         let script = create_test_script(r#"
             madrpc.register('compute', function(args) {
@@ -175,7 +170,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Boa 0.20 has a destructor bug that causes these tests to fail during cleanup"]
     fn test_node_concurrent_requests() {
         let script = create_test_script(r#"
             madrpc.register('compute', function(args) {
