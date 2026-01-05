@@ -5,11 +5,11 @@ use serde_json::json;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    println!("Connecting to 127.0.0.1:8080 (orchestrator)");
-    let client = MadrpcClient::new("127.0.0.1:8080").await?;
+    println!("Connecting to 127.0.0.1:18084 (orchestrator)");
+    let client = MadrpcClient::new("127.0.0.1:18084").await?;
 
-    println!("Calling echo RPC...");
-    match client.call("echo", json!({"msg": "hello from client"})).await {
+    println!("Calling monte_carlo_sample through orchestrator...");
+    match client.call("monte_carlo_sample", json!({"samples": 1000, "seed": 42})).await {
         Ok(result) => {
             println!("Success! Result: {}", result);
         }
