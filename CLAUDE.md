@@ -81,3 +81,218 @@ madrpc.register('monte_carlo_sample', (args) => {
 - `crates/madrpc-cli` - CLI entry point with `node`, `orchestrator`, and `top` commands
 - `examples/` - Example applications demonstrating usage
 - `tests/` - Integration tests
+
+## Development Practices
+
+### Task Breakdown and Context Management
+
+**CRITICAL**: Always split work into small, well-separated tasks and use subagents for each task. This keeps context windows clean and focused.
+
+When working on complex features:
+
+1. **Use the Task tool with subagent_type='Explore'** for codebase exploration
+   - Finding files by patterns
+   - Searching for code patterns
+   - Understanding architecture
+
+2. **Break down implementation into atomic tasks** such as:
+   - "Add new RPC method to protocol"
+   - "Update error handling for new case"
+   - "Write unit tests for load balancer"
+   - "Add integration test for new feature"
+
+3. **Use specialized subagents** for each distinct task:
+   - `general-purpose` - For multi-step implementation tasks
+   - `Explore` - For codebase exploration and research
+   - `Plan` - For designing implementation strategies
+
+Example workflow:
+```bash
+# Step 1: Explore relevant code
+# Step 2: Design the approach
+# Step 3: Implement feature X
+# Step 4: Write tests for feature X
+# Step 5: Implement feature Y
+# Step 6: Write tests for feature Y
+```
+
+### Git Commit Practices
+
+**CRITICAL**: ALWAYS make small, atomic git commits. Never batch unrelated changes.
+
+- Commit after each logical unit of work is complete
+- Use semantic commit messages (lowercase, except proper nouns)
+- Examples: `fix(server): handle connection timeout`, `feat(client): add retry logic`
+- NEVER use `git add -A` or `git add .`
+- Always add specific files: `git add crates/madrpc-server/src/node.rs`
+
+Good commit pattern:
+```bash
+# Make a small change
+git add crates/madrpc-server/src/node.rs
+git commit -m "fix(node): handle empty script path"
+
+# Make another small change
+git add crates/madrpc-common/src/protocol/error.rs
+git commit -m "feat(protocol): add timeout error variant"
+```
+
+### Testing Practices
+
+**CRITICAL**: ALWAYS write unit tests for new functionality.
+
+#### Unit Tests
+
+Place unit tests in the same module using `#[cfg(test)]`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_request_creation() {
+        let req = Request::new("test_method", json!({"arg": 42}));
+        assert_eq!(req.method, "test_method");
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let req = Request::new("test", json!({})).with_timeout(5000);
+        assert_eq!(req.timeout_ms, Some(5000));
+    }
+}
+```
+
+For larger test suites, create a separate `tests.rs` module:
+```rust
+// In protocol/mod.rs
+#[cfg(test)]
+mod tests;
+```
+
+#### Integration Tests
+
+Place integration tests in `tests/` directory:
+- Use clear section headers to organize tests
+- Create helper functions for test setup
+- Focus on component integration over full network tests
+
+Example structure:
+```rust
+// ============================================================================
+// Protocol Layer Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_protocol_request_response_flow() {
+    // ...
+}
+
+// ============================================================================
+// Load Balancer Tests
+// ============================================================================
+```
+
+#### Test Organization
+
+- **Unit tests**: Test individual functions and structs in-place
+- **Integration tests**: Test component interactions in `tests/`
+- **Helper functions**: Create reusable test utilities (e.g., `create_test_script()`)
+- **Use descriptive names**: `test_load_balancer_round_robin`, not `test_lb`
+
+### Code Organization
+
+#### Module Structure
+
+Keep modules focused and cohesive:
+
+```rust
+// lib.rs - public API
+pub mod protocol;
+pub mod transport;
+pub use protocol::*;
+
+// protocol/mod.rs - internal organization
+pub mod error;
+pub mod requests;
+pub mod responses;
+#[cfg(test)]
+mod tests;
+```
+
+#### Type Aliases
+
+Use type aliases for clarity:
+
+```rust
+pub type RequestId = u64;
+pub type MethodName = String;
+pub type RpcArgs = serde_json::Value;
+pub type Result<T> = std::result::Result<T, MadrpcError>;
+```
+
+#### Error Handling
+
+Use `thiserror` for comprehensive error types:
+
+```rust
+#[derive(Error, Debug)]
+pub enum MadrpcError {
+    #[error("Transport error: {0}")]
+    Transport(String),
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] postcard::Error),
+    #[error("Request timeout after {0}ms")]
+    Timeout(u64),
+}
+```
+
+### Code Style Guidelines
+
+- **Write simple, efficient, elegant code** - favor clarity over cleverness
+- **Document public APIs** with `///` doc comments
+- **Use `tracing` for logging** - not `println!` or `log`
+- **Prefer `Arc<Mutex<T>>`** for shared state across threads
+- **Use `async/await` consistently** with tokio runtime
+- **Follow Rust naming conventions**: `snake_case` for functions/variables, `PascalCase` for types
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run tests for specific crate
+cargo test -p madrpc-server
+
+# Run tests with output
+cargo test -- --nocapture
+
+# Run integration tests only
+cargo test --test integration_test
+```
+
+### Adding New Features
+
+When adding new features:
+
+1. **Explore first**: Use `Explore` agent to understand relevant code
+2. **Plan**: Use `Plan` agent to design the approach
+3. **Implement**: Write the feature code
+4. **Test**: Write comprehensive unit tests
+5. **Commit**: Make atomic commit for the feature
+6. **Repeat**: For each logical sub-feature
+
+Example for adding a new RPC method:
+```
+1. Explore protocol/request handling code
+2. Plan the implementation approach
+3. Update protocol types (add new method enum)
+4. Update error handling if needed
+5. Write unit tests for protocol changes
+6. Commit: "feat(protocol): add new method type"
+7. Update node to handle new method
+8. Write integration tests
+9. Commit: "feat(node): implement new method handler"
+```
