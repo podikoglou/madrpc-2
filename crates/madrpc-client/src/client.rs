@@ -1,40 +1,32 @@
 use madrpc_common::protocol::Request;
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use madrpc_common::transport::TcpTransportAsync;
-use crate::pool::{ConnectionPool, PoolConfig};
 use serde_json::Value;
-use std::sync::Arc;
 
 /// MaDRPC client for making RPC calls
+///
+/// Creates a fresh TCP connection for each request to enable true parallelism.
+/// This avoids serialization through shared Arc<Mutex<TcpStream>>.
 pub struct MadrpcClient {
     orchestrator_addr: String,
-    pool: Arc<ConnectionPool>,
     transport: TcpTransportAsync,
 }
 
 impl MadrpcClient {
     /// Create a new client connected to an orchestrator
     pub async fn new(orchestrator_addr: impl Into<String>) -> Result<Self> {
-        Self::with_config(orchestrator_addr, PoolConfig::default()).await
-    }
-
-    /// Create a new client with custom configuration
-    pub async fn with_config(
-        orchestrator_addr: impl Into<String>,
-        config: PoolConfig,
-    ) -> Result<Self> {
         let orchestrator_addr = orchestrator_addr.into();
-        let pool = Arc::new(ConnectionPool::new(config)?);
         let transport = TcpTransportAsync::new()?;
 
         Ok(Self {
             orchestrator_addr,
-            pool,
             transport,
         })
     }
 
     /// Call an RPC method
+    ///
+    /// Creates a fresh TCP connection for each request, enabling true parallelism.
     pub async fn call(
         &self,
         method: impl Into<String>,
@@ -42,20 +34,13 @@ impl MadrpcClient {
     ) -> Result<Value> {
         let request = Request::new(method, args);
 
-        // Get connection from pool
-        let conn = self.pool.acquire(&self.orchestrator_addr).await?;
+        // Create a fresh connection for this request
+        let mut stream = self.transport.connect(&self.orchestrator_addr).await?;
 
-        // Send request via transport
-        // We need to lock the mutex to get mutable access to the stream
-        let mut stream = conn.stream.lock().await;
-
+        // Send request and get response
         let response = self.transport.send_request(&mut stream, &request).await?;
 
-        // Release the lock before returning connection to pool
-        drop(stream);
-
-        // Return connection to pool
-        self.pool.release(conn).await;
+        // Connection is closed here when stream is dropped
 
         // Handle response
         if response.success {
@@ -74,7 +59,6 @@ impl Clone for MadrpcClient {
     fn clone(&self) -> Self {
         Self {
             orchestrator_addr: self.orchestrator_addr.clone(),
-            pool: Arc::clone(&self.pool),
             transport: TcpTransportAsync::new().unwrap(),
         }
     }
@@ -91,15 +75,6 @@ mod tests {
     async fn test_client_creation() {
         let client = MadrpcClient::new("localhost:8080").await;
         // Will create successfully even if server doesn't exist
-        assert!(client.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_client_with_custom_config() {
-        let config = PoolConfig {
-            max_connections: 5,
-        };
-        let client = MadrpcClient::with_config("localhost:8080", config).await;
         assert!(client.is_ok());
     }
 
