@@ -32,6 +32,32 @@ use std::io;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 
+/// Format duration in milliseconds to human-readable string
+fn format_duration_ms(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60_000 {
+        format!("{}s", ms / 1000)
+    } else if ms < 3_600_000 {
+        format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
+    } else {
+        format!("{}h {}m", ms / 3_600_000, (ms % 3_600_000) / 60_000)
+    }
+}
+
+/// Format latency in microseconds to human-readable string
+fn format_latency_us(us: u64) -> String {
+    if us == 0 {
+        "-".to_string()
+    } else if us < 1000 {
+        format!("{}μs", us)
+    } else if us < 1_000_000 {
+        format!("{}ms", us / 1000)
+    } else {
+        format!("{:.1}s", us as f64 / 1_000_000.0)
+    }
+}
+
 /// Guard to restore terminal state on drop (even during panic)
 struct TerminalGuard {
     terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
@@ -367,13 +393,25 @@ impl TopApp {
         let mut node_vec: Vec<_> = nodes.values().collect();
         node_vec.sort_by(|a, b| b.request_count.cmp(&a.request_count));
 
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
         let rows: Vec<Row> = node_vec
             .iter()
             .map(|node| {
+                let last_request_str = if node.last_request_ms == 0 {
+                    "Never".to_string()
+                } else {
+                    let elapsed_ms = now_ms.saturating_sub(node.last_request_ms);
+                    format_duration_ms(elapsed_ms)
+                };
+
                 Row::new(vec![
                     format!("{}", node.node_addr),
                     format!("{}", node.request_count),
-                    format!("{}ms ago", node.last_request_ms),
+                    last_request_str,
                 ])
                 .style(Style::default().fg(Color::White))
             })
@@ -415,18 +453,14 @@ impl TopApp {
         let rows: Vec<Row> = method_vec
             .iter()
             .map(|(name, metrics)| {
-                let p50 = if metrics.p50_latency_us > 0 { format!("{}μs", metrics.p50_latency_us) } else { "-".to_string() };
-                let p95 = if metrics.p95_latency_us > 0 { format!("{}μs", metrics.p95_latency_us) } else { "-".to_string() };
-                let p99 = if metrics.p99_latency_us > 0 { format!("{}μs", metrics.p99_latency_us) } else { "-".to_string() };
-
                 Row::new(vec![
                     format!("{}", name),
                     format!("{}", metrics.call_count),
                     format!("{}", metrics.success_count),
                     format!("{}", metrics.failure_count),
-                    p50,
-                    p95,
-                    p99,
+                    format_latency_us(metrics.p50_latency_us),
+                    format_latency_us(metrics.p95_latency_us),
+                    format_latency_us(metrics.p99_latency_us),
                 ])
                 .style(Style::default().fg(Color::White))
             })
