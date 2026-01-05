@@ -1,11 +1,14 @@
 use madrpc_common::protocol::{Request, Response};
-use madrpc_common::protocol::error::{Result, MadrpcError};
+use madrpc_common::protocol::error::{MadrpcError, Result};
 use madrpc_common::transport::TcpTransportAsync;
 use madrpc_metrics::{MetricsCollector, OrchestratorMetricsCollector};
 use crate::load_balancer::LoadBalancer;
+use crate::node::Node;
+use crate::health_checker::{HealthChecker, HealthCheckConfig};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
+use tracing::info;
 
 /// MaDRPC Orchestrator - "stupid" forwarder
 ///
@@ -22,21 +25,37 @@ pub struct Orchestrator {
     load_balancer: Arc<RwLock<LoadBalancer>>,
     transport: TcpTransportAsync,
     metrics_collector: Arc<OrchestratorMetricsCollector>,
+    _health_checker_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Orchestrator {
-    /// Create a new orchestrator with static node list
+    /// Create a new orchestrator with static node list and default health check config
     pub async fn new(node_addrs: Vec<String>) -> Result<Self> {
+        Self::with_config(node_addrs, HealthCheckConfig::default()).await
+    }
+
+    /// Create a new orchestrator with static node list and custom health check config
+    pub async fn with_config(
+        node_addrs: Vec<String>,
+        health_config: HealthCheckConfig,
+    ) -> Result<Self> {
         let load_balancer = Arc::new(RwLock::new(LoadBalancer::new(node_addrs)));
         let transport = TcpTransportAsync::new()?;
 
         // Initialize metrics
         let metrics_collector = Arc::new(OrchestratorMetricsCollector::new());
 
+        // Spawn health checker
+        let health_checker = HealthChecker::new(load_balancer.clone(), health_config)?;
+        let health_checker_handle = health_checker.spawn();
+
+        info!("Orchestrator initialized with health checking");
+
         Ok(Self {
             load_balancer,
             transport,
             metrics_collector,
+            _health_checker_handle: Some(health_checker_handle),
         })
     }
 
@@ -53,7 +72,10 @@ impl Orchestrator {
     /// node to execute in parallel.
     pub async fn forward_request(&self, request: &Request) -> Result<Response> {
         // Check for metrics/info requests (do NOT forward these)
-        if self.metrics_collector.is_metrics_request(&request.method) {
+        if self
+            .metrics_collector
+            .is_metrics_request(&request.method)
+        {
             return self
                 .metrics_collector
                 .handle_metrics_request(&request.method, request.id);
@@ -101,6 +123,32 @@ impl Orchestrator {
         lb.remove_node(node_addr);
     }
 
+    /// Manually disable a node
+    pub async fn disable_node(&self, node_addr: &str) -> bool {
+        let mut lb = self.load_balancer.write().await;
+        let disabled = lb.disable_node(node_addr);
+        if disabled {
+            info!("Manually disabled node: {}", node_addr);
+        }
+        disabled
+    }
+
+    /// Manually enable a node
+    pub async fn enable_node(&self, node_addr: &str) -> bool {
+        let mut lb = self.load_balancer.write().await;
+        let enabled = lb.enable_node(node_addr);
+        if enabled {
+            info!("Manually enabled node: {}", node_addr);
+        }
+        enabled
+    }
+
+    /// Get all nodes with their status
+    pub async fn nodes_with_status(&self) -> Vec<Node> {
+        let lb = self.load_balancer.read().await;
+        lb.all_nodes()
+    }
+
     /// Get the number of nodes
     pub async fn node_count(&self) -> usize {
         let lb = self.load_balancer.read().await;
@@ -123,10 +171,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_creation() {
-        let nodes = vec![
-            "localhost:9001".to_string(),
-            "localhost:9002".to_string(),
-        ];
+        let nodes = vec!["localhost:9001".to_string(), "localhost:9002".to_string()];
         let orch = Orchestrator::new(nodes).await;
         assert!(orch.is_ok());
     }
@@ -147,24 +192,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_remove_node() {
-        let orch = Orchestrator::new(vec!["node1".to_string()]).await.unwrap();
+        let orch = Orchestrator::new(vec!["node1".to_string()])
+            .await
+            .unwrap();
         orch.remove_node("node1").await;
         assert_eq!(orch.node_count().await, 0);
     }
 
     #[tokio::test]
     async fn test_orchestrator_nodes() {
-        let nodes = vec![
-            "node1".to_string(),
-            "node2".to_string(),
-        ];
+        let nodes = vec!["node1".to_string(), "node2".to_string()];
         let orch = Orchestrator::new(nodes.clone()).await.unwrap();
         assert_eq!(orch.nodes().await, nodes);
     }
 
     #[tokio::test]
     async fn test_orchestrator_add_duplicate_node() {
-        let orch = Orchestrator::new(vec!["node1".to_string()]).await.unwrap();
+        let orch = Orchestrator::new(vec!["node1".to_string()])
+            .await
+            .unwrap();
         orch.add_node("node1".to_string()).await;
         // duplicate should not be added
         assert_eq!(orch.node_count().await, 1);
@@ -175,5 +221,28 @@ mod tests {
         let orch = Orchestrator::new(vec![]).await.unwrap();
         assert_eq!(orch.node_count().await, 0);
         assert_eq!(orch.nodes().await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_manual_disable() {
+        let orch = Orchestrator::new(vec!["node1".to_string()])
+            .await
+            .unwrap();
+        assert!(orch.disable_node("node1").await);
+        let nodes = orch.nodes_with_status().await;
+        let node1 = nodes.iter().find(|n| n.addr == "node1").unwrap();
+        assert!(!node1.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_manual_enable() {
+        let orch = Orchestrator::new(vec!["node1".to_string()])
+            .await
+            .unwrap();
+        orch.disable_node("node1").await;
+        assert!(orch.enable_node("node1").await);
+        let nodes = orch.nodes_with_status().await;
+        let node1 = nodes.iter().find(|n| n.addr == "node1").unwrap();
+        assert!(node1.enabled);
     }
 }

@@ -27,10 +27,6 @@ struct NodeArgs {
     /// address to bind to
     #[argh(option, short = 'b', default = "\"0.0.0.0:0\".into()")]
     bind: String,
-
-    /// number of QuickJS contexts in the pool (default: num_cpus)
-    #[argh(option, long = "pool-size")]
-    pool_size: Option<usize>,
 }
 
 #[derive(FromArgs)]
@@ -44,6 +40,22 @@ struct OrchestratorArgs {
     /// node addresses (can be specified multiple times)
     #[argh(option, short = 'n', long = "node")]
     nodes: Vec<String>,
+
+    /// health check interval in seconds (default: 5)
+    #[argh(option, long = "health-check-interval", default = "5")]
+    health_check_interval_secs: u64,
+
+    /// health check timeout in milliseconds (default: 2000)
+    #[argh(option, long = "health-check-timeout", default = "2000")]
+    health_check_timeout_ms: u64,
+
+    /// consecutive health check failures before disabling node (default: 3)
+    #[argh(option, long = "health-check-failure-threshold", default = "3")]
+    health_check_failure_threshold: u32,
+
+    /// disable health checking entirely
+    #[argh(switch, long = "disable-health-check")]
+    disable_health_check: bool,
 }
 
 #[derive(FromArgs)]
@@ -70,29 +82,23 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Node(args) => {
-            tracing::info!("Starting MaDRPC node with script: {}", args.script);
+            tracing::info!("Starting MaDRPC node (single-threaded) with script: {}", args.script);
             tracing::info!("Binding to: {}", args.bind);
 
-            // Determine max threads (use CLI flag or default to num_cpus * 2)
-            let max_threads = args.pool_size.unwrap_or_else(|| num_cpus::get() * 2);
-            tracing::info!("Max worker threads: {}", max_threads);
-
-            // Create the node with thread limit
-            let node = madrpc_server::Node::with_thread_limit(
-                std::path::PathBuf::from(&args.script),
-                max_threads
-            )?;
+            let node = madrpc_server::Node::new(std::path::PathBuf::from(&args.script))?;
             tracing::info!("Node created successfully from script");
 
-            // Create TCP threaded server
-            let server = madrpc_common::transport::tcp_server::TcpServerThreaded::new(&args.bind, max_threads)?;
+            let server = madrpc_common::transport::tcp_server::TcpServer::new(&args.bind).await?;
             let actual_addr = server.local_addr()?;
-            tracing::info!("TCP server listening on {}", actual_addr);
+            tracing::info!("TCP server listening on {} (single-threaded)", actual_addr);
 
-            // Run server with node handler (synchronous)
+            let node = std::sync::Arc::new(node);
             server.run_with_handler(move |request| {
-                node.handle_request(&request)
-            })?;
+                let node = node.clone();
+                async move {
+                    node.handle_request(&request)
+                }
+            }).await?;
 
             Ok(())
         }
@@ -105,7 +111,28 @@ async fn main() -> Result<()> {
                 tracing::warn!("No nodes specified! Use --node <addr> to add nodes.");
             }
 
-            let orch = madrpc_orchestrator::Orchestrator::new(args.nodes).await?;
+            let orch = if args.disable_health_check {
+                tracing::info!("Health checking disabled");
+                // Use a very long interval to effectively disable health checks
+                let config = madrpc_orchestrator::HealthCheckConfig {
+                    interval: std::time::Duration::from_secs(365 * 24 * 60 * 60), // 1 year
+                    timeout: std::time::Duration::from_millis(args.health_check_timeout_ms),
+                    failure_threshold: args.health_check_failure_threshold,
+                };
+                madrpc_orchestrator::Orchestrator::with_config(args.nodes, config).await?
+            } else {
+                tracing::info!("Health check interval: {}s", args.health_check_interval_secs);
+                tracing::info!("Health check timeout: {}ms", args.health_check_timeout_ms);
+                tracing::info!("Health check failure threshold: {}", args.health_check_failure_threshold);
+
+                let config = madrpc_orchestrator::HealthCheckConfig {
+                    interval: std::time::Duration::from_secs(args.health_check_interval_secs),
+                    timeout: std::time::Duration::from_millis(args.health_check_timeout_ms),
+                    failure_threshold: args.health_check_failure_threshold,
+                };
+                madrpc_orchestrator::Orchestrator::with_config(args.nodes, config).await?
+            };
+
             tracing::info!("Orchestrator created with {} nodes", orch.node_count().await);
 
             // Create TCP async server
@@ -138,10 +165,9 @@ mod tests {
     fn test_cli_parse_node() {
         let args: Cli = Cli::from_args(&["madrpc"], &["node", "-s", "test.js", "-b", "0.0.0.0:9001"]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, pool_size }) => {
+            Commands::Node(NodeArgs { script, bind }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
-                assert!(pool_size.is_none());
             }
             _ => panic!("Expected Node command"),
         }

@@ -1,40 +1,152 @@
+use crate::node::{DisableReason, HealthCheckStatus, Node};
 use std::collections::VecDeque;
 
 /// Round-robin load balancer for nodes
 pub struct LoadBalancer {
-    nodes: VecDeque<String>,
+    nodes: VecDeque<Node>,
 }
 
 impl LoadBalancer {
     /// Create a new load balancer with a static node list
-    pub fn new(nodes: Vec<String>) -> Self {
-        Self {
-            nodes: VecDeque::from(nodes),
-        }
+    pub fn new(node_addrs: Vec<String>) -> Self {
+        let nodes = node_addrs.into_iter().map(Node::new).collect();
+        Self { nodes }
     }
 
-    /// Get the next node using round-robin
+    /// Get the next ENABLED node using round-robin
     pub fn next_node(&mut self) -> Option<String> {
         if self.nodes.is_empty() {
             return None;
         }
 
-        // Rotate: move first to back, return it
-        let node = self.nodes.pop_front()?;
-        self.nodes.push_back(node.clone());
-        Some(node)
+        // Rotate through nodes, skipping disabled ones
+        let len = self.nodes.len();
+        for _ in 0..len {
+            let node = self.nodes.pop_front()?;
+            self.nodes.push_back(node.clone());
+
+            if node.enabled {
+                return Some(node.addr);
+            }
+        }
+
+        None // All nodes disabled
+    }
+
+    /// Manually disable a node (indefinite)
+    pub fn disable_node(&mut self, addr: &str) -> bool {
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+            node.enabled = false;
+            node.disable_reason = Some(DisableReason::Manual);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Manually enable a node
+    pub fn enable_node(&mut self, addr: &str) -> bool {
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+            node.enabled = true;
+            node.disable_reason = None;
+            node.consecutive_failures = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Auto-disable a node due to health check failure
+    pub fn auto_disable_node(&mut self, addr: &str) -> bool {
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+            // Only auto-disable if not manually disabled
+            if node.disable_reason != Some(DisableReason::Manual) {
+                node.enabled = false;
+                node.disable_reason = Some(DisableReason::HealthCheck);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Auto-enable a node that recovered (only if it was auto-disabled)
+    pub fn auto_enable_node(&mut self, addr: &str) -> bool {
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+            if node.disable_reason == Some(DisableReason::HealthCheck) {
+                node.enabled = true;
+                node.disable_reason = None;
+                node.consecutive_failures = 0;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Update health check status for a node
+    pub fn update_health_status(&mut self, addr: &str, status: HealthCheckStatus) {
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+            node.last_health_check = Some(std::time::Instant::now());
+            node.last_health_check_status = Some(status.clone());
+
+            match status {
+                HealthCheckStatus::Healthy => {
+                    node.consecutive_failures = 0;
+                }
+                HealthCheckStatus::Unhealthy(_) => {
+                    node.consecutive_failures += 1;
+                }
+            }
+        }
+    }
+
+    /// Get consecutive failures for a node
+    pub fn consecutive_failures(&self, addr: &str) -> u32 {
+        self.nodes
+            .iter()
+            .find(|n| n.addr == addr)
+            .map(|n| n.consecutive_failures)
+            .unwrap_or(0)
+    }
+
+    /// Get all nodes (including disabled ones)
+    pub fn all_nodes(&self) -> Vec<Node> {
+        self.nodes.iter().cloned().collect()
+    }
+
+    /// Get enabled nodes only
+    pub fn enabled_nodes(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|n| n.enabled)
+            .map(|n| n.addr.clone())
+            .collect()
+    }
+
+    /// Get disabled nodes only
+    pub fn disabled_nodes(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|n| !n.enabled)
+            .map(|n| n.addr.clone())
+            .collect()
     }
 
     /// Add a node to the pool
-    pub fn add_node(&mut self, node: String) {
-        if !self.nodes.contains(&node) {
-            self.nodes.push_back(node);
+    pub fn add_node(&mut self, node_addr: String) {
+        if !self.nodes.iter().any(|n| n.addr == node_addr) {
+            self.nodes.push_back(Node::new(node_addr));
         }
     }
 
     /// Remove a node from the pool
-    pub fn remove_node(&mut self, node: &str) {
-        self.nodes.retain(|n| n != node);
+    pub fn remove_node(&mut self, node_addr: &str) {
+        self.nodes.retain(|n| n.addr != node_addr);
     }
 
     /// Get the number of nodes
@@ -42,9 +154,14 @@ impl LoadBalancer {
         self.nodes.len()
     }
 
-    /// Get list of all nodes
+    /// Get the number of enabled nodes
+    pub fn enabled_count(&self) -> usize {
+        self.nodes.iter().filter(|n| n.enabled).count()
+    }
+
+    /// Get list of all node addresses (backward compatibility)
     pub fn nodes(&self) -> Vec<String> {
-        self.nodes.iter().cloned().collect()
+        self.nodes.iter().map(|n| n.addr.clone()).collect()
     }
 }
 
@@ -54,21 +171,14 @@ mod tests {
 
     #[test]
     fn test_load_balancer_creation() {
-        let nodes = vec![
-            "localhost:9001".to_string(),
-            "localhost:9002".to_string(),
-        ];
+        let nodes = vec!["localhost:9001".to_string(), "localhost:9002".to_string()];
         let lb = LoadBalancer::new(nodes.clone());
         assert_eq!(lb.node_count(), 2);
     }
 
     #[test]
     fn test_round_robin() {
-        let nodes = vec![
-            "node1".to_string(),
-            "node2".to_string(),
-            "node3".to_string(),
-        ];
+        let nodes = vec!["node1".to_string(), "node2".to_string(), "node3".to_string()];
         let mut lb = LoadBalancer::new(nodes);
 
         assert_eq!(lb.next_node(), Some("node1".to_string()));
@@ -102,7 +212,7 @@ mod tests {
     fn test_add_duplicate_node() {
         let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
         lb.add_node("node1".to_string());
-        // duplicate
+        // duplicate should not be added
         assert_eq!(lb.node_count(), 1);
     }
 
@@ -115,10 +225,7 @@ mod tests {
         ]);
         lb.remove_node("node2");
         assert_eq!(lb.node_count(), 2);
-        assert_eq!(
-            lb.nodes(),
-            vec!["node1".to_string(), "node3".to_string()]
-        );
+        assert_eq!(lb.nodes(), vec!["node1".to_string(), "node3".to_string()]);
     }
 
     #[test]
@@ -126,5 +233,139 @@ mod tests {
         let nodes = vec!["a".to_string(), "b".to_string()];
         let lb = LoadBalancer::new(nodes.clone());
         assert_eq!(lb.nodes(), nodes);
+    }
+
+    #[test]
+    fn test_manual_disable_node() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string(), "node2".to_string()]);
+        assert!(lb.disable_node("node1"));
+
+        // node1 should be disabled
+        assert_eq!(lb.disabled_nodes(), vec!["node1".to_string()]);
+        assert_eq!(lb.enabled_nodes(), vec!["node2".to_string()]);
+
+        // round-robin should skip disabled node1
+        assert_eq!(lb.next_node(), Some("node2".to_string()));
+        assert_eq!(lb.next_node(), Some("node2".to_string()));
+    }
+
+    #[test]
+    fn test_manual_enable_node() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        lb.disable_node("node1");
+        assert!(lb.enable_node("node1"));
+        assert_eq!(lb.enabled_nodes(), vec!["node1".to_string()]);
+    }
+
+    #[test]
+    fn test_auto_disable_node() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        assert!(lb.auto_disable_node("node1"));
+
+        // Should have HealthCheck reason
+        let nodes = lb.all_nodes();
+        let node1 = nodes.iter().find(|n| n.addr == "node1").unwrap();
+        assert!(!node1.enabled);
+        assert_eq!(node1.disable_reason, Some(DisableReason::HealthCheck));
+    }
+
+    #[test]
+    fn test_auto_disable_does_not_affect_manual() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        lb.disable_node("node1"); // Manual disable
+
+        // Auto-disable should not work on manually disabled node
+        assert!(!lb.auto_disable_node("node1"));
+
+        let nodes = lb.all_nodes();
+        let node1 = nodes.iter().find(|n| n.addr == "node1").unwrap();
+        assert_eq!(node1.disable_reason, Some(DisableReason::Manual));
+    }
+
+    #[test]
+    fn test_auto_enable_node() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        lb.auto_disable_node("node1");
+        assert!(lb.auto_enable_node("node1"));
+
+        assert_eq!(lb.enabled_nodes(), vec!["node1".to_string()]);
+    }
+
+    #[test]
+    fn test_auto_enable_does_not_affect_manual() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        lb.disable_node("node1"); // Manual disable
+
+        // Auto-enable should not work on manually disabled node
+        assert!(!lb.auto_enable_node("node1"));
+        assert_eq!(lb.enabled_nodes(), vec![] as Vec<String>);
+    }
+
+    #[test]
+    fn test_update_health_status_healthy() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        lb.update_health_status("node1", HealthCheckStatus::Healthy);
+
+        let nodes = lb.all_nodes();
+        let node1 = nodes.iter().find(|n| n.addr == "node1").unwrap();
+        assert_eq!(node1.consecutive_failures, 0);
+        assert_eq!(
+            node1.last_health_check_status,
+            Some(HealthCheckStatus::Healthy)
+        );
+        assert!(node1.last_health_check.is_some());
+    }
+
+    #[test]
+    fn test_update_health_status_unhealthy() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("error".to_string()));
+
+        let nodes = lb.all_nodes();
+        let node1 = nodes.iter().find(|n| n.addr == "node1").unwrap();
+        assert_eq!(node1.consecutive_failures, 1);
+        assert_eq!(
+            node1.last_health_check_status,
+            Some(HealthCheckStatus::Unhealthy("error".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_consecutive_failures() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        assert_eq!(lb.consecutive_failures("node1"), 0);
+
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        assert_eq!(lb.consecutive_failures("node1"), 1);
+
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        assert_eq!(lb.consecutive_failures("node1"), 2);
+
+        lb.update_health_status("node1", HealthCheckStatus::Healthy);
+        assert_eq!(lb.consecutive_failures("node1"), 0);
+    }
+
+    #[test]
+    fn test_all_nodes_disabled_returns_none() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string(), "node2".to_string()]);
+        lb.disable_node("node1");
+        lb.disable_node("node2");
+        assert_eq!(lb.next_node(), None);
+    }
+
+    #[test]
+    fn test_enabled_count() {
+        let mut lb = LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ]);
+        assert_eq!(lb.enabled_count(), 3);
+
+        lb.disable_node("node1");
+        assert_eq!(lb.enabled_count(), 2);
+
+        lb.disable_node("node2");
+        assert_eq!(lb.enabled_count(), 1);
     }
 }
