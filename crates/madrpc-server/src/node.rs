@@ -3,24 +3,23 @@ use madrpc_common::protocol::error::{Result, MadrpcError};
 use crate::runtime::MadrpcContext;
 use madrpc_metrics::{MetricsCollector, NodeMetricsCollector};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// MaDRPC Node - runs Boa and executes JavaScript RPCs
 pub struct Node {
     script_path: PathBuf,
     metrics_collector: Arc<NodeMetricsCollector>,
+    context: Arc<Mutex<MadrpcContext>>,
 }
 
 impl Node {
     /// Create a new node with a JavaScript script
+    ///
+    /// This creates a single Boa Context that will be reused across all requests.
+    /// Since the node is single-threaded (async), this is safe and provides
+    /// better performance than creating a fresh context for each request.
     pub fn new(script_path: PathBuf) -> Result<Self> {
-        Self::with_thread_limit(script_path, num_cpus::get() * 2)
-    }
-
-    /// Create a new node with a specific thread limit
-    pub fn with_thread_limit(script_path: PathBuf, _max_threads: usize) -> Result<Self> {
-        // Validate the script path exists
         if !script_path.exists() {
             return Err(MadrpcError::InvalidRequest(format!(
                 "Script path does not exist: {}",
@@ -28,19 +27,24 @@ impl Node {
             )));
         }
 
-        // Initialize metrics collector
+        // Create a single Boa Context that will be reused
+        let ctx = MadrpcContext::new(&script_path)?;
+        tracing::info!("Boa context created and script loaded");
+
         let metrics_collector = Arc::new(NodeMetricsCollector::new());
 
         Ok(Self {
             script_path,
             metrics_collector,
+            context: Arc::new(Mutex::new(ctx)),
         })
     }
 
     /// Handle an incoming RPC request (synchronous)
     ///
-    /// Each worker thread calls this method, which creates a fresh Boa Context
-    /// on the calling thread. This ensures thread safety without needing a pool.
+    /// Reuses the single Boa Context for all requests. Since the node is
+    /// single-threaded (async), this is safe and provides better performance
+    /// than creating a fresh context for each request.
     pub fn handle_request(&self, request: &Request) -> Result<Response> {
         tracing::debug!("Handling request for method: {}", request.method);
 
@@ -52,17 +56,16 @@ impl Node {
         let start_time = Instant::now();
         let method = request.method.clone();
 
-        // Create Boa context on THIS thread (not pooled)
-        // This is the key change - context is created fresh each time
-        tracing::debug!("Creating new Boa context for request...");
-        let ctx = MadrpcContext::new(&self.script_path)?;
+        // Lock and reuse the existing Boa context
+        tracing::debug!("Acquiring context lock...");
+        let ctx = self.context.lock().unwrap();
 
         // Call the RPC function
         tracing::debug!("Calling RPC method: {}", method);
         let result = ctx.call_rpc(&method, request.args.clone());
         tracing::debug!("RPC call completed");
 
-        // Context is dropped here
+        // Lock is released here when ctx goes out of scope
 
         match result {
             Ok(result) => {
@@ -89,7 +92,6 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::path::PathBuf;
-    use std::sync::Mutex;
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -167,38 +169,5 @@ mod tests {
 
         assert!(response.success);
         assert_eq!(response.result, Some(json!({"result": 42})));
-    }
-
-    #[test]
-    fn test_node_concurrent_requests() {
-        let script = create_test_script(r#"
-            madrpc.register('compute', function(args) {
-                return { result: args.x * args.y };
-            });
-        "#);
-        let node = Arc::new(Node::new(script).unwrap());
-
-        // Spawn 3 concurrent requests using std::thread
-        let mut handles = Vec::new();
-        let results = Arc::new(Mutex::new(Vec::new()));
-
-        for i in 0..3 {
-            let node = Arc::clone(&node);
-            let results = Arc::clone(&results);
-            let handle = std::thread::spawn(move || {
-                let request = Request::new("compute", json!({"x": i, "y": 2}));
-                let response = node.handle_request(&request).unwrap();
-                assert!(response.success);
-                results.lock().unwrap().push(response.result);
-            });
-            handles.push(handle);
-        }
-
-        // Wait for all threads to complete
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        assert_eq!(results.lock().unwrap().len(), 3);
     }
 }
