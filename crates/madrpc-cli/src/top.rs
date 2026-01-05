@@ -440,9 +440,6 @@ impl TopApp {
 
 /// Run the top TUI
 pub async fn run_top(server_address: String, interval_ms: u64) -> Result<()> {
-    // Initialize crypto provider
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();

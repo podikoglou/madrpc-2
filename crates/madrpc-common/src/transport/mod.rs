@@ -1,12 +1,10 @@
 pub mod codec;
-pub mod quic;
-pub mod server;
 pub mod tcp;
+pub mod tcp_server;
 
 pub use codec::PostcardCodec;
-pub use quic::QuicTransport;
-pub use server::QuicServer;
-pub use tcp::TcpTransport;
+pub use tcp::{TcpTransport, TcpTransportAsync};
+pub use tcp_server::{TcpServer, TcpServerThreaded};
 
 #[cfg(test)]
 mod tests;

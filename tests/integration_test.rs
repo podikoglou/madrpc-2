@@ -24,11 +24,6 @@ fn create_test_script(content: &str) -> NamedTempFile {
     file
 }
 
-/// Setup crypto provider for tests that use QUIC
-fn setup_crypto() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
 // ============================================================================
 // Protocol Layer Tests
 // ============================================================================
@@ -179,7 +174,6 @@ async fn test_load_balancer_get_nodes() {
 
 #[tokio::test]
 async fn test_orchestrator_creation() {
-    setup_crypto();
     let nodes = vec!["localhost:9001".to_string(), "localhost:9002".to_string()];
     let orch = Orchestrator::new(nodes).await;
     assert!(orch.is_ok());
@@ -187,7 +181,6 @@ async fn test_orchestrator_creation() {
 
 #[tokio::test]
 async fn test_orchestrator_node_count() {
-    setup_crypto();
     let nodes = vec![
         "localhost:9001".to_string(),
         "localhost:9002".to_string(),
@@ -199,7 +192,6 @@ async fn test_orchestrator_node_count() {
 
 #[tokio::test]
 async fn test_orchestrator_add_remove_nodes() {
-    setup_crypto();
     let orch = Orchestrator::new(vec![]).await.unwrap();
 
     orch.add_node("node1".to_string()).await;
@@ -217,7 +209,6 @@ async fn test_orchestrator_add_remove_nodes() {
 
 #[tokio::test]
 async fn test_orchestrator_get_nodes() {
-    setup_crypto();
     let nodes = vec![
         "node1".to_string(),
         "node2".to_string(),
@@ -228,7 +219,6 @@ async fn test_orchestrator_get_nodes() {
 
 #[tokio::test]
 async fn test_orchestrator_add_duplicate_node() {
-    setup_crypto();
     let orch = Orchestrator::new(vec!["node1".to_string()]).await.unwrap();
     orch.add_node("node1".to_string()).await;
     assert_eq!(orch.node_count().await, 1);
@@ -236,7 +226,6 @@ async fn test_orchestrator_add_duplicate_node() {
 
 #[tokio::test]
 async fn test_orchestrator_empty() {
-    setup_crypto();
     let orch = Orchestrator::new(vec![]).await.unwrap();
     assert_eq!(orch.node_count().await, 0);
     assert_eq!(orch.nodes().await, Vec::<String>::new());
@@ -249,10 +238,10 @@ async fn test_orchestrator_empty() {
 #[tokio::test]
 async fn test_node_returns_error_for_invalid_method() {
     let script = create_test_script("// no functions");
-    let node = Node::new(script.path().to_path_buf()).await.unwrap();
+    let node = Node::new(script.path().to_path_buf()).unwrap();
 
     let request = Request::new("nonexistent", json!({}));
-    let response = node.handle_request(&request).await.unwrap();
+    let response = node.handle_request(&request).unwrap();
 
     assert!(!response.success);
     assert!(response.error.is_some());
@@ -261,7 +250,7 @@ async fn test_node_returns_error_for_invalid_method() {
 #[tokio::test]
 async fn test_node_script_path() {
     let script = create_test_script("// test script");
-    let node = Node::new(script.path().to_path_buf()).await.unwrap();
+    let node = Node::new(script.path().to_path_buf()).unwrap();
 
     assert_eq!(node.script_path(), script.path());
 }
@@ -298,7 +287,6 @@ async fn test_end_to_end_error_flow() {
 
 #[tokio::test]
 async fn test_end_to_end_orchestrator_flow() {
-    setup_crypto();
 
     // Create orchestrator with multiple nodes
     let nodes = vec![
