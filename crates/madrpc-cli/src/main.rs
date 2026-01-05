@@ -177,7 +177,7 @@ mod tests {
     fn test_cli_parse_orchestrator_single_node() {
         let args: Cli = Cli::from_args(&["madrpc"], &["orchestrator", "-n", "localhost:9001"]).unwrap();
         match args.command {
-            Commands::Orchestrator(OrchestratorArgs { bind, nodes }) => {
+            Commands::Orchestrator(OrchestratorArgs { bind, nodes, .. }) => {
                 assert_eq!(bind, "0.0.0.0:8080"); // default
                 assert_eq!(nodes, vec!["localhost:9001".to_string()]);
             }
@@ -194,7 +194,7 @@ mod tests {
             "--node", "localhost:9003",
         ]).unwrap();
         match args.command {
-            Commands::Orchestrator(OrchestratorArgs { bind: _, nodes }) => {
+            Commands::Orchestrator(OrchestratorArgs { nodes, .. }) => {
                 assert_eq!(nodes, vec![
                     "localhost:9001".to_string(),
                     "localhost:9002".to_string(),
