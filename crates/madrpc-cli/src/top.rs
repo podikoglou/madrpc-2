@@ -32,6 +32,37 @@ use std::io;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 
+/// Guard to restore terminal state on drop (even during panic)
+struct TerminalGuard {
+    terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
+}
+
+impl TerminalGuard {
+    fn new(terminal: Terminal<CrosstermBackend<io::Stdout>>) -> Self {
+        Self {
+            terminal: Some(terminal),
+        }
+    }
+
+    fn mut_terminal(&mut self) -> &mut Terminal<CrosstermBackend<io::Stdout>> {
+        self.terminal.as_mut().expect("Terminal not available")
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if let Some(mut terminal) = self.terminal.take() {
+            let _ = disable_raw_mode();
+            let _ = execute!(
+                terminal.backend_mut(),
+                LeaveAlternateScreen,
+                DisableMouseCapture
+            );
+            let _ = terminal.show_cursor();
+        }
+    }
+}
+
 /// TUI application state
 struct TopApp {
     server_address: String,
@@ -445,7 +476,10 @@ pub async fn run_top(server_address: String, interval_ms: u64) -> Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let terminal = Terminal::new(backend)?;
+
+    // Use guard to ensure cleanup happens even on panic
+    let mut guard = TerminalGuard::new(terminal);
 
     // Create application
     let mut app = TopApp::new(server_address.clone(), interval_ms);
@@ -468,7 +502,7 @@ pub async fn run_top(server_address: String, interval_ms: u64) -> Result<()> {
         }
 
         // Draw UI
-        terminal.draw(|f| {
+        guard.mut_terminal().draw(|f| {
             app.draw(f);
         })?;
 
@@ -481,14 +515,7 @@ pub async fn run_top(server_address: String, interval_ms: u64) -> Result<()> {
         }
     }
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    // Terminal is automatically restored when guard is dropped
 
     Ok(())
 }
