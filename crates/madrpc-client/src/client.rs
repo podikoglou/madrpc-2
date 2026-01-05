@@ -1,6 +1,6 @@
 use madrpc_common::protocol::Request;
 use madrpc_common::protocol::error::{Result, MadrpcError};
-use madrpc_common::transport::QuicTransport;
+use madrpc_common::transport::TcpTransportAsync;
 use crate::pool::{ConnectionPool, PoolConfig};
 use serde_json::Value;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub struct MadrpcClient {
     orchestrator_addr: String,
     pool: Arc<ConnectionPool>,
-    transport: QuicTransport,
+    transport: TcpTransportAsync,
 }
 
 impl MadrpcClient {
@@ -25,7 +25,7 @@ impl MadrpcClient {
     ) -> Result<Self> {
         let orchestrator_addr = orchestrator_addr.into();
         let pool = Arc::new(ConnectionPool::new(config)?);
-        let transport = QuicTransport::new_client()?;
+        let transport = TcpTransportAsync::new()?;
 
         Ok(Self {
             orchestrator_addr,
@@ -46,7 +46,13 @@ impl MadrpcClient {
         let conn = self.pool.acquire(&self.orchestrator_addr).await?;
 
         // Send request via transport
-        let response = self.transport.send_request(&conn.connection, &request).await?;
+        // We need to lock the mutex to get mutable access to the stream
+        let mut stream = conn.stream.lock().await;
+
+        let response = self.transport.send_request(&mut stream, &request).await?;
+
+        // Release the lock before returning connection to pool
+        drop(stream);
 
         // Return connection to pool
         self.pool.release(conn).await;
@@ -69,7 +75,7 @@ impl Clone for MadrpcClient {
         Self {
             orchestrator_addr: self.orchestrator_addr.clone(),
             pool: Arc::clone(&self.pool),
-            transport: QuicTransport::new_client().unwrap(),
+            transport: TcpTransportAsync::new().unwrap(),
         }
     }
 }
@@ -83,9 +89,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_creation() {
-        // Install default crypto provider for rustls
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
         let client = MadrpcClient::new("localhost:8080").await;
         // Will create successfully even if server doesn't exist
         assert!(client.is_ok());
@@ -93,9 +96,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_with_custom_config() {
-        // Install default crypto provider for rustls
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
         let config = PoolConfig {
             max_connections: 5,
         };
@@ -105,9 +105,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_is_clonable() {
-        // Install default crypto provider for rustls
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
         let client = MadrpcClient::new("localhost:8080").await.unwrap();
         let client2 = client.clone();
         assert_eq!(client.orchestrator_addr, client2.orchestrator_addr);

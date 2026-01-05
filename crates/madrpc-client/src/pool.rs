@@ -1,14 +1,14 @@
-use madrpc_common::transport::QuicTransport;
-use quinn::Connection;
+use madrpc_common::transport::TcpTransportAsync;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use madrpc_common::protocol::error::Result;
 
 /// Pooled connection wrapper
 #[derive(Clone)]
 pub struct PooledConnection {
-    pub connection: Connection,
+    pub stream: Arc<Mutex<TcpStream>>,
     pub addr: String,
 }
 
@@ -27,9 +27,9 @@ impl Default for PoolConfig {
     }
 }
 
-/// Connection pool for QUIC connections
+/// Connection pool for TCP connections
 pub struct ConnectionPool {
-    transport: QuicTransport,
+    transport: TcpTransportAsync,
     inner: Arc<Mutex<PoolInner>>,
 }
 
@@ -42,7 +42,7 @@ struct PoolInner {
 impl ConnectionPool {
     /// Create a new connection pool
     pub fn new(config: PoolConfig) -> Result<Self> {
-        let transport = QuicTransport::new_client()?;
+        let transport = TcpTransportAsync::new()?;
 
         Ok(Self {
             transport,
@@ -81,9 +81,9 @@ impl ConnectionPool {
         }
 
         // No available connection - create new one (without holding lock)
-        let connection = self.transport.connect(addr).await?;
+        let stream = self.transport.connect(addr).await?;
         let pooled = PooledConnection {
-            connection,
+            stream: Arc::new(Mutex::new(stream)),
             addr: addr.to_string(),
         };
 
@@ -113,14 +113,11 @@ impl ConnectionPool {
 mod tests {
     use super::*;
 
-    // Note: Full integration tests require a running QUIC server
+    // Note: Full integration tests require a running TCP server
     // These are unit tests for the pool logic
 
     #[tokio::test]
     async fn test_pool_creation() {
-        // Install default crypto provider for rustls
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
         let pool = ConnectionPool::new(PoolConfig::default());
         assert!(pool.is_ok());
     }
@@ -133,9 +130,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_acquire_nonexistent_addr_fails() {
-        // Install default crypto provider for rustls
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
         let pool = ConnectionPool::new(PoolConfig::default()).unwrap();
         let result = pool.acquire("localhost:9999").await;
         // Will fail because no server is running
