@@ -3,22 +3,24 @@ use madrpc_common::protocol::error::{Result, MadrpcError};
 use crate::runtime::MadrpcContext;
 use madrpc_metrics::{MetricsCollector, NodeMetricsCollector};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// MaDRPC Node - runs Boa and executes JavaScript RPCs
+///
+/// Each request creates a fresh Boa Context to enable true parallelism.
+/// This is necessary because Boa Context has thread-local state and is
+/// not thread-safe.
 pub struct Node {
     script_path: PathBuf,
     metrics_collector: Arc<NodeMetricsCollector>,
-    context: Arc<Mutex<MadrpcContext>>,
 }
 
 impl Node {
     /// Create a new node with a JavaScript script
     ///
-    /// This creates a single Boa Context that will be reused across all requests.
-    /// Since the node is single-threaded (async), this is safe and provides
-    /// better performance than creating a fresh context for each request.
+    /// The script is validated on creation. Each request will create its own
+    /// Boa Context to enable true parallelism.
     pub fn new(script_path: PathBuf) -> Result<Self> {
         if !script_path.exists() {
             return Err(MadrpcError::InvalidRequest(format!(
@@ -27,24 +29,22 @@ impl Node {
             )));
         }
 
-        // Create a single Boa Context that will be reused
-        let ctx = MadrpcContext::new(&script_path)?;
-        tracing::info!("Boa context created and script loaded");
+        // Validate the script by creating a context once
+        let _ctx = MadrpcContext::new(&script_path)?;
+        tracing::info!("Script validated successfully");
 
         let metrics_collector = Arc::new(NodeMetricsCollector::new());
 
         Ok(Self {
             script_path,
             metrics_collector,
-            context: Arc::new(Mutex::new(ctx)),
         })
     }
 
-    /// Handle an incoming RPC request (synchronous)
+    /// Handle an incoming RPC request
     ///
-    /// Reuses the single Boa Context for all requests. Since the node is
-    /// single-threaded (async), this is safe and provides better performance
-    /// than creating a fresh context for each request.
+    /// Creates a fresh Boa Context for each request to enable true parallelism.
+    /// Multiple requests can execute concurrently on the same node.
     pub fn handle_request(&self, request: &Request) -> Result<Response> {
         tracing::debug!("Handling request for method: {}", request.method);
 
@@ -56,16 +56,15 @@ impl Node {
         let start_time = Instant::now();
         let method = request.method.clone();
 
-        // Lock and reuse the existing Boa context
-        tracing::debug!("Acquiring context lock...");
-        let ctx = self.context.lock().unwrap();
+        // Create a fresh Boa context for this request
+        // This enables true parallelism as each request has its own context
+        tracing::debug!("Creating fresh Boa context for request");
+        let ctx = MadrpcContext::new(&self.script_path)?;
 
         // Call the RPC function
         tracing::debug!("Calling RPC method: {}", method);
         let result = ctx.call_rpc(&method, request.args.clone());
         tracing::debug!("RPC call completed");
-
-        // Lock is released here when ctx goes out of scope
 
         match result {
             Ok(result) => {

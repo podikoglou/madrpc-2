@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}};
 
 /// Boa context wrapper with MaDRPC bindings
+///
+/// The Context is wrapped in Mutex for thread safety. Boa's Context
+/// is not thread-safe and must be accessed from a single thread.
 pub struct MadrpcContext {
-    ctx: Mutex<Option<Context>>,
-    script_path: String,
-    registered_functions: Vec<String>,
+    ctx: Mutex<Context>,
     client: Option<Arc<madrpc_client::MadrpcClient>>,
 }
 
@@ -18,14 +19,6 @@ pub struct MadrpcContext {
 unsafe impl Send for MadrpcContext {}
 unsafe impl Sync for MadrpcContext {}
 
-impl Drop for MadrpcContext {
-    fn drop(&mut self) {
-        // Explicitly drop the context first to avoid destructor issues
-        if let Ok(mut guard) = self.ctx.lock() {
-            let _ = guard.take();
-        }
-    }
-}
 
 impl MadrpcContext {
     /// Create a new Boa context with MaDRPC bindings
@@ -39,23 +32,20 @@ impl MadrpcContext {
         client: Option<madrpc_client::MadrpcClient>,
     ) -> Result<Self> {
         let mut ctx = Context::default();
-        let script_path = script_path.as_ref().to_string_lossy().to_string();
         let client = client.map(Arc::new);
 
         // Install madrpc bindings (native Rust functions)
         bindings::install_madrpc_bindings(&mut ctx)?;
 
         // Load and evaluate the script
-        let script = std::fs::read_to_string(&script_path)
+        let script = std::fs::read_to_string(script_path)
             .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to load script: {}", e)))?;
 
         ctx.eval(Source::from_bytes(&script))
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Script evaluation error: {}", e)))?;
 
         Ok(Self {
-            ctx: Mutex::new(Some(ctx)),
-            script_path,
-            registered_functions: Vec::new(),
+            ctx: Mutex::new(ctx),
             client,
         })
     }
@@ -63,8 +53,7 @@ impl MadrpcContext {
     /// Call a registered RPC function
     pub fn call_rpc(&self, method: &str, args: JsonValue) -> Result<JsonValue> {
         tracing::debug!("call_rpc: Locking context mutex...");
-        let mut ctx_opt = self.ctx.lock().unwrap();
-        let ctx = ctx_opt.as_mut().unwrap();
+        let mut ctx = self.ctx.lock().unwrap();
         tracing::debug!("call_rpc: Context locked");
 
         // Get madrpc object and registry
@@ -100,11 +89,6 @@ impl MadrpcContext {
 
         tracing::debug!("call_rpc: Converting result to JSON...");
         js_value_to_json(result, &mut *ctx)
-    }
-
-    /// Get list of registered function names
-    pub fn registered_functions(&self) -> &[String] {
-        &self.registered_functions
     }
 
     /// Make a distributed RPC call (callable from JavaScript via a callback)
