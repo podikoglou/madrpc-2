@@ -12,6 +12,7 @@ boa_engine = { path = "/tmp/boa/core/engine" }
 serde_json = "1.0"
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3.0"
