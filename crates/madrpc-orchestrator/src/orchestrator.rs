@@ -1,13 +1,12 @@
 use madrpc_common::protocol::{Request, Response};
 use madrpc_common::protocol::error::{Result, MadrpcError};
-use madrpc_common::transport::QuicTransport;
+use madrpc_common::transport::TcpTransportAsync;
 use madrpc_metrics::{MetricsCollector, OrchestratorMetricsCollector};
 use crate::load_balancer::LoadBalancer;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::RwLock;
-use quinn::Connection;
+use tokio::sync::{Mutex, RwLock};
 
 /// MaDRPC Orchestrator - "stupid" forwarder
 ///
@@ -18,8 +17,8 @@ use quinn::Connection;
 /// IMPORTANT: The orchestrator does NOT have a QuickJS engine. It only forwards.
 pub struct Orchestrator {
     load_balancer: Arc<RwLock<LoadBalancer>>,
-    node_connections: Arc<RwLock<HashMap<String, Connection>>>,
-    transport: QuicTransport,
+    node_connections: Arc<RwLock<HashMap<String, Arc<Mutex<tokio::net::TcpStream>>>>>,
+    transport: TcpTransportAsync,
     metrics_collector: Arc<OrchestratorMetricsCollector>,
 }
 
@@ -28,7 +27,7 @@ impl Orchestrator {
     pub async fn new(node_addrs: Vec<String>) -> Result<Self> {
         let load_balancer = Arc::new(RwLock::new(LoadBalancer::new(node_addrs)));
         let node_connections = Arc::new(RwLock::new(HashMap::new()));
-        let transport = QuicTransport::new_client()?;
+        let transport = TcpTransportAsync::new()?;
 
         // Initialize metrics
         let metrics_collector = Arc::new(OrchestratorMetricsCollector::new());
@@ -72,7 +71,11 @@ impl Orchestrator {
         let conn = self.get_node_connection(&node_addr).await?;
 
         // Forward request
-        let response = self.transport.send_request(&conn, request).await?;
+        // Note: We need to lock the mutex to get mutable access to the stream
+        let response = {
+            let mut stream = conn.lock().await;
+            self.transport.send_request(&mut stream, request).await?
+        };
 
         // Record metrics based on response
         let success = response.success;
@@ -84,22 +87,25 @@ impl Orchestrator {
     /// Get or create a connection to a node
     ///
     /// This method caches connections in a HashMap for reuse.
-    /// If a connection exists and is still valid, it returns the cached connection.
+    /// If a connection exists, it returns the cached connection.
     /// Otherwise, it creates a new connection and caches it.
-    async fn get_node_connection(&self, node_addr: &str) -> Result<Connection> {
+    async fn get_node_connection(&self, node_addr: &str) -> Result<Arc<Mutex<tokio::net::TcpStream>>> {
         // Check if we have an existing connection
         {
             let conns = self.node_connections.read().await;
             if let Some(conn) = conns.get(node_addr) {
-                // Check if connection is still valid
-                if conn.close_reason().is_none() {
-                    return Ok(conn.clone());
-                }
+                // For TCP, we can't easily check if the connection is still valid
+                // without trying to use it. We'll just return the cached connection
+                // and handle errors during send_request.
+                return Ok(conn.clone());
             }
         }
 
         // Create new connection
-        let conn = self.transport.connect(node_addr).await?;
+        let stream = self.transport.connect(node_addr).await?;
+
+        // Wrap it in Arc<Mutex<>> for shared mutable access
+        let conn = Arc::new(Mutex::new(stream));
 
         // Cache it
         let mut conns = self.node_connections.write().await;
@@ -116,16 +122,17 @@ impl Orchestrator {
 
     /// Remove a node from the load balancer
     ///
-    /// This also closes and removes the cached connection to the node.
+    /// This also removes the cached connection to the node.
+    /// Note: TCP connections will be closed when the Arc<Mutex<TcpStream>> is dropped.
     pub async fn remove_node(&self, node_addr: &str) {
         let mut lb = self.load_balancer.write().await;
         lb.remove_node(node_addr);
 
-        // Also close and remove connection
+        // Also remove connection
         let mut conns = self.node_connections.write().await;
-        if let Some(conn) = conns.remove(node_addr) {
-            conn.close(0u32.into(), &[0]);
-        }
+        conns.remove(node_addr);
+        // The TCP connection will be automatically closed when the Arc<Mutex<TcpStream>>
+        // is dropped (there are no more references to it)
     }
 
     /// Get the number of nodes
@@ -148,13 +155,8 @@ mod tests {
     // Note: Full tests require running nodes
     // These are basic unit tests
 
-    fn setup_crypto() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
-
     #[tokio::test]
     async fn test_orchestrator_creation() {
-        setup_crypto();
         let nodes = vec![
             "localhost:9001".to_string(),
             "localhost:9002".to_string(),
@@ -165,7 +167,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_node_count() {
-        setup_crypto();
         let nodes = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let orch = Orchestrator::new(nodes).await.unwrap();
         assert_eq!(orch.node_count().await, 3);
@@ -173,7 +174,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_add_node() {
-        setup_crypto();
         let orch = Orchestrator::new(vec![]).await.unwrap();
         orch.add_node("new-node".to_string()).await;
         assert_eq!(orch.node_count().await, 1);
@@ -181,7 +181,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_remove_node() {
-        setup_crypto();
         let orch = Orchestrator::new(vec!["node1".to_string()]).await.unwrap();
         orch.remove_node("node1").await;
         assert_eq!(orch.node_count().await, 0);
@@ -189,7 +188,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_nodes() {
-        setup_crypto();
         let nodes = vec![
             "node1".to_string(),
             "node2".to_string(),
@@ -200,7 +198,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_add_duplicate_node() {
-        setup_crypto();
         let orch = Orchestrator::new(vec!["node1".to_string()]).await.unwrap();
         orch.add_node("node1".to_string()).await;
         // duplicate should not be added
@@ -209,7 +206,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_empty_nodes() {
-        setup_crypto();
         let orch = Orchestrator::new(vec![]).await.unwrap();
         assert_eq!(orch.node_count().await, 0);
         assert_eq!(orch.nodes().await, Vec::<String>::new());

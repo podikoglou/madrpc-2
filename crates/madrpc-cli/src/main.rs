@@ -73,30 +73,26 @@ async fn main() -> Result<()> {
             tracing::info!("Starting MaDRPC node with script: {}", args.script);
             tracing::info!("Binding to: {}", args.bind);
 
-            // Determine pool size (use CLI flag or default to num_cpus)
-            let pool_size = args.pool_size.unwrap_or_else(num_cpus::get);
-            tracing::info!("Context pool size: {}", pool_size);
+            // Determine max threads (use CLI flag or default to num_cpus * 2)
+            let max_threads = args.pool_size.unwrap_or_else(|| num_cpus::get() * 2);
+            tracing::info!("Max worker threads: {}", max_threads);
 
-            // Create the node with specified pool size
-            let node = madrpc_server::Node::with_pool_size(
+            // Create the node with thread limit
+            let node = madrpc_server::Node::with_thread_limit(
                 std::path::PathBuf::from(&args.script),
-                pool_size
-            ).await?;
+                max_threads
+            )?;
             tracing::info!("Node created successfully from script");
 
-            // Create QUIC server
-            let server = madrpc_common::transport::QuicServer::new(&args.bind)?;
+            // Create TCP threaded server
+            let server = madrpc_common::transport::tcp_server::TcpServerThreaded::new(&args.bind, max_threads)?;
             let actual_addr = server.local_addr()?;
-            tracing::info!("QUIC server listening on {}", actual_addr);
+            tracing::info!("TCP server listening on {}", actual_addr);
 
-            // Run server with node handler
-            let node_ref = std::sync::Arc::new(node);
+            // Run server with node handler (synchronous)
             server.run_with_handler(move |request| {
-                let node = node_ref.clone();
-                async move {
-                    node.handle_request(&request).await
-                }
-            }).await?;
+                node.handle_request(&request)
+            })?;
 
             Ok(())
         }
@@ -112,12 +108,12 @@ async fn main() -> Result<()> {
             let orch = madrpc_orchestrator::Orchestrator::new(args.nodes).await?;
             tracing::info!("Orchestrator created with {} nodes", orch.node_count().await);
 
-            // Create QUIC server
-            let server = madrpc_common::transport::QuicServer::new(&args.bind)?;
+            // Create TCP async server
+            let server = madrpc_common::transport::tcp_server::TcpServer::new(&args.bind).await?;
             let actual_addr = server.local_addr()?;
-            tracing::info!("QUIC server listening on {}", actual_addr);
+            tracing::info!("TCP server listening on {}", actual_addr);
 
-            // Run server with orchestrator handler
+            // Run server with orchestrator handler (async)
             let orch_ref = std::sync::Arc::new(orch);
             server.run_with_handler(move |request| {
                 let orch = orch_ref.clone();
