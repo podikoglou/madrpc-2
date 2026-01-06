@@ -395,8 +395,8 @@ impl TopApp {
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
         let rows: Vec<Row> = node_vec
             .iter()
