@@ -302,7 +302,9 @@ mod tests {
     async fn test_orchestrator_nodes() {
         let nodes = vec!["node1".to_string(), "node2".to_string()];
         let orch = Orchestrator::new(nodes.clone()).await.unwrap();
-        assert_eq!(orch.nodes().await, nodes);
+        let mut result = orch.nodes().await;
+        result.sort(); // HashMap doesn't guarantee order
+        assert_eq!(result, nodes);
     }
 
     #[tokio::test]

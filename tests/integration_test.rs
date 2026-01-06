@@ -139,7 +139,9 @@ async fn test_load_balancer_add_node() {
     let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
     lb.add_node("node2".to_string());
     assert_eq!(lb.node_count(), 2);
-    assert_eq!(lb.nodes(), vec!["node1".to_string(), "node2".to_string()]);
+    let mut nodes = lb.nodes();
+    nodes.sort(); // HashMap doesn't guarantee order
+    assert_eq!(nodes, vec!["node1".to_string(), "node2".to_string()]);
 }
 
 #[tokio::test]
@@ -158,14 +160,18 @@ async fn test_load_balancer_remove_node() {
     ]);
     lb.remove_node("node2");
     assert_eq!(lb.node_count(), 2);
-    assert_eq!(lb.nodes(), vec!["node1".to_string(), "node3".to_string()]);
+    let mut nodes = lb.nodes();
+    nodes.sort(); // HashMap doesn't guarantee order
+    assert_eq!(nodes, vec!["node1".to_string(), "node3".to_string()]);
 }
 
 #[tokio::test]
 async fn test_load_balancer_get_nodes() {
     let nodes = vec!["first".to_string(), "second".to_string()];
     let lb = LoadBalancer::new(nodes.clone());
-    assert_eq!(lb.nodes(), nodes);
+    let mut result = lb.nodes();
+    result.sort(); // HashMap doesn't guarantee order
+    assert_eq!(result, nodes);
 }
 
 // ============================================================================
@@ -214,7 +220,9 @@ async fn test_orchestrator_get_nodes() {
         "node2".to_string(),
     ];
     let orch = Orchestrator::new(nodes.clone()).await.unwrap();
-    assert_eq!(orch.nodes().await, nodes);
+    let mut result = orch.nodes().await;
+    result.sort(); // HashMap doesn't guarantee order
+    assert_eq!(result, nodes);
 }
 
 #[tokio::test]

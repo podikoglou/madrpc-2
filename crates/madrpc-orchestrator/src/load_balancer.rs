@@ -1,46 +1,48 @@
 use crate::node::{DisableReason, HealthCheckStatus, Node};
+use std::collections::HashMap;
 
 /// Round-robin load balancer for nodes
 pub struct LoadBalancer {
-    nodes: Vec<Node>,
+    /// All nodes indexed by address for O(1) lookups
+    nodes: HashMap<String, Node>,
+    /// Enabled node addresses for O(1) round-robin iteration
+    enabled_nodes: Vec<String>,
+    /// Current index in round-robin iteration
     round_robin_index: usize,
 }
 
 impl LoadBalancer {
     /// Create a new load balancer with a static node list
     pub fn new(node_addrs: Vec<String>) -> Self {
-        let nodes = node_addrs.into_iter().map(Node::new).collect();
+        let enabled_nodes = node_addrs.clone();
+        let nodes = node_addrs.into_iter().map(|addr| (addr.clone(), Node::new(addr))).collect();
         Self {
             nodes,
+            enabled_nodes,
             round_robin_index: 0,
         }
     }
 
     /// Get the next ENABLED node using round-robin
     pub fn next_node(&mut self) -> Option<String> {
-        if self.nodes.is_empty() {
+        if self.enabled_nodes.is_empty() {
             return None;
         }
 
-        // Use index-based round-robin instead of mutating the deque
-        let len = self.nodes.len();
-        for _ in 0..len {
-            let idx = self.round_robin_index % len;
-            self.round_robin_index = self.round_robin_index.wrapping_add(1) % len;
-
-            if self.nodes[idx].enabled {
-                return Some(self.nodes[idx].addr.clone());
-            }
-        }
-
-        None // All nodes disabled
+        // O(1) round-robin over enabled nodes
+        let idx = self.round_robin_index % self.enabled_nodes.len();
+        self.round_robin_index = self.round_robin_index.wrapping_add(1) % self.enabled_nodes.len();
+        Some(self.enabled_nodes[idx].clone())
     }
 
     /// Manually disable a node (indefinite)
     pub fn disable_node(&mut self, addr: &str) -> bool {
-        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+        // O(1) HashMap lookup
+        if let Some(node) = self.nodes.get_mut(addr) {
             node.enabled = false;
             node.disable_reason = Some(DisableReason::Manual);
+            // O(N) removal from enabled_nodes vec, but this is infrequent
+            self.enabled_nodes.retain(|a| a != addr);
             true
         } else {
             false
@@ -49,10 +51,15 @@ impl LoadBalancer {
 
     /// Manually enable a node
     pub fn enable_node(&mut self, addr: &str) -> bool {
-        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+        // O(1) HashMap lookup
+        if let Some(node) = self.nodes.get_mut(addr) {
             node.enabled = true;
             node.disable_reason = None;
             node.consecutive_failures = 0;
+            // Add to enabled_nodes if not already present
+            if !self.enabled_nodes.contains(&addr.to_string()) {
+                self.enabled_nodes.push(addr.to_string());
+            }
             true
         } else {
             false
@@ -61,11 +68,14 @@ impl LoadBalancer {
 
     /// Auto-disable a node due to health check failure
     pub fn auto_disable_node(&mut self, addr: &str) -> bool {
-        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+        // O(1) HashMap lookup
+        if let Some(node) = self.nodes.get_mut(addr) {
             // Only auto-disable if not manually disabled
             if node.disable_reason != Some(DisableReason::Manual) {
                 node.enabled = false;
                 node.disable_reason = Some(DisableReason::HealthCheck);
+                // Remove from enabled_nodes
+                self.enabled_nodes.retain(|a| a != addr);
                 true
             } else {
                 false
@@ -77,11 +87,16 @@ impl LoadBalancer {
 
     /// Auto-enable a node that recovered (only if it was auto-disabled)
     pub fn auto_enable_node(&mut self, addr: &str) -> bool {
-        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+        // O(1) HashMap lookup
+        if let Some(node) = self.nodes.get_mut(addr) {
             if node.disable_reason == Some(DisableReason::HealthCheck) {
                 node.enabled = true;
                 node.disable_reason = None;
                 node.consecutive_failures = 0;
+                // Add to enabled_nodes if not already present
+                if !self.enabled_nodes.contains(&addr.to_string()) {
+                    self.enabled_nodes.push(addr.to_string());
+                }
                 true
             } else {
                 false
@@ -93,7 +108,8 @@ impl LoadBalancer {
 
     /// Update health check status for a node
     pub fn update_health_status(&mut self, addr: &str, status: HealthCheckStatus) {
-        if let Some(node) = self.nodes.iter_mut().find(|n| n.addr == addr) {
+        // O(1) HashMap lookup
+        if let Some(node) = self.nodes.get_mut(addr) {
             node.last_health_check = Some(std::time::Instant::now());
             node.last_health_check_status = Some(status.clone());
 
@@ -110,46 +126,50 @@ impl LoadBalancer {
 
     /// Get consecutive failures for a node
     pub fn consecutive_failures(&self, addr: &str) -> u32 {
+        // O(1) HashMap lookup
         self.nodes
-            .iter()
-            .find(|n| n.addr == addr)
+            .get(addr)
             .map(|n| n.consecutive_failures)
             .unwrap_or(0)
     }
 
     /// Get all nodes (including disabled ones)
     pub fn all_nodes(&self) -> Vec<Node> {
-        self.nodes.iter().cloned().collect()
+        self.nodes.values().cloned().collect()
     }
 
     /// Get enabled nodes only
     pub fn enabled_nodes(&self) -> Vec<String> {
-        self.nodes
-            .iter()
-            .filter(|n| n.enabled)
-            .map(|n| n.addr.clone())
-            .collect()
+        // O(1) - just clone the enabled_nodes vec
+        self.enabled_nodes.clone()
     }
 
     /// Get disabled nodes only
     pub fn disabled_nodes(&self) -> Vec<String> {
+        // O(N) but this is only used for display purposes
         self.nodes
             .iter()
-            .filter(|n| !n.enabled)
-            .map(|n| n.addr.clone())
+            .filter(|(_, n)| !n.enabled)
+            .map(|(addr, _)| addr.clone())
             .collect()
     }
 
     /// Add a node to the pool
     pub fn add_node(&mut self, node_addr: String) {
-        if !self.nodes.iter().any(|n| n.addr == node_addr) {
-            self.nodes.push(Node::new(node_addr));
+        // O(1) HashMap contains check
+        if !self.nodes.contains_key(&node_addr) {
+            self.nodes.insert(node_addr.clone(), Node::new(node_addr.clone()));
+            // New nodes are enabled by default
+            self.enabled_nodes.push(node_addr);
         }
     }
 
     /// Remove a node from the pool
     pub fn remove_node(&mut self, node_addr: &str) {
-        self.nodes.retain(|n| n.addr != node_addr);
+        // O(1) HashMap remove
+        self.nodes.remove(node_addr);
+        // Also remove from enabled_nodes
+        self.enabled_nodes.retain(|a| a != node_addr);
     }
 
     /// Get the number of nodes
@@ -159,12 +179,14 @@ impl LoadBalancer {
 
     /// Get the number of enabled nodes
     pub fn enabled_count(&self) -> usize {
-        self.nodes.iter().filter(|n| n.enabled).count()
+        // O(1) - just return the length of enabled_nodes
+        self.enabled_nodes.len()
     }
 
     /// Get list of all node addresses (backward compatibility)
     pub fn nodes(&self) -> Vec<String> {
-        self.nodes.iter().map(|n| n.addr.clone()).collect()
+        // O(N) but this is only used for display
+        self.nodes.keys().cloned().collect()
     }
 }
 
@@ -228,14 +250,18 @@ mod tests {
         ]);
         lb.remove_node("node2");
         assert_eq!(lb.node_count(), 2);
-        assert_eq!(lb.nodes(), vec!["node1".to_string(), "node3".to_string()]);
+        let mut nodes = lb.nodes();
+        nodes.sort(); // HashMap doesn't guarantee order
+        assert_eq!(nodes, vec!["node1".to_string(), "node3".to_string()]);
     }
 
     #[test]
     fn test_get_nodes() {
         let nodes = vec!["a".to_string(), "b".to_string()];
         let lb = LoadBalancer::new(nodes.clone());
-        assert_eq!(lb.nodes(), nodes);
+        let mut result = lb.nodes();
+        result.sort(); // HashMap doesn't guarantee order
+        assert_eq!(result, nodes);
     }
 
     #[test]
