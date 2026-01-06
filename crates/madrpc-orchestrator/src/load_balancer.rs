@@ -1,7 +1,7 @@
 use crate::node::{CircuitBreakerConfig, CircuitBreakerState, DisableReason, HealthCheckStatus, Node};
 use std::collections::HashMap;
 
-/// Round-robin load balancer for nodes with circuit breaker
+/// Round-robin load balancer for nodes with circuit breaker.
 pub struct LoadBalancer {
     /// All nodes indexed by address for O(1) lookups
     nodes: HashMap<String, Node>,
@@ -14,7 +14,10 @@ pub struct LoadBalancer {
 }
 
 impl LoadBalancer {
-    /// Create a new load balancer with a static node list
+    /// Creates a new load balancer with a static node list.
+    ///
+    /// # Arguments
+    /// * `node_addrs` - List of node addresses
     pub fn new(node_addrs: Vec<String>) -> Self {
         let enabled_nodes = node_addrs.clone();
         let nodes = node_addrs.into_iter().map(|addr| (addr.clone(), Node::new(addr))).collect();
@@ -26,7 +29,11 @@ impl LoadBalancer {
         }
     }
 
-    /// Create a new load balancer with custom circuit breaker config
+    /// Creates a new load balancer with custom circuit breaker config.
+    ///
+    /// # Arguments
+    /// * `node_addrs` - List of node addresses
+    /// * `circuit_config` - Circuit breaker configuration
     pub fn with_config(node_addrs: Vec<String>, circuit_config: CircuitBreakerConfig) -> Self {
         let enabled_nodes = node_addrs.clone();
         let nodes = node_addrs.into_iter().map(|addr| (addr.clone(), Node::new(addr))).collect();
@@ -38,7 +45,7 @@ impl LoadBalancer {
         }
     }
 
-    /// Get the next ENABLED node using round-robin, skipping nodes with open circuits
+    /// Gets the next ENABLED node using round-robin, skipping nodes with open circuits.
     pub fn next_node(&mut self) -> Option<String> {
         if self.enabled_nodes.is_empty() {
             return None;
@@ -61,7 +68,13 @@ impl LoadBalancer {
         None
     }
 
-    /// Manually disable a node (indefinite)
+    /// Manually disables a node (indefinite).
+    ///
+    /// # Arguments
+    /// * `addr` - The node address to disable
+    ///
+    /// # Returns
+    /// true if the node was disabled, false if not found
     pub fn disable_node(&mut self, addr: &str) -> bool {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -75,7 +88,13 @@ impl LoadBalancer {
         }
     }
 
-    /// Manually enable a node
+    /// Manually enables a node.
+    ///
+    /// # Arguments
+    /// * `addr` - The node address to enable
+    ///
+    /// # Returns
+    /// true if the node was enabled, false if not found
     pub fn enable_node(&mut self, addr: &str) -> bool {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -92,7 +111,13 @@ impl LoadBalancer {
         }
     }
 
-    /// Auto-disable a node due to health check failure
+    /// Auto-disables a node due to health check failure.
+    ///
+    /// # Arguments
+    /// * `addr` - The node address to disable
+    ///
+    /// # Returns
+    /// true if the node was disabled, false if it was manually disabled or not found
     pub fn auto_disable_node(&mut self, addr: &str) -> bool {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -111,7 +136,13 @@ impl LoadBalancer {
         }
     }
 
-    /// Auto-enable a node that recovered (only if it was auto-disabled)
+    /// Auto-enables a node that recovered (only if it was auto-disabled).
+    ///
+    /// # Arguments
+    /// * `addr` - The node address to enable
+    ///
+    /// # Returns
+    /// true if the node was enabled, false if it was manually disabled or not found
     pub fn auto_enable_node(&mut self, addr: &str) -> bool {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -132,7 +163,11 @@ impl LoadBalancer {
         }
     }
 
-    /// Update health check status for a node with circuit breaker logic
+    /// Updates health check status for a node with circuit breaker logic.
+    ///
+    /// # Arguments
+    /// * `addr` - The node address
+    /// * `status` - The health check status
     pub fn update_health_status(&mut self, addr: &str, status: HealthCheckStatus) {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -173,8 +208,10 @@ impl LoadBalancer {
         }
     }
 
-    /// Check and update circuit breaker state for timeout transitions
-    /// Returns true if any node transitioned from Open to HalfOpen
+    /// Checks and updates circuit breaker state for timeout transitions.
+    ///
+    /// # Returns
+    /// true if any node transitioned from Open to HalfOpen
     pub fn check_circuit_timeouts(&mut self) -> bool {
         let mut any_transitioned = false;
 
@@ -188,12 +225,15 @@ impl LoadBalancer {
         any_transitioned
     }
 
-    /// Get circuit breaker state for a node
+    /// Gets circuit breaker state for a node.
+    ///
+    /// # Arguments
+    /// * `addr` - The node address
     pub fn circuit_state(&self, addr: &str) -> Option<CircuitBreakerState> {
         self.nodes.get(addr).map(|n| n.circuit_state)
     }
 
-    /// Get all nodes with open circuits
+    /// Gets all nodes with open circuits.
     pub fn open_circuit_nodes(&self) -> Vec<String> {
         self.nodes
             .iter()
@@ -202,7 +242,7 @@ impl LoadBalancer {
             .collect()
     }
 
-    /// Get all nodes with half-open circuits
+    /// Gets all nodes with half-open circuits.
     pub fn half_open_circuit_nodes(&self) -> Vec<String> {
         self.nodes
             .iter()
@@ -211,7 +251,10 @@ impl LoadBalancer {
             .collect()
     }
 
-    /// Get consecutive failures for a node
+    /// Gets consecutive failures for a node.
+    ///
+    /// # Arguments
+    /// * `addr` - The node address
     pub fn consecutive_failures(&self, addr: &str) -> u32 {
         // O(1) HashMap lookup
         self.nodes
@@ -220,18 +263,18 @@ impl LoadBalancer {
             .unwrap_or(0)
     }
 
-    /// Get all nodes (including disabled ones)
+    /// Gets all nodes (including disabled ones).
     pub fn all_nodes(&self) -> Vec<Node> {
         self.nodes.values().cloned().collect()
     }
 
-    /// Get enabled nodes only
+    /// Gets enabled nodes only.
     pub fn enabled_nodes(&self) -> Vec<String> {
         // O(1) - just clone the enabled_nodes vec
         self.enabled_nodes.clone()
     }
 
-    /// Get disabled nodes only
+    /// Gets disabled nodes only.
     pub fn disabled_nodes(&self) -> Vec<String> {
         // O(N) but this is only used for display purposes
         self.nodes
@@ -241,7 +284,10 @@ impl LoadBalancer {
             .collect()
     }
 
-    /// Add a node to the pool
+    /// Adds a node to the pool.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address to add
     pub fn add_node(&mut self, node_addr: String) {
         // O(1) HashMap contains check
         if !self.nodes.contains_key(&node_addr) {
@@ -251,7 +297,10 @@ impl LoadBalancer {
         }
     }
 
-    /// Remove a node from the pool
+    /// Removes a node from the pool.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address to remove
     pub fn remove_node(&mut self, node_addr: &str) {
         // O(1) HashMap remove
         self.nodes.remove(node_addr);
@@ -259,18 +308,18 @@ impl LoadBalancer {
         self.enabled_nodes.retain(|a| a != node_addr);
     }
 
-    /// Get the number of nodes
+    /// Gets the number of nodes.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    /// Get the number of enabled nodes
+    /// Gets the number of enabled nodes.
     pub fn enabled_count(&self) -> usize {
         // O(1) - just return the length of enabled_nodes
         self.enabled_nodes.len()
     }
 
-    /// Get list of all node addresses (backward compatibility)
+    /// Gets list of all node addresses (backward compatibility).
     pub fn nodes(&self) -> Vec<String> {
         // O(N) but this is only used for display
         self.nodes.keys().cloned().collect()

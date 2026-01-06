@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use crate::load_balancer::LoadBalancer;
 use crate::node::{DisableReason, HealthCheckStatus, Node};
 
-/// Batched health check update to apply atomically
+/// Batched health check update to apply atomically.
 pub struct HealthCheckUpdate {
     pub node_addr: String,
     pub status: HealthCheckStatus,
@@ -17,7 +17,7 @@ pub struct HealthCheckUpdate {
     pub should_disable: bool,
 }
 
-/// Health check configuration
+/// Health check configuration.
 #[derive(Debug, Clone)]
 pub struct HealthCheckConfig {
     pub interval: Duration,
@@ -35,7 +35,7 @@ impl Default for HealthCheckConfig {
     }
 }
 
-/// Health checker for nodes
+/// Health checker for nodes.
 pub struct HealthChecker {
     load_balancer: Arc<RwLock<LoadBalancer>>,
     transport: TcpTransportAsync,
@@ -43,6 +43,11 @@ pub struct HealthChecker {
 }
 
 impl HealthChecker {
+    /// Creates a new health checker.
+    ///
+    /// # Arguments
+    /// * `load_balancer` - The load balancer to check nodes for
+    /// * `config` - Health check configuration
     pub fn new(
         load_balancer: Arc<RwLock<LoadBalancer>>,
         config: HealthCheckConfig,
@@ -55,7 +60,7 @@ impl HealthChecker {
         })
     }
 
-    /// Start the health checker task
+    /// Starts the health checker task.
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             self.run().await;

@@ -1,3 +1,8 @@
+//! MaDRPC Orchestrator
+//!
+//! This crate provides the orchestrator (load balancer) that forwards requests
+//! to compute nodes using round-robin selection with circuit breaker and health checking.
+
 pub mod load_balancer;
 pub mod node;
 pub mod health_checker;

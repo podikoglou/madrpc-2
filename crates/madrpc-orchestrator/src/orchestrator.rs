@@ -10,12 +10,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::info;
 
-/// Configuration for retry logic with exponential backoff
+/// Configuration for retry logic with exponential backoff.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
+    /// Maximum number of retry attempts
     pub max_retries: usize,
+    /// Initial backoff in milliseconds
     pub initial_backoff_ms: u64,
+    /// Maximum backoff in milliseconds
     pub max_backoff_ms: u64,
+    /// Exponential backoff multiplier
     pub backoff_multiplier: f64,
 }
 
@@ -30,7 +34,7 @@ impl Default for RetryConfig {
     }
 }
 
-/// MaDRPC Orchestrator - "stupid" forwarder
+/// MaDRPC Orchestrator - "stupid" forwarder.
 ///
 /// The orchestrator receives requests from clients, uses the load balancer
 /// to pick a node, forwards the request to that node, and returns the
@@ -50,7 +54,10 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    /// Create a new orchestrator with static node list and default configs
+    /// Creates a new orchestrator with static node list and default configs.
+    ///
+    /// # Arguments
+    /// * `node_addrs` - List of node addresses
     pub async fn new(node_addrs: Vec<String>) -> Result<Self> {
         Self::with_retry_config(
             node_addrs,
@@ -59,7 +66,11 @@ impl Orchestrator {
         ).await
     }
 
-    /// Create a new orchestrator with static node list and custom health check config
+    /// Creates a new orchestrator with static node list and custom health check config.
+    ///
+    /// # Arguments
+    /// * `node_addrs` - List of node addresses
+    /// * `health_config` - Health check configuration
     pub async fn with_config(
         node_addrs: Vec<String>,
         health_config: HealthCheckConfig,
@@ -71,7 +82,12 @@ impl Orchestrator {
         ).await
     }
 
-    /// Create a new orchestrator with static node list and custom configs
+    /// Creates a new orchestrator with static node list and custom configs.
+    ///
+    /// # Arguments
+    /// * `node_addrs` - List of node addresses
+    /// * `health_config` - Health check configuration
+    /// * `retry_config` - Retry configuration
     pub async fn with_retry_config(
         node_addrs: Vec<String>,
         health_config: HealthCheckConfig,
@@ -98,7 +114,7 @@ impl Orchestrator {
         })
     }
 
-    /// Forward a request to the next available node
+    /// Forwards a request to the next available node.
     ///
     /// This method:
     /// 1. Gets the next node via round-robin from the load balancer
@@ -112,6 +128,9 @@ impl Orchestrator {
     ///
     /// Retry logic: If a request fails due to connection issues or node unavailability,
     /// the orchestrator will retry with exponential backoff up to max_retries times.
+    ///
+    /// # Arguments
+    /// * `request` - The request to forward
     pub async fn forward_request(&self, request: &Request) -> Result<Response> {
         // Check for metrics/info requests (do NOT forward these)
         if self
@@ -197,32 +216,44 @@ impl Orchestrator {
         unreachable!("Retry loop should always return or error")
     }
 
-    /// Check if an error is retryable
+    /// Checks if an error is retryable.
     fn is_retryable(&self, error: &MadrpcError) -> bool {
         Self::is_retryable_static(error)
     }
 
-    /// Static method to check if an error is retryable (for testing)
+    /// Static method to check if an error is retryable (for testing).
     pub fn is_retryable_static(error: &MadrpcError) -> bool {
         matches!(error, MadrpcError::AllNodesFailed | MadrpcError::NodeUnavailable(_))
     }
 
-    /// Add a node to the load balancer
+    /// Adds a node to the load balancer.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address to add
     pub async fn add_node(&self, node_addr: String) {
         let mut lb = self.load_balancer.write().await;
         lb.add_node(node_addr);
     }
 
-    /// Remove a node from the load balancer
+    /// Removes a node from the load balancer.
     ///
     /// Note: Active connections to this node will complete and close naturally.
     /// New requests will no longer be forwarded to this node.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address to remove
     pub async fn remove_node(&self, node_addr: &str) {
         let mut lb = self.load_balancer.write().await;
         lb.remove_node(node_addr);
     }
 
-    /// Manually disable a node
+    /// Manually disables a node.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address to disable
+    ///
+    /// # Returns
+    /// true if the node was disabled, false if it wasn't found
     pub async fn disable_node(&self, node_addr: &str) -> bool {
         let mut lb = self.load_balancer.write().await;
         let disabled = lb.disable_node(node_addr);
@@ -232,7 +263,13 @@ impl Orchestrator {
         disabled
     }
 
-    /// Manually enable a node
+    /// Manually enables a node.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address to enable
+    ///
+    /// # Returns
+    /// true if the node was enabled, false if it wasn't found
     pub async fn enable_node(&self, node_addr: &str) -> bool {
         let mut lb = self.load_balancer.write().await;
         let enabled = lb.enable_node(node_addr);
@@ -242,19 +279,19 @@ impl Orchestrator {
         enabled
     }
 
-    /// Get all nodes with their status
+    /// Gets all nodes with their status.
     pub async fn nodes_with_status(&self) -> Vec<Node> {
         let lb = self.load_balancer.read().await;
         lb.all_nodes()
     }
 
-    /// Get the number of nodes
+    /// Gets the number of nodes.
     pub async fn node_count(&self) -> usize {
         let lb = self.load_balancer.read().await;
         lb.node_count()
     }
 
-    /// Get list of all nodes
+    /// Gets list of all nodes.
     pub async fn nodes(&self) -> Vec<String> {
         let lb = self.load_balancer.read().await;
         lb.nodes()

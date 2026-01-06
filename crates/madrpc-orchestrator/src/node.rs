@@ -1,6 +1,6 @@
 use std::time::{Instant, SystemTime};
 
-/// Reason why a node is disabled
+/// Reason why a node is disabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisableReason {
     /// Manually disabled by user - should never be auto-re-enabled
@@ -9,14 +9,14 @@ pub enum DisableReason {
     HealthCheck,
 }
 
-/// Result of a health check
+/// Result of a health check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HealthCheckStatus {
     Healthy,
     Unhealthy(String),
 }
 
-/// Circuit breaker state for each node
+/// Circuit breaker state for each node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitBreakerState {
     /// Normal operation, requests flow through
@@ -27,7 +27,7 @@ pub enum CircuitBreakerState {
     HalfOpen,
 }
 
-/// Circuit breaker configuration
+/// Circuit breaker configuration.
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerConfig {
     /// Number of consecutive failures before tripping the circuit
@@ -52,7 +52,10 @@ impl Default for CircuitBreakerConfig {
 }
 
 impl CircuitBreakerConfig {
-    /// Calculate timeout with exponential backoff based on consecutive failures
+    /// Calculates timeout with exponential backoff based on consecutive failures.
+    ///
+    /// # Arguments
+    /// * `consecutive_failures` - Number of consecutive failures
     pub fn calculate_timeout(&self, consecutive_failures: u32) -> std::time::Duration {
         let base_ms = self.base_timeout_secs * 1000;
         let multiplier = self.backoff_multiplier.powi(consecutive_failures as i32 - 1);
@@ -62,7 +65,7 @@ impl CircuitBreakerConfig {
     }
 }
 
-/// A node in the load balancer with its state
+/// A node in the load balancer with its state.
 #[derive(Debug, Clone)]
 pub struct Node {
     pub addr: String,
@@ -78,6 +81,10 @@ pub struct Node {
 }
 
 impl Node {
+    /// Creates a new node with default state.
+    ///
+    /// # Arguments
+    /// * `addr` - The node address
     pub fn new(addr: String) -> Self {
         Self {
             addr,
@@ -91,7 +98,10 @@ impl Node {
         }
     }
 
-    /// Check if the circuit should transition to half-open based on timeout
+    /// Checks if the circuit should transition to half-open based on timeout.
+    ///
+    /// # Arguments
+    /// * `config` - The circuit breaker configuration
     pub fn should_attempt_half_open(&self, config: &CircuitBreakerConfig) -> bool {
         if self.circuit_state != CircuitBreakerState::Open {
             return false;
@@ -108,7 +118,10 @@ impl Node {
         }
     }
 
-    /// Transition circuit breaker state
+    /// Transitions circuit breaker state.
+    ///
+    /// # Arguments
+    /// * `new_state` - The new circuit breaker state
     pub fn transition_circuit_state(&mut self, new_state: CircuitBreakerState) {
         self.circuit_state = new_state;
         match new_state {
