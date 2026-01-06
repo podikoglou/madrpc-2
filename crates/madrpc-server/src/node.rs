@@ -11,16 +11,29 @@ use std::time::Instant;
 /// Each request creates a fresh Boa Context to enable true parallelism.
 /// This is necessary because Boa Context has thread-local state and is
 /// not thread-safe.
+///
+/// # Script Caching Strategy
+///
+/// The node caches the script source to avoid reading the file on every request.
+/// This provides a significant performance improvement by avoiding file I/O.
+///
+/// Note: We cannot cache the parsed AST or compiled bytecode because Boa's
+/// string interner is tied to a specific Context. Each request must parse the
+/// script in its own Context, which has its own interner.
 pub struct Node {
     script_path: PathBuf,
+    /// Cached script source to avoid reading the file on every request
+    script_source: Arc<String>,
     metrics_collector: Arc<NodeMetricsCollector>,
 }
+
 
 impl Node {
     /// Create a new node with a JavaScript script
     ///
-    /// The script is validated on creation. Each request will create its own
-    /// Boa Context to enable true parallelism.
+    /// The script source is read and cached to avoid file I/O on every request.
+    /// Each request will parse the script in its own Boa Context to enable
+    /// true parallelism.
     pub fn new(script_path: PathBuf) -> Result<Self> {
         if !script_path.exists() {
             return Err(MadrpcError::InvalidRequest(format!(
@@ -29,14 +42,17 @@ impl Node {
             )));
         }
 
-        // Validate the script by creating a context once
-        let _ctx = MadrpcContext::new(&script_path)?;
-        tracing::info!("Script validated successfully");
+        // Read and cache the script source to avoid file I/O on every request
+        let script_source = std::fs::read_to_string(&script_path)
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to load script: {}", e)))?;
+
+        tracing::info!("Script source loaded and cached");
 
         let metrics_collector = Arc::new(NodeMetricsCollector::new());
 
         Ok(Self {
             script_path,
+            script_source: Arc::new(script_source),
             metrics_collector,
         })
     }
@@ -56,10 +72,10 @@ impl Node {
         let start_time = Instant::now();
         let method = request.method.clone();
 
-        // Create a fresh Boa context for this request
+        // Create a fresh Boa context for this request from the cached script source
         // This enables true parallelism as each request has its own context
         tracing::debug!("Creating fresh Boa context for request");
-        let ctx = MadrpcContext::new(&self.script_path)?;
+        let ctx = MadrpcContext::from_source(&self.script_source)?;
 
         // Call the RPC function
         tracing::debug!("Calling RPC method: {}", method);

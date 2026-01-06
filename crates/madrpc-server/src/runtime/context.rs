@@ -92,6 +92,14 @@ impl MadrpcContext {
         Self::with_client(script_path, None)
     }
 
+    /// Create a new Boa context from a cached script source string
+    ///
+    /// This is more efficient than `new()` because it avoids file I/O.
+    /// The script source is parsed and evaluated in a fresh context.
+    pub fn from_source(script_source: &str) -> Result<Self> {
+        Self::with_client_from_source(script_source, None)
+    }
+
     /// Create a new Boa context with optional client for distributed calls
     pub fn with_client(
         script_path: impl AsRef<Path>,
@@ -108,6 +116,29 @@ impl MadrpcContext {
             .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to load script: {}", e)))?;
 
         ctx.eval(Source::from_bytes(&script))
+            .map_err(|e| MadrpcError::JavaScriptExecution(format!("Script evaluation error: {}", e)))?;
+
+        Ok(Self {
+            ctx: Mutex::new(ctx),
+            client,
+        })
+    }
+
+    /// Create a new Boa context from cached script source with optional client
+    ///
+    /// This is more efficient than `with_client()` because it avoids file I/O.
+    pub fn with_client_from_source(
+        script_source: &str,
+        client: Option<madrpc_client::MadrpcClient>,
+    ) -> Result<Self> {
+        let mut ctx = Context::default();
+        let client = client.map(Arc::new);
+
+        // Install madrpc bindings (native Rust functions)
+        bindings::install_madrpc_bindings(&mut ctx)?;
+
+        // Evaluate the script source
+        ctx.eval(Source::from_bytes(script_source))
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Script evaluation error: {}", e)))?;
 
         Ok(Self {
