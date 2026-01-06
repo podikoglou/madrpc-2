@@ -106,32 +106,50 @@ struct MethodStats {
     success_count: AtomicU64,
     failure_count: AtomicU64,
     latencies: LatencyBuffer,
+    last_access_ms: AtomicU64,
 }
 
 impl MethodStats {
     fn new() -> Self {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
         Self {
             call_count: AtomicU64::new(0),
             success_count: AtomicU64::new(0),
             failure_count: AtomicU64::new(0),
             latencies: LatencyBuffer::new(),
+            last_access_ms: AtomicU64::new(now),
         }
+    }
+
+    fn update_last_access(&self) {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.last_access_ms.store(now, Ordering::Relaxed);
     }
 
     fn increment_call(&self) {
         self.call_count.fetch_add(1, Ordering::Relaxed);
+        self.update_last_access();
     }
 
     fn increment_success(&self) {
         self.success_count.fetch_add(1, Ordering::Relaxed);
+        self.update_last_access();
     }
 
     fn increment_failure(&self) {
         self.failure_count.fetch_add(1, Ordering::Relaxed);
+        self.update_last_access();
     }
 
     fn record_latency(&self, latency_us: u64) {
         self.latencies.record(latency_us);
+        self.update_last_access();
     }
 
     fn snapshot(&self) -> MethodMetrics {
