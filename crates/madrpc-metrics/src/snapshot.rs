@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Type of MaDRPC server
+/// Type of MaDRPC server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ServerType {
@@ -23,7 +23,7 @@ pub enum ServerType {
     Orchestrator,
 }
 
-/// Server information
+/// Server information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub server_type: ServerType,
@@ -32,6 +32,11 @@ pub struct ServerInfo {
 }
 
 impl ServerInfo {
+    /// Creates a new server info.
+    ///
+    /// # Arguments
+    /// * `server_type` - The type of server
+    /// * `uptime_ms` - The uptime in milliseconds
     pub fn new(server_type: ServerType, uptime_ms: u64) -> Self {
         Self {
             server_type,
@@ -41,7 +46,7 @@ impl ServerInfo {
     }
 }
 
-/// Metrics for a specific RPC method
+/// Metrics for a specific RPC method.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethodMetrics {
     pub call_count: u64,
@@ -54,6 +59,7 @@ pub struct MethodMetrics {
 }
 
 impl MethodMetrics {
+    /// Creates a new method metrics.
     pub fn new() -> Self {
         Self {
             call_count: 0,
@@ -73,7 +79,7 @@ impl Default for MethodMetrics {
     }
 }
 
-/// Metrics for a specific node (used by orchestrator)
+/// Metrics for a specific node (used by orchestrator).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeMetrics {
     pub node_addr: String,
@@ -82,6 +88,10 @@ pub struct NodeMetrics {
 }
 
 impl NodeMetrics {
+    /// Creates a new node metrics.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address
     pub fn new(node_addr: String) -> Self {
         Self {
             node_addr,
@@ -91,7 +101,7 @@ impl NodeMetrics {
     }
 }
 
-/// Complete metrics snapshot
+/// Complete metrics snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     pub total_requests: u64,
@@ -104,6 +114,11 @@ pub struct MetricsSnapshot {
 }
 
 impl MetricsSnapshot {
+    /// Creates a new metrics snapshot.
+    ///
+    /// # Arguments
+    /// * `uptime_ms` - The uptime in milliseconds
+    /// * `include_nodes` - Whether to include node metrics
     pub fn new(uptime_ms: u64, include_nodes: bool) -> Self {
         Self {
             total_requests: 0,

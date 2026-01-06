@@ -20,39 +20,57 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Trait for metrics collection
+/// Trait for metrics collection.
 pub trait MetricsCollector: Send + Sync {
-    /// Check if this is a metrics/info request that should not be forwarded
+    /// Checks if this is a metrics/info request that should not be forwarded.
     fn is_metrics_request(&self, method: &str) -> bool;
 
-    /// Handle a metrics/info request
+    /// Handles a metrics/info request.
+    ///
+    /// # Arguments
+    /// * `method` - The method name
+    /// * `id` - The request ID
     fn handle_metrics_request(&self, method: &str, id: u64) -> MadrpcResult<Response>;
 
-    /// Record a method call
+    /// Records a method call.
+    ///
+    /// # Arguments
+    /// * `method` - The method name
+    /// * `start_time` - When the call started
+    /// * `success` - Whether the call succeeded
     fn record_call(&self, method: &str, start_time: Instant, success: bool);
 
-    /// Get current metrics snapshot
+    /// Gets current metrics snapshot.
     fn snapshot(&self) -> MetricsSnapshot;
 }
 
-/// Metrics collector for Node
+/// Metrics collector for Node.
 pub struct NodeMetricsCollector {
     registry: Arc<MetricsRegistry>,
 }
 
 impl NodeMetricsCollector {
+    /// Creates a new node metrics collector with default configuration.
     pub fn new() -> Self {
         Self {
             registry: Arc::new(MetricsRegistry::new()),
         }
     }
 
+    /// Creates a new node metrics collector with custom configuration.
+    ///
+    /// # Arguments
+    /// * `config` - The metrics configuration
     pub fn with_config(config: MetricsConfig) -> Self {
         Self {
             registry: Arc::new(MetricsRegistry::with_config(config)),
         }
     }
 
+    /// Creates a new node metrics collector with a custom registry.
+    ///
+    /// # Arguments
+    /// * `registry` - The metrics registry to use
     pub fn with_registry(registry: Arc<MetricsRegistry>) -> Self {
         Self { registry }
     }
@@ -86,29 +104,41 @@ impl MetricsCollector for NodeMetricsCollector {
     }
 }
 
-/// Metrics collector for Orchestrator
+/// Metrics collector for Orchestrator.
 pub struct OrchestratorMetricsCollector {
     registry: Arc<MetricsRegistry>,
 }
 
 impl OrchestratorMetricsCollector {
+    /// Creates a new orchestrator metrics collector with default configuration.
     pub fn new() -> Self {
         Self {
             registry: Arc::new(MetricsRegistry::new()),
         }
     }
 
+    /// Creates a new orchestrator metrics collector with custom configuration.
+    ///
+    /// # Arguments
+    /// * `config` - The metrics configuration
     pub fn with_config(config: MetricsConfig) -> Self {
         Self {
             registry: Arc::new(MetricsRegistry::with_config(config)),
         }
     }
 
+    /// Creates a new orchestrator metrics collector with a custom registry.
+    ///
+    /// # Arguments
+    /// * `registry` - The metrics registry to use
     pub fn with_registry(registry: Arc<MetricsRegistry>) -> Self {
         Self { registry }
     }
 
-    /// Record that a request was forwarded to a specific node
+    /// Records that a request was forwarded to a specific node.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address
     pub fn record_node_request(&self, node_addr: &str) {
         self.registry.record_node_request(node_addr);
     }

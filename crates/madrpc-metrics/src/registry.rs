@@ -25,7 +25,7 @@ const LATENCY_BUFFER_SIZE: usize = 1000;
 /// system clock is set before UNIX_EPOCH or otherwise returns an error.
 static TIMESTAMP_FALLBACK: AtomicU64 = AtomicU64::new(1);
 
-/// Configuration for metrics cleanup behavior
+/// Configuration for metrics cleanup behavior.
 #[derive(Debug, Clone)]
 pub struct MetricsConfig {
     /// Maximum number of unique methods to track
@@ -224,7 +224,7 @@ impl Default for NodeStats {
     }
 }
 
-/// Thread-safe metrics registry with lock-free operations
+/// Thread-safe metrics registry with lock-free operations.
 #[derive(Debug)]
 pub struct MetricsRegistry {
     total_requests: AtomicU64,
@@ -239,10 +239,15 @@ pub struct MetricsRegistry {
 }
 
 impl MetricsRegistry {
+    /// Creates a new metrics registry with default configuration.
     pub fn new() -> Self {
         Self::with_config(MetricsConfig::default())
     }
 
+    /// Creates a new metrics registry with custom configuration.
+    ///
+    /// # Arguments
+    /// * `config` - The metrics configuration
     pub fn with_config(config: MetricsConfig) -> Self {
         Self {
             total_requests: AtomicU64::new(0),
@@ -257,27 +262,37 @@ impl MetricsRegistry {
         }
     }
 
+    /// Increments the total request counter.
     pub fn increment_total(&self) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increments the success counter.
     pub fn increment_success(&self) {
         self.successful_requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increments the failure counter.
     pub fn increment_failure(&self) {
         self.failed_requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increments the active connections counter.
     pub fn increment_active_connections(&self) {
         self.active_connections.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Decrements the active connections counter.
     pub fn decrement_active_connections(&self) {
         self.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
-    /// Record a method call with latency
+    /// Records a method call with latency.
+    ///
+    /// # Arguments
+    /// * `method` - The method name
+    /// * `latency_us` - The call latency in microseconds
+    /// * `success` - Whether the call succeeded
     pub fn record_method_call(&self, method: &str, latency_us: u64, success: bool) {
         // Increment global counters
         self.increment_total();
@@ -312,7 +327,10 @@ impl MetricsRegistry {
         }
     }
 
-    /// Record a request to a specific node (for orchestrator)
+    /// Records a request to a specific node (for orchestrator).
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address
     pub fn record_node_request(&self, node_addr: &str) {
         // Periodically check if cleanup is needed
         self.maybe_cleanup();
@@ -403,12 +421,15 @@ impl MetricsRegistry {
         }
     }
 
-    /// Get uptime in milliseconds
+    /// Gets uptime in milliseconds.
     pub fn uptime_ms(&self) -> u64 {
         self.start_time.elapsed().as_millis() as u64
     }
 
-    /// Take a snapshot of current metrics
+    /// Takes a snapshot of current metrics.
+    ///
+    /// # Arguments
+    /// * `include_nodes` - Whether to include node metrics
     pub fn snapshot(&self, include_nodes: bool) -> MetricsSnapshot {
         let uptime_ms = self.uptime_ms();
         let total_requests = self.total_requests.load(Ordering::Relaxed);
