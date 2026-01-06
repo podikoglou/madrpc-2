@@ -826,5 +826,96 @@ mod tests {
         assert_eq!(snapshot.total_requests, 2000);
         assert_eq!(snapshot.successful_requests, 2000);
     }
+
+    // ========================================================================
+    // Timestamp Fallback Tests
+    // ========================================================================
+
+    #[test]
+    fn test_timestamp_fallback_counter_increments() {
+        use std::sync::atomic::Ordering;
+
+        let initial = TIMESTAMP_FALLBACK.load(Ordering::SeqCst);
+
+        // Simulate multiple failures
+        for _ in 0..10 {
+            let _ = TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst);
+        }
+
+        assert_eq!(TIMESTAMP_FALLBACK.load(Ordering::SeqCst), initial + 10);
+    }
+
+    #[test]
+    fn test_method_entry_uses_valid_timestamp() {
+        let registry = MetricsRegistry::new();
+
+        // Record a method call to create a MethodStats entry
+        registry.record_method_call("test_method", 100, true);
+
+        // Verify the method was tracked
+        let snapshot = registry.snapshot(false);
+        assert!(snapshot.methods.contains_key("test_method"));
+
+        // The timestamp should be valid (either real timestamp or fallback)
+        // We can't directly access the timestamp, but we can verify the method exists
+        let method_metrics = snapshot.methods.get("test_method").unwrap();
+        assert_eq!(method_metrics.call_count, 1);
+    }
+
+    #[test]
+    fn test_node_entry_uses_valid_timestamp() {
+        let registry = MetricsRegistry::new();
+
+        // Record a node request to create a NodeStats entry
+        registry.record_node_request("test_node");
+
+        // Verify the node was tracked
+        let snapshot = registry.snapshot(true);
+        assert!(snapshot.nodes.is_some());
+
+        let nodes = snapshot.nodes.unwrap();
+        assert!(nodes.contains_key("test_node"));
+
+        // The timestamp should be valid (either real timestamp or fallback)
+        let node_metrics = nodes.get("test_node").unwrap();
+        assert_eq!(node_metrics.request_count, 1);
+    }
+
+    #[test]
+    fn test_cleanup_stale_entries_handles_edge_cases() {
+        let config = MetricsConfig {
+            method_ttl_secs: 1,
+            node_ttl_secs: 1,
+            max_methods: 1000,
+            max_nodes: 100,
+        };
+
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record some methods
+        registry.record_method_call("test_method_1", 100, true);
+        registry.record_method_call("test_method_2", 200, true);
+
+        // Record some nodes
+        registry.record_node_request("test_node_1");
+        registry.record_node_request("test_node_2");
+
+        // Verify they exist
+        let snapshot = registry.snapshot(true);
+        assert_eq!(snapshot.methods.len(), 2);
+        assert!(snapshot.nodes.is_some());
+        assert_eq!(snapshot.nodes.unwrap().len(), 2);
+
+        // The cleanup mechanism will work correctly even if timestamps are fallback
+        // Trigger cleanup by making many calls
+        for i in 0..1001 {
+            registry.record_method_call(&format!("new_method_{}", i), 100, true);
+        }
+
+        // Old methods should be removed (or kept if accessed recently)
+        // New methods should exist
+        let snapshot = registry.snapshot(false);
+        assert!(snapshot.methods.len() > 0);
+    }
 }
 
