@@ -10,11 +10,11 @@ use crate::load_balancer::LoadBalancer;
 use crate::node::{DisableReason, HealthCheckStatus, Node};
 
 /// Batched health check update to apply atomically
-struct HealthCheckUpdate {
-    node_addr: String,
-    status: HealthCheckStatus,
-    should_enable: bool,
-    should_disable: bool,
+pub struct HealthCheckUpdate {
+    pub node_addr: String,
+    pub status: HealthCheckStatus,
+    pub should_enable: bool,
+    pub should_disable: bool,
 }
 
 /// Health check configuration
@@ -200,6 +200,7 @@ impl HealthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::load_balancer::LoadBalancer;
 
     #[test]
     fn test_health_check_config_default() {
@@ -219,5 +220,143 @@ mod tests {
         assert_eq!(config.interval, Duration::from_secs(10));
         assert_eq!(config.timeout, Duration::from_millis(5000));
         assert_eq!(config.failure_threshold, 5);
+    }
+
+    #[tokio::test]
+    async fn test_health_check_update_healthy() {
+        let lb = Arc::new(RwLock::new(LoadBalancer::new(vec![
+            "node1".to_string(),
+        ])));
+
+        // Manually disable node via auto-disable (health check)
+        {
+            let mut lb = lb.write().await;
+            lb.auto_disable_node("node1");
+        }
+
+        let update = HealthCheckUpdate {
+            node_addr: "node1".to_string(),
+            status: HealthCheckStatus::Healthy,
+            should_enable: true,
+            should_disable: false,
+        };
+
+        let health_checker = HealthChecker::new(
+            lb.clone(),
+            HealthCheckConfig::default()
+        ).unwrap();
+
+        health_checker.apply_health_update(update).await;
+
+        // Node should be re-enabled
+        let lb = lb.read().await;
+        assert!(lb.enabled_nodes().contains(&"node1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_update_unhealthy_threshold() {
+        let lb = Arc::new(RwLock::new(LoadBalancer::new(vec![
+            "node1".to_string(),
+        ])));
+
+        let health_checker = HealthChecker::new(
+            lb.clone(),
+            HealthCheckConfig {
+                failure_threshold: 3,
+                ..Default::default()
+            }
+        ).unwrap();
+
+        // Simulate 3 failures (each increments failure count and disables)
+        for _ in 0..3 {
+            let update = HealthCheckUpdate {
+                node_addr: "node1".to_string(),
+                status: HealthCheckStatus::Unhealthy("connection refused".to_string()),
+                should_enable: false,
+                should_disable: true,
+            };
+            health_checker.apply_health_update(update).await;
+        }
+
+        // Node should be disabled
+        let lb = lb.read().await;
+        assert!(!lb.enabled_nodes().contains(&"node1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_respects_manual_disable() {
+        let lb = Arc::new(RwLock::new(LoadBalancer::new(vec![
+            "node1".to_string(),
+        ])));
+
+        // Manually disable node
+        {
+            let mut lb = lb.write().await;
+            lb.disable_node("node1");
+        }
+
+        let health_checker = HealthChecker::new(
+            lb.clone(),
+            HealthCheckConfig::default()
+        ).unwrap();
+
+        // Try to re-enable via health check (should not work)
+        let update = HealthCheckUpdate {
+            node_addr: "node1".to_string(),
+            status: HealthCheckStatus::Healthy,
+            should_enable: false,
+            should_disable: false,
+        };
+
+        health_checker.apply_health_update(update).await;
+
+        // Node should still be disabled
+        let lb = lb.read().await;
+        assert!(!lb.enabled_nodes().contains(&"node1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_health_check_and_load_balancer_access() {
+        use tokio::task::JoinSet;
+
+        let lb = Arc::new(RwLock::new(LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ])));
+
+        let health_checker = Arc::new(HealthChecker::new(
+            lb.clone(),
+            HealthCheckConfig::default()
+        ).unwrap());
+
+        let mut join_set = JoinSet::new();
+
+        // Spawn tasks that call next_node concurrently with health updates
+        for i in 0..10 {
+            let lb_clone = Arc::clone(&lb);
+            join_set.spawn(async move {
+                for _ in 0..100 {
+                    let mut lb = lb_clone.write().await;
+                    let _ = lb.next_node();
+                }
+            });
+
+            let health_checker = Arc::clone(&health_checker);
+            join_set.spawn(async move {
+                let update = HealthCheckUpdate {
+                    node_addr: format!("node{}", (i % 3) + 1),
+                    status: HealthCheckStatus::Healthy,
+                    should_enable: false,
+                    should_disable: false,
+                };
+                health_checker.apply_health_update(update).await;
+            });
+        }
+
+        // All tasks should complete without deadlocks
+        while let Some(result) = join_set.join_next().await {
+            result.unwrap();
+        }
     }
 }
