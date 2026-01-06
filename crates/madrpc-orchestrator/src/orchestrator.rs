@@ -52,7 +52,7 @@ pub struct Orchestrator {
 impl Orchestrator {
     /// Create a new orchestrator with static node list and default configs
     pub async fn new(node_addrs: Vec<String>) -> Result<Self> {
-        Self::with_config(
+        Self::with_retry_config(
             node_addrs,
             HealthCheckConfig::default(),
             RetryConfig::default(),
