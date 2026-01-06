@@ -199,6 +199,11 @@ impl Orchestrator {
 
     /// Check if an error is retryable
     fn is_retryable(&self, error: &MadrpcError) -> bool {
+        Self::is_retryable_static(error)
+    }
+
+    /// Static method to check if an error is retryable (for testing)
+    pub fn is_retryable_static(error: &MadrpcError) -> bool {
         matches!(error, MadrpcError::AllNodesFailed | MadrpcError::NodeUnavailable(_))
     }
 
@@ -338,5 +343,69 @@ mod tests {
         let nodes = orch.nodes_with_status().await;
         let node1 = nodes.iter().find(|n| n.addr == "node1").unwrap();
         assert!(node1.enabled);
+    }
+
+    // ============================================================================
+    // Retry Logic Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_retry_config_default() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.initial_backoff_ms, 50);
+        assert_eq!(config.max_backoff_ms, 5000);
+        assert_eq!(config.backoff_multiplier, 2.0);
+    }
+
+    #[tokio::test]
+    async fn test_retry_config_custom() {
+        let config = RetryConfig {
+            max_retries: 5,
+            initial_backoff_ms: 100,
+            max_backoff_ms: 10000,
+            backoff_multiplier: 3.0,
+        };
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.initial_backoff_ms, 100);
+        assert_eq!(config.max_backoff_ms, 10000);
+        assert_eq!(config.backoff_multiplier, 3.0);
+    }
+
+    #[test]
+    fn test_exponential_backoff_calculation() {
+        let config = RetryConfig::default();
+        let mut backoff_ms = config.initial_backoff_ms;
+
+        let expected = [50, 100, 200, 400, 800, 1600, 3200, 5000];
+
+        for expected_ms in expected {
+            assert_eq!(backoff_ms, expected_ms);
+            backoff_ms = std::cmp::min(
+                (backoff_ms as f64 * config.backoff_multiplier) as u64,
+                config.max_backoff_ms
+            );
+        }
+
+        // Should stay at max
+        for _ in 0..5 {
+            assert_eq!(backoff_ms, config.max_backoff_ms);
+            backoff_ms = std::cmp::min(
+                (backoff_ms as f64 * config.backoff_multiplier) as u64,
+                config.max_backoff_ms
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_retryable_error() {
+        // Test retryable errors
+        assert!(Orchestrator::is_retryable_static(&MadrpcError::AllNodesFailed));
+        assert!(Orchestrator::is_retryable_static(&MadrpcError::NodeUnavailable("test".to_string())));
+
+        // Test non-retryable errors
+        assert!(!Orchestrator::is_retryable_static(&MadrpcError::InvalidRequest("test".to_string())));
+        assert!(!Orchestrator::is_retryable_static(&MadrpcError::JavaScriptExecution("test".to_string())));
+        assert!(!Orchestrator::is_retryable_static(&MadrpcError::Transport("test".to_string())));
     }
 }
