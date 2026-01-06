@@ -109,6 +109,9 @@ impl Orchestrator {
     /// Each request creates its own connection to avoid serialization through
     /// shared Arc<Mutex<TcpStream>>. This allows multiple requests to the same
     /// node to execute in parallel.
+    ///
+    /// Retry logic: If a request fails due to connection issues or node unavailability,
+    /// the orchestrator will retry with exponential backoff up to max_retries times.
     pub async fn forward_request(&self, request: &Request) -> Result<Response> {
         // Check for metrics/info requests (do NOT forward these)
         if self
@@ -122,29 +125,81 @@ impl Orchestrator {
 
         let start_time = Instant::now();
         let method = request.method.clone();
+        let mut backoff_ms = self.retry_config.initial_backoff_ms;
 
-        // Get next node via round-robin
-        let node_addr = {
-            let mut lb = self.load_balancer.write().await;
-            lb.next_node().ok_or(MadrpcError::AllNodesFailed)?
-        };
+        // Retry loop with exponential backoff
+        for attempt in 0..=self.retry_config.max_retries {
+            // Get next node via round-robin
+            let node_addr = {
+                let mut lb = self.load_balancer.write().await;
+                lb.next_node().ok_or_else(|| {
+                    if attempt < self.retry_config.max_retries {
+                        MadrpcError::NodeUnavailable(
+                            format!("No available nodes (attempt {}/{})",
+                                attempt + 1, self.retry_config.max_retries + 1)
+                        )
+                    } else {
+                        MadrpcError::AllNodesFailed
+                    }
+                })?
+            };
 
-        // Track which node received the request
-        self.metrics_collector.record_node_request(&node_addr);
+            // Track which node received the request
+            self.metrics_collector.record_node_request(&node_addr);
 
-        // Create a fresh connection for this request (no caching)
-        let mut stream = self.transport.connect(&node_addr).await?;
+            // Try to connect to the node
+            let mut stream = match self.transport.connect(&node_addr).await {
+                Ok(s) => s,
+                Err(e) if attempt < self.retry_config.max_retries => {
+                    tracing::warn!(
+                        "Connection to {} failed (attempt {}): {}, retrying in {}ms",
+                        node_addr, attempt + 1, e, backoff_ms
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = std::cmp::min(
+                        (backoff_ms as f64 * self.retry_config.backoff_multiplier) as u64,
+                        self.retry_config.max_backoff_ms
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
 
-        // Forward request
-        let response = self.transport.send_request(&mut stream, request).await?;
+            // Try to send the request
+            let response = self.transport.send_request(&mut stream, request).await;
+            let success = response.is_ok();
 
-        // Connection is closed here when stream is dropped
+            // If request failed and we have retries left, check if it's retryable
+            if let Err(ref e) = response {
+                if attempt < self.retry_config.max_retries && self.is_retryable(e) {
+                    tracing::warn!(
+                        "Request to {} failed (attempt {}): {}, retrying in {}ms",
+                        node_addr, attempt + 1, e, backoff_ms
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = std::cmp::min(
+                        (backoff_ms as f64 * self.retry_config.backoff_multiplier) as u64,
+                        self.retry_config.max_backoff_ms
+                    );
+                    continue;
+                }
+            }
 
-        // Record metrics based on response
-        let success = response.success;
-        self.metrics_collector.record_call(&method, start_time, success);
+            // Connection is closed here when stream is dropped
 
-        Ok(response)
+            // Record metrics based on response
+            let response = response?;
+            self.metrics_collector.record_call(&method, start_time, success);
+            return Ok(response);
+        }
+
+        // This should never be reached since we either return Ok or break with Err
+        unreachable!("Retry loop should always return or error")
+    }
+
+    /// Check if an error is retryable
+    fn is_retryable(&self, error: &MadrpcError) -> bool {
+        matches!(error, MadrpcError::AllNodesFailed | MadrpcError::NodeUnavailable(_))
     }
 
     /// Add a node to the load balancer
