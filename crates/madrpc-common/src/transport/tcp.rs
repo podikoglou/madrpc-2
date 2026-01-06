@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::protocol::{Request, Response};
 use crate::protocol::error::{Result, MadrpcError};
-use crate::transport::codec::PostcardCodec;
+use crate::transport::codec::JsonCodec;
 
 /// Default timeout for TCP operations
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,7 +56,7 @@ impl TcpTransport {
     /// Send a request and wait for response
     pub fn send_request(&self, stream: &mut TcpStream, request: &Request) -> Result<Response> {
         // Encode the request
-        let encoded = PostcardCodec::encode_request(request)?;
+        let encoded = JsonCodec::encode_request(request)?;
 
         // Send the request
         Self::send_message(stream, &encoded)?;
@@ -65,7 +65,7 @@ impl TcpTransport {
         let response_data = Self::receive_message(stream)?;
 
         // Decode the response
-        let response = PostcardCodec::decode_response(&response_data)?;
+        let response = JsonCodec::decode_response(&response_data)?;
 
         Ok(response)
     }
@@ -191,7 +191,7 @@ impl TcpTransportAsync {
     /// Send a request and wait for response (async)
     pub async fn send_request(&self, stream: &mut tokio::net::TcpStream, request: &Request) -> Result<Response> {
         // Encode the request
-        let encoded = PostcardCodec::encode_request(request)?;
+        let encoded = JsonCodec::encode_request(request)?;
 
         // Send the request
         Self::send_message(stream, &encoded).await?;
@@ -200,7 +200,7 @@ impl TcpTransportAsync {
         let response_data = Self::receive_message(stream).await?;
 
         // Decode the response
-        let response = PostcardCodec::decode_response(&response_data)?;
+        let response = JsonCodec::decode_response(&response_data)?;
 
         Ok(response)
     }
