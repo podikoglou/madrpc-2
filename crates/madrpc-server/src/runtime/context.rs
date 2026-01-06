@@ -60,9 +60,7 @@ unsafe impl Send for MadrpcContext {}
 /// ## Synchronization Mechanism
 ///
 /// 1. **Mutex Enforcement**: All access to the inner Boa `Context` requires:
-///    ```rust
-///    let mut ctx = self.ctx.lock().unwrap();
-///    ```
+///    - Acquiring the lock via `ctx.lock().unwrap()`
 ///    - This ensures exclusive access even with `&self`
 ///    - Rust's type system prevents access without the lock
 ///
