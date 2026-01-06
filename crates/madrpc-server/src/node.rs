@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// MaDRPC Node - runs Boa and executes JavaScript RPCs
+/// MaDRPC Node - runs Boa and executes JavaScript RPCs.
 ///
 /// Each request creates a fresh Boa Context to enable true parallelism.
 /// This is necessary because Boa Context has thread-local state and is
@@ -21,19 +21,24 @@ use std::time::Instant;
 /// string interner is tied to a specific Context. Each request must parse the
 /// script in its own Context, which has its own interner.
 pub struct Node {
+    /// Path to the JavaScript script file
     script_path: PathBuf,
     /// Cached script source to avoid reading the file on every request
     script_source: Arc<String>,
+    /// Metrics collector for this node
     metrics_collector: Arc<NodeMetricsCollector>,
 }
 
 
 impl Node {
-    /// Create a new node with a JavaScript script
+    /// Creates a new node with a JavaScript script.
     ///
     /// The script source is read and cached to avoid file I/O on every request.
     /// Each request will parse the script in its own Boa Context to enable
     /// true parallelism.
+    ///
+    /// # Arguments
+    /// * `script_path` - Path to the JavaScript script file
     pub fn new(script_path: PathBuf) -> Result<Self> {
         if !script_path.exists() {
             return Err(MadrpcError::InvalidRequest(format!(
@@ -57,10 +62,13 @@ impl Node {
         })
     }
 
-    /// Handle an incoming RPC request
+    /// Handles an incoming RPC request.
     ///
     /// Creates a fresh Boa Context for each request to enable true parallelism.
     /// Multiple requests can execute concurrently on the same node.
+    ///
+    /// # Arguments
+    /// * `request` - The RPC request to handle
     pub fn handle_request(&self, request: &Request) -> Result<Response> {
         tracing::debug!("Handling request for method: {}", request.method);
 
@@ -94,7 +102,7 @@ impl Node {
         }
     }
 
-    /// Get the script path
+    /// Gets the script path.
     pub fn script_path(&self) -> &PathBuf {
         &self.script_path
     }
