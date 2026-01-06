@@ -3,7 +3,7 @@ use madrpc_common::protocol::error::{Result, MadrpcError};
 use madrpc_common::transport::TcpTransportAsync;
 use serde_json::Value;
 use std::sync::Arc;
-use crate::pool::{ConnectionPool, PoolConfig, PooledConnection};
+use crate::pool::{ConnectionPool, PoolConfig};
 
 /// MaDRPC client for making RPC calls
 ///

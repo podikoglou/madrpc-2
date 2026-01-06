@@ -59,13 +59,14 @@ impl ConnectionPool {
         // First, try to get an available connection
         {
             let mut inner = self.inner.lock().await;
-            if let Some(conns) = inner.connections.get_mut(addr) {
-                let avail_count = inner.available.get(addr).copied().unwrap_or(0);
 
-                if avail_count > 0 {
-                    // Find and return an available connection
-                    // We track which connections are available by using a simple approach:
-                    // available count tells us how many conns are free, we return from the end
+            // Check if we have any available connections
+            let avail_count = inner.available.get(addr).copied().unwrap_or(0);
+
+            if avail_count > 0 {
+                // We have an available connection
+                if let Some(conns) = inner.connections.get_mut(addr) {
+                    // Return the last connection (LIFO for better cache locality)
                     let conn = conns.last().cloned().unwrap();
                     *inner.available.get_mut(addr).unwrap() -= 1;
                     return Ok(conn);
