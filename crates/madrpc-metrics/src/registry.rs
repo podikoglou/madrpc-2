@@ -345,7 +345,7 @@ impl MetricsRegistry {
             let method_ttl_ms = self.config.method_ttl_secs * 1000;
 
             // Remove stale entries
-            methods.retain(|name, stats| {
+            methods.retain(|_name, stats| {
                 let last_access = stats.last_access_ms.load(Ordering::Relaxed);
                 now.saturating_sub(last_access) < method_ttl_ms
             });
@@ -374,7 +374,7 @@ impl MetricsRegistry {
             let node_ttl_ms = self.config.node_ttl_secs * 1000;
 
             // Remove stale entries
-            nodes.retain(|name, stats| {
+            nodes.retain(|_name, stats| {
                 let last_access = stats.last_request_ms.load(Ordering::Relaxed);
                 now.saturating_sub(last_access) < node_ttl_ms
             });
@@ -608,9 +608,14 @@ mod tests {
         };
         let registry = MetricsRegistry::with_config(config);
 
-        // Record some methods
+        // Create 15 unique methods first
         for i in 0..15 {
             registry.record_method_call(&format!("method_{}", i), 100, true);
+        }
+
+        // Then trigger cleanup by reaching 1000 calls
+        for _ in 0..990 {
+            registry.record_method_call("method_0", 100, true);
         }
 
         let snapshot = registry.snapshot(false);
@@ -633,7 +638,7 @@ mod tests {
         registry.record_method_call("another_old", 200, true);
 
         // Trigger cleanup by recording more than CLEANUP_INTERVAL (1000) calls
-        for i in 0..1001 {
+        for _i in 0..1001 {
             registry.record_method_call("new_method", 100, true);
         }
 
@@ -655,14 +660,14 @@ mod tests {
         };
         let registry = MetricsRegistry::with_config(config);
 
-        // Record 10 different methods
+        // Create 10 different methods first
         for i in 0..10 {
             registry.record_method_call(&format!("method_{}", i), 100, true);
         }
 
-        // Trigger cleanup
-        for i in 0..1001 {
-            registry.record_method_call(&format!("method_{}", i % 10), 100, true);
+        // Then trigger cleanup by reaching 1000 calls
+        for _ in 0..995 {
+            registry.record_method_call("method_0", 100, true);
         }
 
         let snapshot = registry.snapshot(false);
@@ -693,8 +698,8 @@ mod tests {
             registry.record_method_call("method_2", 100, true);
         }
 
-        // Trigger cleanup
-        for i in 0..1001 {
+        // Trigger cleanup by reaching 1000 calls
+        for _ in 0..994 {
             registry.record_method_call("method_1", 100, true);
         }
 
@@ -742,14 +747,14 @@ mod tests {
         };
         let registry = MetricsRegistry::with_config(config);
 
-        // Record 5 different nodes
+        // Create 5 different nodes first
         for i in 0..5 {
             registry.record_node_request(&format!("node_{}", i));
         }
 
-        // Trigger cleanup
-        for i in 0..1001 {
-            registry.record_node_request(&format!("node_{}", i % 5));
+        // Then trigger cleanup by reaching 1000 calls
+        for _ in 0..998 {
+            registry.record_node_request("node_0");
         }
 
         let snapshot = registry.snapshot(true);
@@ -785,7 +790,7 @@ mod tests {
         }
 
         // Trigger cleanup
-        for i in 0..1001 {
+        for _i in 0..1001 {
             registry.record_method_call("active_method", 100, true);
         }
 

@@ -14,7 +14,7 @@
 
 use crate::registry::{MetricsConfig, MetricsRegistry};
 use crate::snapshot::{MetricsSnapshot, ServerInfo, ServerType};
-use madrpc_common::protocol::{Request, Response};
+use madrpc_common::protocol::Response;
 use madrpc_common::protocol::error::Result as MadrpcResult;
 use serde_json::json;
 use std::sync::Arc;
