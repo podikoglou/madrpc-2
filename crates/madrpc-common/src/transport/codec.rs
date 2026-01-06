@@ -5,9 +5,9 @@ use crate::protocol::error::Result;
 ///
 /// Uses JSON serialization for compatibility with serde_json::Value types
 /// used in Request args and Response result fields.
-pub struct PostcardCodec;
+pub struct JsonCodec;
 
-impl PostcardCodec {
+impl JsonCodec {
     /// Encode a request to bytes
     pub fn encode_request(request: &Request) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(request)?)
