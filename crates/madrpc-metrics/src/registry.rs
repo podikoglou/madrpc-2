@@ -20,6 +20,11 @@ use std::time::{Instant, SystemTime};
 
 const LATENCY_BUFFER_SIZE: usize = 1000;
 
+/// Fallback timestamp counter for when SystemTime::duration_since() fails
+/// This ensures LRU eviction continues to work correctly even if the
+/// system clock is set before UNIX_EPOCH or otherwise returns an error.
+static TIMESTAMP_FALLBACK: AtomicU64 = AtomicU64::new(1);
+
 /// Configuration for metrics cleanup behavior
 #[derive(Debug, Clone)]
 pub struct MetricsConfig {
@@ -114,7 +119,7 @@ impl MethodStats {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
         Self {
             call_count: AtomicU64::new(0),
             success_count: AtomicU64::new(0),
@@ -128,7 +133,7 @@ impl MethodStats {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
         self.last_access_ms.store(now, Ordering::Relaxed);
     }
 
@@ -196,8 +201,8 @@ impl NodeStats {
         self.request_count.fetch_add(1, Ordering::Relaxed);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
         self.last_request_ms.store(now, Ordering::Relaxed);
     }
 
@@ -336,8 +341,8 @@ impl MetricsRegistry {
     fn cleanup_stale_entries(&self) {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
 
         // Clean up stale methods
         {
