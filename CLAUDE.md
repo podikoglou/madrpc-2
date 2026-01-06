@@ -66,7 +66,7 @@ madrpc.register('monte_carlo_sample', (args) => {
 
 - **Boa Context Threading**: Boa Context has thread-local state and must be accessed from the same thread it was created on. Each worker thread creates its own context per request.
 - **No Context Pool**: Previous QuickJS approach used a context pool, but this was removed due to thread-safety issues. Each request now gets a fresh Boa Context.
-- **TCP Transport**: Uses `postcard` for binary serialization over plain TCP sockets with 4-byte length prefix (big-endian).
+- **TCP Transport**: Uses JSON for serialization over plain TCP sockets with 4-byte length prefix (big-endian).
 - **Thread-Per-Connection**: Nodes use `TcpServerThreaded` which spawns OS threads (not async tasks) for each connection, limited by a custom `StdSemaphore` using `AtomicUsize` and `Condvar`.
 - **Orchestrator is Async**: The orchestrator uses `TcpServer` (tokio async) since it doesn't use Boa and handles many concurrent connections efficiently.
 - **Metrics**: Built-in metrics collection on nodes/orchestrator via `madrpc-metrics` - see `top` command for TUI monitoring
@@ -241,8 +241,8 @@ Use `thiserror` for comprehensive error types:
 pub enum MadrpcError {
     #[error("Transport error: {0}")]
     Transport(String),
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] postcard::Error),
+    #[error("JSON serialization error: {0}")]
+    JsonSerialization(#[from] serde_json::Error),
     #[error("Request timeout after {0}ms")]
     Timeout(u64),
 }
