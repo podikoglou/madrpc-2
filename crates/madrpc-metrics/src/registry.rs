@@ -229,10 +229,16 @@ pub struct MetricsRegistry {
     methods: StdRwLock<HashMap<String, Arc<MethodStats>>>,
     nodes: StdRwLock<HashMap<String, Arc<NodeStats>>>,
     start_time: Instant,
+    config: MetricsConfig,
+    cleanup_counter: AtomicU64,
 }
 
 impl MetricsRegistry {
     pub fn new() -> Self {
+        Self::with_config(MetricsConfig::default())
+    }
+
+    pub fn with_config(config: MetricsConfig) -> Self {
         Self {
             total_requests: AtomicU64::new(0),
             successful_requests: AtomicU64::new(0),
@@ -241,6 +247,8 @@ impl MetricsRegistry {
             methods: StdRwLock::new(HashMap::new()),
             nodes: StdRwLock::new(HashMap::new()),
             start_time: Instant::now(),
+            config,
+            cleanup_counter: AtomicU64::new(0),
         }
     }
 
