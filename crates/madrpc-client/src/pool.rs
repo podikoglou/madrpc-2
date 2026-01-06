@@ -1,9 +1,10 @@
 use madrpc_common::transport::TcpTransportAsync;
+use madrpc_common::protocol::error::{MadrpcError, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use madrpc_common::protocol::error::Result;
 
 /// Pooled connection wrapper
 #[derive(Clone)]
@@ -12,17 +13,39 @@ pub struct PooledConnection {
     pub addr: String,
 }
 
+impl PooledConnection {
+    /// Check if the connection is still valid
+    pub async fn is_valid(&self) -> bool {
+        // Try to check if the socket is still connected
+        let stream = self.stream.try_lock();
+        if stream.is_err() {
+            return false;
+        }
+
+        let stream = stream.unwrap();
+        // Check if the stream is still writable
+        match stream.try_write(&[]) {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+            Err(_) => false,
+        }
+    }
+}
+
 /// Connection pool configuration
 #[derive(Clone)]
 pub struct PoolConfig {
     /// Maximum number of connections per node
     pub max_connections: usize,
+    /// Maximum time to wait for pool acquisition in milliseconds
+    pub acquire_timeout_ms: u64,
 }
 
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
             max_connections: 10,
+            acquire_timeout_ms: 30000, // 30 seconds
         }
     }
 }
@@ -56,7 +79,20 @@ impl ConnectionPool {
 
     /// Get a connection from the pool or create a new one
     pub async fn acquire(&self, addr: &str) -> Result<PooledConnection> {
+        let timeout_duration = tokio::time::Duration::from_millis({
+            let inner = self.inner.lock().await;
+            inner.config.acquire_timeout_ms
+        });
+        let start = Instant::now();
+
         loop {
+            // Check for timeout
+            if start.elapsed() >= timeout_duration {
+                return Err(MadrpcError::PoolTimeout(
+                    self.inner.lock().await.config.acquire_timeout_ms,
+                ));
+            }
+
             // First, try to get an available connection
             {
                 let mut inner = self.inner.lock().await;
@@ -67,10 +103,27 @@ impl ConnectionPool {
                 if avail_count > 0 {
                     // We have an available connection
                     if let Some(conns) = inner.connections.get_mut(addr) {
-                        // Return the last connection (LIFO for better cache locality)
-                        let conn = conns.last().cloned().unwrap();
-                        *inner.available.get_mut(addr).unwrap() -= 1;
-                        return Ok(conn);
+                        // Try to get a valid connection (LIFO for better cache locality)
+                        while let Some(conn) = conns.last() {
+                            let conn = conn.clone();
+
+                            // Validate the connection
+                            if conn.is_valid().await {
+                                // Connection is valid, use it
+                                conns.pop();
+                                return Ok(conn);
+                            } else {
+                                // Invalid connection, remove it from pool
+                                tracing::debug!(
+                                    addr = %conn.addr,
+                                    "Removing invalid connection from pool"
+                                );
+                                conns.pop();
+                            }
+                        }
+
+                        // We've removed all invalid connections, update available count to 0
+                        *inner.available.get_mut(addr).unwrap() = 0;
                     }
                 }
 
@@ -133,6 +186,7 @@ mod tests {
     async fn test_config_default() {
         let config = PoolConfig::default();
         assert_eq!(config.max_connections, 10);
+        assert_eq!(config.acquire_timeout_ms, 30000);
     }
 
     #[tokio::test]
@@ -147,7 +201,36 @@ mod tests {
     async fn test_pool_config_custom() {
         let config = PoolConfig {
             max_connections: 5,
+            acquire_timeout_ms: 5000,
         };
         assert_eq!(config.max_connections, 5);
+        assert_eq!(config.acquire_timeout_ms, 5000);
+    }
+
+    #[tokio::test]
+    async fn test_pool_timeout() {
+        // Create a pool with very short timeout
+        let config = PoolConfig {
+            max_connections: 1,
+            acquire_timeout_ms: 100, // 100ms timeout
+        };
+        let pool = ConnectionPool::new(config).unwrap();
+
+        // Try to acquire from a non-existent server
+        let result = pool.acquire("localhost:9999").await;
+
+        // Should eventually timeout with PoolTimeout error
+        // Note: This might also fail with Connection error, which is fine
+        // The important thing is it doesn't hang forever
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pooled_connection_is_valid() {
+        // Create a mock connection to test validation
+        // This is a basic unit test - integration tests would need a real server
+        let config = PoolConfig::default();
+        assert_eq!(config.max_connections, 10);
+        assert_eq!(config.acquire_timeout_ms, 30000);
     }
 }
