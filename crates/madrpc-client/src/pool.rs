@@ -56,27 +56,29 @@ impl ConnectionPool {
 
     /// Get a connection from the pool or create a new one
     pub async fn acquire(&self, addr: &str) -> Result<PooledConnection> {
-        // First, try to get an available connection (with short lock)
+        // First, try to get an available connection
         {
-            let inner = self.inner.lock().await;
-            if let Some(conns) = inner.connections.get(addr) {
+            let mut inner = self.inner.lock().await;
+            if let Some(conns) = inner.connections.get_mut(addr) {
                 let avail_count = inner.available.get(addr).copied().unwrap_or(0);
 
                 if avail_count > 0 {
-                    // Return an available connection
-                    let count = conns.len();
-                    for i in 0..count {
-                        if i < conns.len() {
-                            let conn = conns[i].clone();
-                            drop(inner); // Release lock before returning
-
-                            // Need to decrement available count
-                            let mut inner = self.inner.lock().await;
-                            *inner.available.get_mut(addr).unwrap() -= 1;
-                            return Ok(conn);
-                        }
-                    }
+                    // Find and return an available connection
+                    // We track which connections are available by using a simple approach:
+                    // available count tells us how many conns are free, we return from the end
+                    let conn = conns.last().cloned().unwrap();
+                    *inner.available.get_mut(addr).unwrap() -= 1;
+                    return Ok(conn);
                 }
+            }
+
+            // Check if we've reached max connections
+            let current_count = inner.connections.get(addr).map(|v| v.len()).unwrap_or(0);
+            if current_count >= inner.config.max_connections {
+                drop(inner);
+                // Wait a bit and retry (simple blocking strategy)
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                return self.acquire(addr).await;
             }
         }
 
