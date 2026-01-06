@@ -282,6 +282,9 @@ impl MetricsRegistry {
             self.increment_failure();
         }
 
+        // Periodically check if cleanup is needed
+        self.maybe_cleanup();
+
         // Get or create method stats
         {
             let mut methods = self.methods.write().unwrap();
@@ -306,6 +309,9 @@ impl MetricsRegistry {
 
     /// Record a request to a specific node (for orchestrator)
     pub fn record_node_request(&self, node_addr: &str) {
+        // Periodically check if cleanup is needed
+        self.maybe_cleanup();
+
         let stats = {
             let mut nodes = self.nodes.write().unwrap();
             nodes
@@ -315,6 +321,81 @@ impl MetricsRegistry {
         };
 
         stats.record_request();
+    }
+
+    /// Check if cleanup is needed and run it periodically
+    fn maybe_cleanup(&self) {
+        const CLEANUP_INTERVAL: u64 = 1000;
+        let count = self.cleanup_counter.fetch_add(1, Ordering::Relaxed);
+        if count % CLEANUP_INTERVAL == 0 {
+            self.cleanup_stale_entries();
+        }
+    }
+
+    /// Remove stale entries and enforce size limits using LRU eviction
+    fn cleanup_stale_entries(&self) {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Clean up stale methods
+        {
+            let mut methods = self.methods.write().unwrap();
+            let method_ttl_ms = self.config.method_ttl_secs * 1000;
+
+            // Remove stale entries
+            methods.retain(|name, stats| {
+                let last_access = stats.last_access_ms.load(Ordering::Relaxed);
+                now.saturating_sub(last_access) < method_ttl_ms
+            });
+
+            // Enforce max_methods limit using LRU eviction
+            if methods.len() > self.config.max_methods {
+                let mut entries: Vec<_> = methods
+                    .iter()
+                    .map(|(name, stats)| {
+                        (name.clone(), stats.last_access_ms.load(Ordering::Relaxed))
+                    })
+                    .collect();
+
+                entries.sort_by_key(|&(_, last_access)| last_access);
+
+                let to_remove = entries.len() - self.config.max_methods;
+                for (name, _) in entries.into_iter().take(to_remove) {
+                    methods.remove(&name);
+                }
+            }
+        }
+
+        // Clean up stale nodes
+        {
+            let mut nodes = self.nodes.write().unwrap();
+            let node_ttl_ms = self.config.node_ttl_secs * 1000;
+
+            // Remove stale entries
+            nodes.retain(|name, stats| {
+                let last_access = stats.last_request_ms.load(Ordering::Relaxed);
+                now.saturating_sub(last_access) < node_ttl_ms
+            });
+
+            // Enforce max_nodes limit using LRU eviction
+            if nodes.len() > self.config.max_nodes {
+                let mut entries: Vec<_> = nodes
+                    .iter()
+                    .map(|(name, stats)| {
+                        (name.clone(), stats.last_request_ms.load(Ordering::Relaxed))
+                    })
+                    .collect();
+
+                entries.sort_by_key(|&(_, last_access)| last_access);
+
+                let to_remove = entries.len() - self.config.max_nodes;
+                for (name, _) in entries.into_iter().take(to_remove) {
+                    nodes.remove(&name);
+                }
+            }
+        }
     }
 
     /// Get uptime in milliseconds
