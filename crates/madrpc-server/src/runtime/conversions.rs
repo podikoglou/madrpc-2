@@ -1,19 +1,12 @@
-use boa_engine::{Context, value::JsValue, js_string, Source};
+use boa_engine::{
+    Context,
+    value::JsValue,
+    js_string,
+    object::{JsObject, builtins::JsArray},
+    property::PropertyKey,
+};
 use serde_json::Value as JsonValue;
 use madrpc_common::protocol::error::{Result, MadrpcError};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Global counter for generating unique temporary variable names
-///
-/// This counter ensures that each call to `js_value_to_json` gets a unique
-/// variable name, preventing any potential collisions in the global scope.
-///
-/// # Thread Safety
-///
-/// `AtomicU64` ensures thread-safe increments without requiring a mutex.
-/// The ordering is `Relaxed` because we only need uniqueness, not any
-/// specific ordering relative to other memory operations.
-static TEMP_VAR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Convert serde_json::Value to Boa JsValue
 pub fn json_to_js_value(json: JsonValue, ctx: &mut Context) -> Result<JsValue> {
@@ -28,29 +21,30 @@ pub fn json_to_js_value(json: JsonValue, ctx: &mut Context) -> Result<JsValue> {
         }
         JsonValue::String(s) => Ok(JsValue::new(js_string!(s))),
         JsonValue::Array(arr) => {
-            // Create array by evaluating JavaScript code
-            let array_code = format!("[{}]", arr.iter()
-                .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()))
-                .collect::<Vec<_>>()
-                .join(","));
-            let array_val = ctx.eval(Source::from_bytes(&array_code))
-                .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to create array: {}", e)))?;
-            Ok(array_val)
+            // Create array using native Boa API
+            let js_array = JsArray::new(ctx);
+            for (i, v) in arr.iter().enumerate() {
+                let js_value = json_to_js_value(v.clone(), ctx)?;
+                js_array.push(js_value, ctx)
+                    .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to push array element {}: {}", i, e)))?;
+            }
+            Ok(js_array.into())
         }
         JsonValue::Object(obj) => {
-            // Use JSON.parse via eval for objects
-            let json_str = serde_json::to_string(&obj)
-                .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize object: {}", e)))?;
+            // Create object using native Boa API
+            let js_obj = JsObject::with_object_proto(ctx.intrinsics());
 
-            // Escape the JSON string for JavaScript
-            let escaped_json = json_str.replace('\\', "\\\\").replace('"', "\\\"");
+            for (key, value) in obj {
+                let js_value = json_to_js_value(value, ctx)?;
+                js_obj.create_data_property_or_throw(
+                    js_string!(key.clone()),
+                    js_value,
+                    ctx
+                )
+                .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to set property '{}': {}", key, e)))?;
+            }
 
-            // Use eval to call JSON.parse
-            let code = format!("JSON.parse(\"{}\")", escaped_json);
-            let js_value = ctx.eval(Source::from_bytes(&code))
-                .map_err(|e| MadrpcError::JavaScriptExecution(format!("JSON.parse failed: {}", e)))?;
-
-            Ok(js_value)
+            Ok(js_obj.into())
         }
     }
 }
@@ -63,6 +57,10 @@ pub fn js_value_to_json(value: JsValue, ctx: &mut Context) -> Result<JsonValue> 
 
     if let Some(b) = value.as_boolean() {
         return Ok(JsonValue::Bool(b));
+    }
+
+    if let Some(i) = value.as_i32() {
+        return Ok(JsonValue::Number(i.into()));
     }
 
     if let Some(n) = value.as_number() {
@@ -78,66 +76,49 @@ pub fn js_value_to_json(value: JsValue, ctx: &mut Context) -> Result<JsonValue> 
     }
 
     if value.is_object() {
-        // =====================================================================
-        // Global Variable Approach for JSON Stringification
-        // =====================================================================
-        //
-        // We use a global temporary variable to work around Boa's limitations
-        // with directly passing JsValue objects to JSON.stringify via eval.
-        //
-        // ## Why This Approach?
-        //
-        // 1. Boa's eval() doesn't support passing JsValue references directly
-        // 2. We need to store the object somewhere accessible to JavaScript code
-        // 3. JSON.stringify must be called from JavaScript to get proper serialization
-        //
-        // ## Safety Guarantees
-        //
-        // 1. **Unique Variable Names**: Each call gets a unique ID via:
-        //    - Process ID (prevents cross-process collisions)
-        //    - Atomic counter (prevents same-process collisions)
-        //    - Format: `_madrpc_str_{process_id}_{counter}`
-        //
-        // 2. **Proper Cleanup**: The temporary variable is explicitly deleted
-        //    after use to prevent global scope pollution
-        //
-        // 3. **Thread Safety**: AtomicU64 ensures unique IDs across threads
-        //    without requiring locks
-        //
-        // 4. **Isolation**: Each call uses a fresh variable name, preventing
-        //    any interference between concurrent operations
+        let obj = value.as_object()
+            .ok_or_else(|| MadrpcError::InvalidRequest("Value is object but couldn't get object reference".into()))?;
 
-        // Generate unique temporary variable name
-        let unique_id = TEMP_VAR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp_var = format!("_madrpc_str_{}_{}", std::process::id(), unique_id);
+        // Check if it's an array
+        if obj.is_array() {
+            let array = JsArray::from_object(obj.clone())
+                .map_err(|e| MadrpcError::InvalidRequest(format!("Object is not a valid array: {}", e)))?;
 
-        // Store the value in a global variable
-        ctx.global_object()
-            .set(js_string!(temp_var.as_str()), value.clone(), true, ctx)
-            .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to set temp variable: {}", e)))?;
+            let length = array.length(ctx)
+                .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to get array length: {}", e)))?
+                .try_into()
+                .map_err(|_| MadrpcError::InvalidRequest("Array length overflow".into()))?;
 
-        // Eval JSON.stringify on the global variable
-        let code = format!("JSON.stringify({})", temp_var);
-        let json_str = ctx.eval(Source::from_bytes(&code))
-            .map_err(|e| MadrpcError::JavaScriptExecution(format!("JSON.stringify failed: {}", e)))?;
+            let mut result = Vec::with_capacity(length);
+            for i in 0..length {
+                let elem = array.get(i, ctx)
+                    .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to get array element {}: {}", i, e)))?;
+                result.push(js_value_to_json(elem, ctx)?);
+            }
+            return Ok(JsonValue::Array(result));
+        }
 
-        let json_string = json_str.as_string()
-            .ok_or_else(|| MadrpcError::InvalidRequest("JSON.stringify didn't return string".into()))?
-            .to_std_string()
-            .map_err(|e| MadrpcError::InvalidRequest(format!("String conversion error: {:?}", e)))?;
+        // It's a plain object - iterate over its properties
+        let keys = obj.own_property_keys(ctx)
+            .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to get object keys: {}", e)))?;
 
-        let parsed: JsonValue = serde_json::from_str(&json_string)
-            .map_err(|e| MadrpcError::InvalidRequest(format!("JSON parse error: {}", e)))?;
+        let mut result = serde_json::Map::new();
 
-        // Clean up the temporary variable from global scope
-        let cleanup_code = format!("delete globalThis.{}", temp_var);
-        ctx.eval(Source::from_bytes(&cleanup_code))
-            .map_err(|e| {
-                tracing::warn!("Failed to clean up temp variable '{}': {}", temp_var, e);
-                MadrpcError::JavaScriptExecution(format!("Cleanup failed: {}", e))
-            })?;
+        for key in keys {
+            // Convert PropertyKey to string
+            let key_str = match &key {
+                PropertyKey::String(s) => s.to_std_string()
+                    .map_err(|e| MadrpcError::InvalidRequest(format!("String conversion error: {:?}", e))),
+                PropertyKey::Index(i) => Ok(i.get().to_string()),
+                PropertyKey::Symbol(_) => continue, // Skip symbol keys
+            }?;
 
-        return Ok(parsed);
+            let prop_value = obj.get(key.clone(), ctx)
+                .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to get property '{}': {}", key_str, e)))?;
+            result.insert(key_str, js_value_to_json(prop_value, ctx)?);
+        }
+
+        return Ok(JsonValue::Object(result));
     }
 
     if value.is_symbol() {
