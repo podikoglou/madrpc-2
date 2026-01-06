@@ -33,10 +33,16 @@ impl Request {
 }
 
 fn generate_request_id() -> RequestId {
-    SystemTime::now()
+    // Try to use system time as the base
+    let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
-        .unwrap_or_else(|_| {
-            REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
-        })
+        .unwrap_or(0);
+
+    // Always increment the counter to ensure uniqueness
+    let counter = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    // Combine timestamp and counter to ensure uniqueness
+    // Use the lower 32 bits for counter and upper 32 bits for timestamp
+    (timestamp & 0xFFFFFFFF00000000) | (counter & 0xFFFFFFFF)
 }

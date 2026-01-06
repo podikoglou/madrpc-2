@@ -2,6 +2,7 @@
 mod tests {
     use super::super::*;
     use serde_json::json;
+    use std::collections::HashSet;
 
     #[test]
     fn test_request_creation() {
@@ -15,6 +16,14 @@ mod tests {
     fn test_request_with_timeout() {
         let req = Request::new("test", json!({})).with_timeout(5000);
         assert_eq!(req.timeout_ms, Some(5000));
+    }
+
+    #[test]
+    fn test_request_id_uniqueness() {
+        let ids: HashSet<_> = (0..1000)
+            .map(|_| Request::new("test", json!({})).id)
+            .collect();
+        assert_eq!(ids.len(), 1000, "All request IDs should be unique");
     }
 
     #[test]
