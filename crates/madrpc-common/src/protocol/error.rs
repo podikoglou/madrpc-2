@@ -1,5 +1,8 @@
+//! MaDRPC Error Types
+
 use thiserror::Error;
 
+/// MaDRPC error type representing all possible errors in the system.
 #[derive(Error, Debug)]
 pub enum MadrpcError {
     #[error("Transport error: {0}")]

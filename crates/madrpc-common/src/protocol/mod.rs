@@ -1,3 +1,8 @@
+//! MaDRPC Protocol Definitions
+//!
+//! This module defines the core protocol types for MaDRPC, including requests,
+//! responses, and error types used throughout the system.
+
 pub mod error;
 pub mod requests;
 pub mod responses;

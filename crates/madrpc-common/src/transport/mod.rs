@@ -1,3 +1,7 @@
+//! MaDRPC Transport Layer
+//!
+//! This module provides TCP transport and codecs for sending/receiving RPC messages.
+
 pub mod codec;
 pub mod tcp;
 pub mod tcp_server;

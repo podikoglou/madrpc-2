@@ -9,16 +9,19 @@ use crate::transport::codec::JsonCodec;
 /// Default timeout for TCP operations
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// TCP transport wrapper for MaDRPC (synchronous)
+/// TCP transport wrapper for MaDRPC (synchronous).
 pub struct TcpTransport;
 
 impl TcpTransport {
-    /// Create a new TCP transport instance
+    /// Creates a new TCP transport instance.
     pub fn new() -> Result<Self> {
         Ok(Self)
     }
 
-    /// Connect to a remote endpoint
+    /// Connects to a remote endpoint.
+    ///
+    /// # Arguments
+    /// * `addr` - The address to connect to (e.g., "127.0.0.1:8080")
     pub fn connect(&self, addr: &str) -> Result<TcpStream> {
         // Parse the address
         let socket_addrs = addr
@@ -53,7 +56,11 @@ impl TcpTransport {
         )))
     }
 
-    /// Send a request and wait for response
+    /// Sends a request and waits for response.
+    ///
+    /// # Arguments
+    /// * `stream` - The TCP stream to use
+    /// * `request` - The request to send
     pub fn send_request(&self, stream: &mut TcpStream, request: &Request) -> Result<Response> {
         // Encode the request
         let encoded = JsonCodec::encode_request(request)?;
@@ -70,9 +77,13 @@ impl TcpTransport {
         Ok(response)
     }
 
-    /// Send a message with length prefix
+    /// Sends a message with length prefix.
     ///
     /// Wire format: [4-byte length as u32 big-endian] + [data]
+    ///
+    /// # Arguments
+    /// * `stream` - The TCP stream to use
+    /// * `data` - The data to send
     pub fn send_message(stream: &mut TcpStream, data: &[u8]) -> Result<()> {
         let len = data.len() as u32;
 
@@ -94,9 +105,12 @@ impl TcpTransport {
         Ok(())
     }
 
-    /// Receive a message with length prefix
+    /// Receives a message with length prefix.
     ///
     /// Wire format: [4-byte length as u32 big-endian] + [data]
+    ///
+    /// # Arguments
+    /// * `stream` - The TCP stream to read from
     pub fn receive_message(stream: &mut TcpStream) -> Result<Vec<u8>> {
         // Read length prefix
         let mut len_buf = [0u8; 4];
@@ -146,7 +160,7 @@ impl Default for TcpTransport {
     }
 }
 
-/// Async TCP transport wrapper for MaDRPC
+/// Async TCP transport wrapper for MaDRPC.
 ///
 /// This is the async version of TcpTransport, used by the Orchestrator
 /// which needs to maintain async/await for its operations.
@@ -156,12 +170,15 @@ pub struct TcpTransportAsync;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 impl TcpTransportAsync {
-    /// Create a new async TCP transport instance
+    /// Creates a new async TCP transport instance.
     pub fn new() -> Result<Self> {
         Ok(Self)
     }
 
-    /// Connect to a remote endpoint (async)
+    /// Connects to a remote endpoint (async).
+    ///
+    /// # Arguments
+    /// * `addr` - The address to connect to
     pub async fn connect(&self, addr: &str) -> Result<tokio::net::TcpStream> {
         // Parse the address
         let socket_addrs = addr
@@ -188,7 +205,11 @@ impl TcpTransportAsync {
         )))
     }
 
-    /// Send a request and wait for response (async)
+    /// Sends a request and waits for response (async).
+    ///
+    /// # Arguments
+    /// * `stream` - The TCP stream to use
+    /// * `request` - The request to send
     pub async fn send_request(&self, stream: &mut tokio::net::TcpStream, request: &Request) -> Result<Response> {
         // Encode the request
         let encoded = JsonCodec::encode_request(request)?;
@@ -205,9 +226,13 @@ impl TcpTransportAsync {
         Ok(response)
     }
 
-    /// Send a message with length prefix (async)
+    /// Sends a message with length prefix (async).
     ///
     /// Wire format: [4-byte length as u32 big-endian] + [data]
+    ///
+    /// # Arguments
+    /// * `stream` - The TCP stream to use
+    /// * `data` - The data to send
     pub async fn send_message(stream: &mut tokio::net::TcpStream, data: &[u8]) -> Result<()> {
         let len = data.len() as u32;
 
@@ -232,9 +257,12 @@ impl TcpTransportAsync {
         Ok(())
     }
 
-    /// Receive a message with length prefix (async)
+    /// Receives a message with length prefix (async).
     ///
     /// Wire format: [4-byte length as u32 big-endian] + [data]
+    ///
+    /// # Arguments
+    /// * `stream` - The TCP stream to read from
     pub async fn receive_message(stream: &mut tokio::net::TcpStream) -> Result<Vec<u8>> {
         // Read length prefix
         let mut len_buf = [0u8; 4];

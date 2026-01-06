@@ -1,24 +1,41 @@
+//! MaDRPC Request Types
+
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
+/// Unique identifier for an RPC request
 pub type RequestId = u64;
+
+/// Name of the RPC method to call
 pub type MethodName = String;
+
+/// RPC method arguments (JSON value)
 pub type RpcArgs = serde_json::Value;
 
 static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// An RPC request to be sent from client to node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Request {
+    /// Unique request identifier
     pub id: RequestId,
+    /// Method name to call
     pub method: MethodName,
+    /// Method arguments
     pub args: RpcArgs,
+    /// Optional timeout in milliseconds
     pub timeout_ms: Option<u64>,
     /// Optional idempotency key for safe retries
     pub idempotency_key: Option<String>,
 }
 
 impl Request {
+    /// Creates a new RPC request.
+    ///
+    /// # Arguments
+    /// * `method` - The method name to call
+    /// * `args` - The method arguments as JSON value
     pub fn new(method: impl Into<String>, args: RpcArgs) -> Self {
         Request {
             id: generate_request_id(),
@@ -29,11 +46,19 @@ impl Request {
         }
     }
 
+    /// Sets the timeout for this request.
+    ///
+    /// # Arguments
+    /// * `timeout_ms` - Timeout in milliseconds
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = Some(timeout_ms);
         self
     }
 
+    /// Sets an idempotency key for safe retries.
+    ///
+    /// # Arguments
+    /// * `key` - Unique key for idempotency
     pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
         self.idempotency_key = Some(key.into());
         self
