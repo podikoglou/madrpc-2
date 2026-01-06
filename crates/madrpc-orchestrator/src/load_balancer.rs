@@ -1,7 +1,7 @@
-use crate::node::{DisableReason, HealthCheckStatus, Node};
+use crate::node::{CircuitBreakerConfig, CircuitBreakerState, DisableReason, HealthCheckStatus, Node};
 use std::collections::HashMap;
 
-/// Round-robin load balancer for nodes
+/// Round-robin load balancer for nodes with circuit breaker
 pub struct LoadBalancer {
     /// All nodes indexed by address for O(1) lookups
     nodes: HashMap<String, Node>,
@@ -9,6 +9,8 @@ pub struct LoadBalancer {
     enabled_nodes: Vec<String>,
     /// Current index in round-robin iteration
     round_robin_index: usize,
+    /// Circuit breaker configuration
+    circuit_config: CircuitBreakerConfig,
 }
 
 impl LoadBalancer {
@@ -20,19 +22,43 @@ impl LoadBalancer {
             nodes,
             enabled_nodes,
             round_robin_index: 0,
+            circuit_config: CircuitBreakerConfig::default(),
         }
     }
 
-    /// Get the next ENABLED node using round-robin
+    /// Create a new load balancer with custom circuit breaker config
+    pub fn with_config(node_addrs: Vec<String>, circuit_config: CircuitBreakerConfig) -> Self {
+        let enabled_nodes = node_addrs.clone();
+        let nodes = node_addrs.into_iter().map(|addr| (addr.clone(), Node::new(addr))).collect();
+        Self {
+            nodes,
+            enabled_nodes,
+            round_robin_index: 0,
+            circuit_config,
+        }
+    }
+
+    /// Get the next ENABLED node using round-robin, skipping nodes with open circuits
     pub fn next_node(&mut self) -> Option<String> {
         if self.enabled_nodes.is_empty() {
             return None;
         }
 
-        // O(1) round-robin over enabled nodes
-        let idx = self.round_robin_index % self.enabled_nodes.len();
-        self.round_robin_index = self.round_robin_index.wrapping_add(1) % self.enabled_nodes.len();
-        Some(self.enabled_nodes[idx].clone())
+        // Find a node that's not in Open state (circuit breaker)
+        for _ in 0..self.enabled_nodes.len() {
+            let idx = self.round_robin_index % self.enabled_nodes.len();
+            self.round_robin_index = self.round_robin_index.wrapping_add(1) % self.enabled_nodes.len();
+
+            if let Some(node) = self.nodes.get(&self.enabled_nodes[idx]) {
+                // Skip nodes with open circuits (fail fast)
+                if node.circuit_state != CircuitBreakerState::Open {
+                    return Some(self.enabled_nodes[idx].clone());
+                }
+            }
+        }
+
+        // All nodes have open circuits, return None
+        None
     }
 
     /// Manually disable a node (indefinite)
@@ -106,7 +132,7 @@ impl LoadBalancer {
         }
     }
 
-    /// Update health check status for a node
+    /// Update health check status for a node with circuit breaker logic
     pub fn update_health_status(&mut self, addr: &str, status: HealthCheckStatus) {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -115,13 +141,74 @@ impl LoadBalancer {
 
             match status {
                 HealthCheckStatus::Healthy => {
+                    // Reset failures on success
                     node.consecutive_failures = 0;
+
+                    // If in half-open, transition to closed
+                    if node.circuit_state == CircuitBreakerState::HalfOpen {
+                        node.transition_circuit_state(CircuitBreakerState::Closed);
+                    }
                 }
                 HealthCheckStatus::Unhealthy(_) => {
                     node.consecutive_failures += 1;
+
+                    // Circuit breaker state transitions
+                    match node.circuit_state {
+                        CircuitBreakerState::Closed => {
+                            // Trip the circuit if threshold reached
+                            if node.consecutive_failures >= self.circuit_config.failure_threshold {
+                                node.transition_circuit_state(CircuitBreakerState::Open);
+                            }
+                        }
+                        CircuitBreakerState::HalfOpen => {
+                            // Failed in half-open, trip back to open
+                            node.transition_circuit_state(CircuitBreakerState::Open);
+                        }
+                        CircuitBreakerState::Open => {
+                            // Already open, nothing to do
+                        }
+                    }
                 }
             }
         }
+    }
+
+    /// Check and update circuit breaker state for timeout transitions
+    /// Returns true if any node transitioned from Open to HalfOpen
+    pub fn check_circuit_timeouts(&mut self) -> bool {
+        let mut any_transitioned = false;
+
+        for node in self.nodes.values_mut() {
+            if node.should_attempt_half_open(&self.circuit_config) {
+                node.transition_circuit_state(CircuitBreakerState::HalfOpen);
+                any_transitioned = true;
+            }
+        }
+
+        any_transitioned
+    }
+
+    /// Get circuit breaker state for a node
+    pub fn circuit_state(&self, addr: &str) -> Option<CircuitBreakerState> {
+        self.nodes.get(addr).map(|n| n.circuit_state)
+    }
+
+    /// Get all nodes with open circuits
+    pub fn open_circuit_nodes(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|(_, n)| n.circuit_state == CircuitBreakerState::Open)
+            .map(|(addr, _)| addr.clone())
+            .collect()
+    }
+
+    /// Get all nodes with half-open circuits
+    pub fn half_open_circuit_nodes(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|(_, n)| n.circuit_state == CircuitBreakerState::HalfOpen)
+            .map(|(addr, _)| addr.clone())
+            .collect()
     }
 
     /// Get consecutive failures for a node
@@ -187,6 +274,17 @@ impl LoadBalancer {
     pub fn nodes(&self) -> Vec<String> {
         // O(N) but this is only used for display
         self.nodes.keys().cloned().collect()
+    }
+
+    /// Test helper to get mutable access to a node's circuit state
+    #[cfg(test)]
+    pub fn with_node_state<F>(&mut self, addr: &str, f: F)
+    where
+        F: FnOnce(&mut Node),
+    {
+        if let Some(node) = self.nodes.get_mut(addr) {
+            f(node);
+        }
     }
 }
 
@@ -464,5 +562,335 @@ mod tests {
         assert_eq!(counts["node1"], 100);
         assert_eq!(counts["node2"], 100);
         assert_eq!(counts["node3"], 100);
+    }
+
+    // ============================================================================
+    // Circuit Breaker Tests
+    // ============================================================================
+
+    #[test]
+    fn test_circuit_breaker_initially_closed() {
+        let lb = LoadBalancer::new(vec!["node1".to_string()]);
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Closed)
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_trips_after_threshold() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+
+        // Default threshold is 5
+        for _ in 0..4 {
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+            assert_eq!(
+                lb.circuit_state("node1"),
+                Some(CircuitBreakerState::Closed)
+            );
+        }
+
+        // 5th failure should trip the circuit
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Open)
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_custom_threshold() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 2,
+            ..Default::default()
+        };
+        let mut lb = LoadBalancer::with_config(vec!["node1".to_string()], config);
+
+        // First failure
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Closed)
+        );
+
+        // Second failure should trip
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Open)
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_opens_circuit_skipped() {
+        let mut lb = LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ]);
+
+        // Trip node1's circuit
+        for _ in 0..5 {
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        }
+
+        // next_node should skip node1 (open circuit)
+        assert_eq!(lb.next_node(), Some("node2".to_string()));
+        assert_eq!(lb.next_node(), Some("node3".to_string()));
+        assert_eq!(lb.next_node(), Some("node2".to_string()));
+        assert_eq!(lb.next_node(), Some("node3".to_string()));
+    }
+
+    #[test]
+    fn test_circuit_breaker_all_open_returns_none() {
+        let mut lb = LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ]);
+
+        // Trip all circuits
+        for addr in &["node1", "node2", "node3"] {
+            for _ in 0..5 {
+                lb.update_health_status(addr, HealthCheckStatus::Unhealthy("err".to_string()));
+            }
+        }
+
+        // All circuits open, should return None
+        assert_eq!(lb.next_node(), None);
+    }
+
+    #[test]
+    fn test_circuit_breaker_reset_on_success() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+
+        // Trip the circuit
+        for _ in 0..5 {
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        }
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Open)
+        );
+
+        // Success should reset failures but NOT close circuit (must wait for timeout)
+        lb.update_health_status("node1", HealthCheckStatus::Healthy);
+        assert_eq!(lb.consecutive_failures("node1"), 0);
+        // Circuit still open because it was opened before success
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Open)
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_half_open_to_closed_on_success() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+
+        // Trip the circuit
+        for _ in 0..5 {
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        }
+
+        // Manually transition to half-open (simulating timeout)
+        lb.with_node_state("node1", |node| {
+            node.transition_circuit_state(CircuitBreakerState::HalfOpen);
+        });
+
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::HalfOpen)
+        );
+
+        // Success should close the circuit
+        lb.update_health_status("node1", HealthCheckStatus::Healthy);
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Closed)
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_half_open_to_open_on_failure() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+
+        // Trip the circuit
+        for _ in 0..5 {
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        }
+
+        // Manually transition to half-open
+        lb.with_node_state("node1", |node| {
+            node.transition_circuit_state(CircuitBreakerState::HalfOpen);
+        });
+
+        // Failure in half-open should trip back to open
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Open)
+        );
+    }
+
+    #[test]
+    fn test_get_open_circuit_nodes() {
+        let mut lb = LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ]);
+
+        // Trip node1 and node2
+        for addr in &["node1", "node2"] {
+            for _ in 0..5 {
+                lb.update_health_status(addr, HealthCheckStatus::Unhealthy("err".to_string()));
+            }
+        }
+
+        let open_nodes = lb.open_circuit_nodes();
+        assert_eq!(open_nodes.len(), 2);
+        assert!(open_nodes.contains(&"node1".to_string()));
+        assert!(open_nodes.contains(&"node2".to_string()));
+        assert!(!open_nodes.contains(&"node3".to_string()));
+    }
+
+    #[test]
+    fn test_get_half_open_circuit_nodes() {
+        let mut lb = LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ]);
+
+        // Trip node1 and node2, then set node2 to half-open
+        for addr in &["node1", "node2"] {
+            for _ in 0..5 {
+                lb.update_health_status(addr, HealthCheckStatus::Unhealthy("err".to_string()));
+            }
+        }
+
+        // Manually set node2 to half-open
+        lb.with_node_state("node2", |node| {
+            node.transition_circuit_state(CircuitBreakerState::HalfOpen);
+        });
+
+        let half_open_nodes = lb.half_open_circuit_nodes();
+        assert_eq!(half_open_nodes.len(), 1);
+        assert_eq!(half_open_nodes[0], "node2".to_string());
+    }
+
+    #[test]
+    fn test_check_circuit_timeouts_transitions_to_half_open() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 2,
+            base_timeout_secs: 1,
+            max_timeout_secs: 10,
+            backoff_multiplier: 2.0,
+        };
+        let mut lb = LoadBalancer::with_config(vec!["node1".to_string()], config);
+
+        // Trip the circuit with 2 failures
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+
+        // Set opened_at to 2 seconds ago (past the 1s base timeout for 2 failures: 1 * 2^1 = 2s)
+        lb.with_node_state("node1", |node| {
+            node.circuit_opened_at = Some(std::time::SystemTime::now() - std::time::Duration::from_secs(3));
+        });
+
+        // Check timeouts should transition to half-open
+        let transitioned = lb.check_circuit_timeouts();
+        assert!(transitioned);
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::HalfOpen)
+        );
+    }
+
+    #[test]
+    fn test_check_circuit_timeops_no_transition_before_timeout() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+
+        // Trip the circuit
+        for _ in 0..5 {
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        }
+
+        // Just opened, no timeout yet
+        let transitioned = lb.check_circuit_timeouts();
+        assert!(!transitioned);
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Open)
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_exponential_backoff_calculation() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 3,
+            base_timeout_secs: 10,
+            max_timeout_secs: 60,
+            backoff_multiplier: 2.0,
+        };
+
+        // Check different timeout calculations
+        assert_eq!(config.calculate_timeout(1).as_secs(), 10);
+        assert_eq!(config.calculate_timeout(2).as_secs(), 20);
+        assert_eq!(config.calculate_timeout(3).as_secs(), 40);
+        assert_eq!(config.calculate_timeout(4).as_secs(), 60); // capped
+        assert_eq!(config.calculate_timeout(10).as_secs(), 60); // capped
+    }
+
+    #[test]
+    fn test_next_node_skips_open_but_allows_half_open() {
+        let mut lb = LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ]);
+
+        // Trip node1 circuit
+        for _ in 0..5 {
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        }
+
+        // Set node2 to half-open (should still be selectable)
+        lb.with_node_state("node2", |node| {
+            node.transition_circuit_state(CircuitBreakerState::HalfOpen);
+        });
+
+        // Should skip node1 (open) but include node2 (half-open) and node3 (closed)
+        let nodes: Vec<_> = (0..10).map(|_| lb.next_node().unwrap()).collect();
+        assert!(!nodes.contains(&"node1".to_string()));
+        assert!(nodes.contains(&"node2".to_string()));
+        assert!(nodes.contains(&"node3".to_string()));
+    }
+
+    #[test]
+    fn test_circuit_breaker_with_custom_config() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 3,
+            base_timeout_secs: 10,
+            max_timeout_secs: 60,
+            backoff_multiplier: 2.0,
+        };
+
+        let mut lb = LoadBalancer::with_config(vec!["node1".to_string()], config.clone());
+
+        // Should trip after 3 failures
+        for _ in 0..2 {
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+            assert_eq!(
+                lb.circuit_state("node1"),
+                Some(CircuitBreakerState::Closed)
+            );
+        }
+
+        lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::Open)
+        );
     }
 }

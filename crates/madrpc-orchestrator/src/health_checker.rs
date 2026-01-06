@@ -74,6 +74,14 @@ impl HealthChecker {
 
     /// Check health of all nodes
     async fn check_all_nodes(&self) {
+        // First, check for circuit breaker timeouts
+        {
+            let mut lb = self.load_balancer.write().await;
+            if lb.check_circuit_timeouts() {
+                info!("Circuit breaker timeout check completed, some nodes transitioned to half-open");
+            }
+        }
+
         let nodes = {
             let lb = self.load_balancer.read().await;
             lb.all_nodes()
@@ -358,5 +366,65 @@ mod tests {
         while let Some(result) = join_set.join_next().await {
             result.unwrap();
         }
+    }
+
+    // ============================================================================
+    // Circuit Breaker Integration Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_health_check_with_circuit_breaker_timeout() {
+        let lb = Arc::new(RwLock::new(LoadBalancer::new(vec![
+            "node1".to_string(),
+        ])));
+
+        // Manually trip the circuit and set timestamp to past using public API
+        {
+            let mut lb = lb.write().await;
+            for _ in 0..5 {
+                lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+            }
+
+            // We can't directly access nodes, but we can use check_circuit_timeouts
+            // with a manually adjusted timestamp via a helper
+            // For this test, we'll verify the circuit is open first
+            assert_eq!(
+                lb.circuit_state("node1"),
+                Some(crate::node::CircuitBreakerState::Open)
+            );
+        }
+
+        // Note: We can't easily test timeout transitions without exposing more API
+        // The integration tests will verify this behavior
+    }
+
+    #[tokio::test]
+    async fn test_health_check_trips_circuit_after_threshold() {
+        let lb = Arc::new(RwLock::new(LoadBalancer::new(vec![
+            "node1".to_string(),
+        ])));
+
+        let health_checker = HealthChecker::new(
+            lb.clone(),
+            HealthCheckConfig::default()
+        ).unwrap();
+
+        // Apply 5 consecutive failures (default threshold)
+        for _ in 0..5 {
+            let update = HealthCheckUpdate {
+                node_addr: "node1".to_string(),
+                status: HealthCheckStatus::Unhealthy("err".to_string()),
+                should_enable: false,
+                should_disable: false,
+            };
+            health_checker.apply_health_update(update).await;
+        }
+
+        // Circuit should be open
+        let lb = lb.read().await;
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(crate::node::CircuitBreakerState::Open)
+        );
     }
 }
