@@ -584,5 +584,237 @@ mod tests {
         let uptime = registry.uptime_ms();
         assert!(uptime >= 10);
     }
+
+    // ========================================================================
+    // Cleanup Mechanism Tests
+    // ========================================================================
+
+    #[test]
+    fn test_config_defaults() {
+        let config = MetricsConfig::default();
+        assert_eq!(config.max_methods, 1000);
+        assert_eq!(config.max_nodes, 100);
+        assert_eq!(config.method_ttl_secs, 3600);
+        assert_eq!(config.node_ttl_secs, 3600);
+    }
+
+    #[test]
+    fn test_registry_with_custom_config() {
+        let config = MetricsConfig {
+            max_methods: 10,
+            max_nodes: 5,
+            method_ttl_secs: 60,
+            node_ttl_secs: 60,
+        };
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record some methods
+        for i in 0..15 {
+            registry.record_method_call(&format!("method_{}", i), 100, true);
+        }
+
+        let snapshot = registry.snapshot(false);
+        // Should have at most 10 methods due to max_methods limit
+        assert!(snapshot.methods.len() <= 10);
+    }
+
+    #[test]
+    fn test_method_ttl_cleanup() {
+        let config = MetricsConfig {
+            max_methods: 1000,
+            max_nodes: 100,
+            method_ttl_secs: 0, // Immediate TTL
+            node_ttl_secs: 3600,
+        };
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record some methods
+        registry.record_method_call("old_method", 100, true);
+        registry.record_method_call("another_old", 200, true);
+
+        // Trigger cleanup by recording more than CLEANUP_INTERVAL (1000) calls
+        for i in 0..1001 {
+            registry.record_method_call("new_method", 100, true);
+        }
+
+        // Old methods should be cleaned up
+        let snapshot = registry.snapshot(false);
+        assert!(!snapshot.methods.contains_key("old_method"));
+        assert!(!snapshot.methods.contains_key("another_old"));
+        // New method should still be present
+        assert!(snapshot.methods.contains_key("new_method"));
+    }
+
+    #[test]
+    fn test_max_methods_enforcement() {
+        let config = MetricsConfig {
+            max_methods: 5,
+            max_nodes: 100,
+            method_ttl_secs: 3600,
+            node_ttl_secs: 3600,
+        };
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record 10 different methods
+        for i in 0..10 {
+            registry.record_method_call(&format!("method_{}", i), 100, true);
+        }
+
+        // Trigger cleanup
+        for i in 0..1001 {
+            registry.record_method_call(&format!("method_{}", i % 10), 100, true);
+        }
+
+        let snapshot = registry.snapshot(false);
+        // Should have at most 5 methods
+        assert!(snapshot.methods.len() <= 5);
+    }
+
+    #[test]
+    fn test_lru_eviction_preserves_recent() {
+        let config = MetricsConfig {
+            max_methods: 3,
+            max_nodes: 100,
+            method_ttl_secs: 3600,
+            node_ttl_secs: 3600,
+        };
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record 5 methods
+        registry.record_method_call("method_1", 100, true);
+        registry.record_method_call("method_2", 100, true);
+        registry.record_method_call("method_3", 100, true);
+        registry.record_method_call("method_4", 100, true);
+        registry.record_method_call("method_5", 100, true);
+
+        // Access method_1 and method_2 multiple times to make them more recent
+        for _ in 0..10 {
+            registry.record_method_call("method_1", 100, true);
+            registry.record_method_call("method_2", 100, true);
+        }
+
+        // Trigger cleanup
+        for i in 0..1001 {
+            registry.record_method_call("method_1", 100, true);
+        }
+
+        let snapshot = registry.snapshot(false);
+        // Should have at most 3 methods
+        assert!(snapshot.methods.len() <= 3);
+        // Recently accessed methods should be preserved
+        assert!(snapshot.methods.contains_key("method_1"));
+        assert!(snapshot.methods.contains_key("method_2"));
+    }
+
+    #[test]
+    fn test_node_ttl_cleanup() {
+        let config = MetricsConfig {
+            max_methods: 1000,
+            max_nodes: 100,
+            method_ttl_secs: 3600,
+            node_ttl_secs: 0, // Immediate TTL
+        };
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record some nodes
+        registry.record_node_request("old_node");
+        registry.record_node_request("another_old");
+
+        // Trigger cleanup by recording more than CLEANUP_INTERVAL (1000) calls
+        for i in 0..1001 {
+            registry.record_node_request(&format!("node_{}", i));
+        }
+
+        // Old nodes should be cleaned up
+        let snapshot = registry.snapshot(true);
+        let nodes = snapshot.nodes.unwrap();
+        assert!(!nodes.contains_key("old_node"));
+        assert!(!nodes.contains_key("another_old"));
+    }
+
+    #[test]
+    fn test_max_nodes_enforcement() {
+        let config = MetricsConfig {
+            max_methods: 1000,
+            max_nodes: 3,
+            method_ttl_secs: 3600,
+            node_ttl_secs: 3600,
+        };
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record 5 different nodes
+        for i in 0..5 {
+            registry.record_node_request(&format!("node_{}", i));
+        }
+
+        // Trigger cleanup
+        for i in 0..1001 {
+            registry.record_node_request(&format!("node_{}", i % 5));
+        }
+
+        let snapshot = registry.snapshot(true);
+        let nodes = snapshot.nodes.unwrap();
+        // Should have at most 3 nodes
+        assert!(nodes.len() <= 3);
+    }
+
+    #[test]
+    fn test_active_methods_preserved() {
+        let config = MetricsConfig {
+            max_methods: 100,
+            max_nodes: 100,
+            method_ttl_secs: 1, // 1 second TTL
+            node_ttl_secs: 3600,
+        };
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record an active method
+        for _ in 0..10 {
+            registry.record_method_call("active_method", 100, true);
+        }
+
+        // Record an old method
+        registry.record_method_call("old_method", 100, true);
+
+        // Wait for TTL to pass for old method
+        thread::sleep(Duration::from_secs(2));
+
+        // Keep active method alive
+        for _ in 0..10 {
+            registry.record_method_call("active_method", 100, true);
+        }
+
+        // Trigger cleanup
+        for i in 0..1001 {
+            registry.record_method_call("active_method", 100, true);
+        }
+
+        let snapshot = registry.snapshot(false);
+        // Active method should still be present
+        assert!(snapshot.methods.contains_key("active_method"));
+        // Old method should be cleaned up
+        assert!(!snapshot.methods.contains_key("old_method"));
+    }
+
+    #[test]
+    fn test_cleanup_does_not_affect_counters() {
+        let config = MetricsConfig {
+            max_methods: 2,
+            max_nodes: 100,
+            method_ttl_secs: 3600,
+            node_ttl_secs: 3600,
+        };
+        let registry = MetricsRegistry::with_config(config);
+
+        // Record many method calls to trigger cleanup
+        for i in 0..2000 {
+            registry.record_method_call(&format!("method_{}", i), 100, true);
+        }
+
+        let snapshot = registry.snapshot(false);
+        // Global counters should not be affected by cleanup
+        assert_eq!(snapshot.total_requests, 2000);
+        assert_eq!(snapshot.successful_requests, 2000);
+    }
 }
 
