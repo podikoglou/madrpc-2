@@ -1,16 +1,19 @@
 use crate::node::{DisableReason, HealthCheckStatus, Node};
-use std::collections::VecDeque;
 
 /// Round-robin load balancer for nodes
 pub struct LoadBalancer {
-    nodes: VecDeque<Node>,
+    nodes: Vec<Node>,
+    round_robin_index: usize,
 }
 
 impl LoadBalancer {
     /// Create a new load balancer with a static node list
     pub fn new(node_addrs: Vec<String>) -> Self {
         let nodes = node_addrs.into_iter().map(Node::new).collect();
-        Self { nodes }
+        Self {
+            nodes,
+            round_robin_index: 0,
+        }
     }
 
     /// Get the next ENABLED node using round-robin
@@ -19,14 +22,14 @@ impl LoadBalancer {
             return None;
         }
 
-        // Rotate through nodes, skipping disabled ones
+        // Use index-based round-robin instead of mutating the deque
         let len = self.nodes.len();
         for _ in 0..len {
-            let node = self.nodes.pop_front()?;
-            self.nodes.push_back(node.clone());
+            let idx = self.round_robin_index % len;
+            self.round_robin_index = (self.round_robin_index + 1) % len;
 
-            if node.enabled {
-                return Some(node.addr);
+            if self.nodes[idx].enabled {
+                return Some(self.nodes[idx].addr.clone());
             }
         }
 
@@ -140,7 +143,7 @@ impl LoadBalancer {
     /// Add a node to the pool
     pub fn add_node(&mut self, node_addr: String) {
         if !self.nodes.iter().any(|n| n.addr == node_addr) {
-            self.nodes.push_back(Node::new(node_addr));
+            self.nodes.push(Node::new(node_addr));
         }
     }
 
