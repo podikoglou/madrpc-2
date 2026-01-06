@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 pub type RequestId = u64;
 pub type MethodName = String;
 pub type RpcArgs = serde_json::Value;
+
+static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Request {
@@ -32,6 +35,8 @@ impl Request {
 fn generate_request_id() -> RequestId {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as RequestId
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or_else(|_| {
+            REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
+        })
 }
