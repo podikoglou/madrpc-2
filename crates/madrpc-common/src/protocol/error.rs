@@ -5,9 +5,6 @@ pub enum MadrpcError {
     #[error("Transport error: {0}")]
     Transport(String),
 
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] postcard::Error),
-
     #[error("JSON serialization error: {0}")]
     JsonSerialization(#[from] serde_json::Error),
 
