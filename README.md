@@ -49,12 +49,19 @@ Options:
 
 ```rust
 use madrpc_client::MadrpcClient;
+use madrpc_client::PoolConfig;
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Connect to the orchestrator
+    // Connect to the orchestrator with default pool (max 10 connections)
     let client = MadrpcClient::new("127.0.0.1:8080").await?;
+
+    // Or with custom pool configuration
+    let client = MadrpcClient::with_config(
+        "127.0.0.1:8080",
+        PoolConfig { max_connections: 20 }
+    ).await?;
 
     // Call a registered function
     let result = client.call("function_name", json!({
@@ -66,6 +73,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+The client automatically manages connection pooling - connections are reused across requests for better performance.
 
 ## Architecture
 
@@ -84,8 +93,10 @@ MaDRPC consists of three main components:
 
 #### 1. Client (`madrpc-client`)
 - Makes RPC calls to the orchestrator
-- Maintains connection pools for performance
+- Uses connection pooling to reuse TCP connections across requests
+- Configurable pool size (default: 10 connections per address)
 - Async/await API with tokio
+- Efficient for parallel requests with shared connections
 
 #### 2. Orchestrator (`madrpc-orchestrator`)
 - "Stupid forwarder" - does no JavaScript execution
@@ -100,12 +111,14 @@ MaDRPC consists of three main components:
 
 ### Data Flow
 
-1. Client connects to orchestrator
+1. Client creates connection pool (or uses shared pool if cloned)
 2. Client makes RPC call: `client.call("function", args)`
-3. Orchestrator selects next node via round-robin
-4. Request forwarded to selected node via TCP
-5. Node creates fresh Boa Context and executes function
-6. Result returned through orchestrator to client
+3. Client acquires connection from pool (or creates new one if needed)
+4. Orchestrator selects next node via round-robin
+5. Request forwarded to selected node via TCP
+6. Node creates fresh Boa Context and executes function
+7. Result returned through orchestrator to client
+8. Client releases connection back to pool for reuse
 
 ### Wire Protocol
 
