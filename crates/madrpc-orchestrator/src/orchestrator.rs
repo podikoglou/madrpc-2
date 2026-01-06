@@ -6,9 +6,29 @@ use crate::load_balancer::LoadBalancer;
 use crate::node::Node;
 use crate::health_checker::{HealthChecker, HealthCheckConfig};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::info;
+
+/// Configuration for retry logic with exponential backoff
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    pub max_retries: usize,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+    pub backoff_multiplier: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            initial_backoff_ms: 50,
+            max_backoff_ms: 5000,
+            backoff_multiplier: 2.0,
+        }
+    }
+}
 
 /// MaDRPC Orchestrator - "stupid" forwarder
 ///
