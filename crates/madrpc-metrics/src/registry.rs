@@ -113,8 +113,8 @@ impl MethodStats {
     fn new() -> Self {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         Self {
             call_count: AtomicU64::new(0),
             success_count: AtomicU64::new(0),
@@ -127,8 +127,8 @@ impl MethodStats {
     fn update_last_access(&self) {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         self.last_access_ms.store(now, Ordering::Relaxed);
     }
 
