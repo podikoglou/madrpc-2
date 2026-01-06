@@ -45,19 +45,37 @@ pub struct Orchestrator {
     load_balancer: Arc<RwLock<LoadBalancer>>,
     transport: TcpTransportAsync,
     metrics_collector: Arc<OrchestratorMetricsCollector>,
+    retry_config: RetryConfig,
     _health_checker_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Orchestrator {
-    /// Create a new orchestrator with static node list and default health check config
+    /// Create a new orchestrator with static node list and default configs
     pub async fn new(node_addrs: Vec<String>) -> Result<Self> {
-        Self::with_config(node_addrs, HealthCheckConfig::default()).await
+        Self::with_config(
+            node_addrs,
+            HealthCheckConfig::default(),
+            RetryConfig::default(),
+        ).await
     }
 
     /// Create a new orchestrator with static node list and custom health check config
     pub async fn with_config(
         node_addrs: Vec<String>,
         health_config: HealthCheckConfig,
+    ) -> Result<Self> {
+        Self::with_retry_config(
+            node_addrs,
+            health_config,
+            RetryConfig::default(),
+        ).await
+    }
+
+    /// Create a new orchestrator with static node list and custom configs
+    pub async fn with_retry_config(
+        node_addrs: Vec<String>,
+        health_config: HealthCheckConfig,
+        retry_config: RetryConfig,
     ) -> Result<Self> {
         let load_balancer = Arc::new(RwLock::new(LoadBalancer::new(node_addrs)));
         let transport = TcpTransportAsync::new()?;
@@ -69,12 +87,13 @@ impl Orchestrator {
         let health_checker = HealthChecker::new(load_balancer.clone(), health_config)?;
         let health_checker_handle = health_checker.spawn();
 
-        info!("Orchestrator initialized with health checking");
+        info!("Orchestrator initialized with health checking and retry logic");
 
         Ok(Self {
             load_balancer,
             transport,
             metrics_collector,
+            retry_config,
             _health_checker_handle: Some(health_checker_handle),
         })
     }
