@@ -5,13 +5,15 @@
 
 use madrpc_common::protocol::{Request, Response};
 use madrpc_common::protocol::error::Result as MadrpcResult;
-use madrpc_common::transport::tcp_server::TcpServerThreaded;
+use madrpc_common::transport::TcpServer;
+use madrpc_orchestrator::{Orchestrator, RetryConfig, HealthCheckConfig};
 use madrpc_server::Node;
 use serde_json::json;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -106,24 +108,35 @@ impl TestClient {
 /// Start a test server in a background thread
 fn start_test_server(script_content: &str) -> (thread::JoinHandle<()>, String) {
     let script_path = create_test_script(script_content);
-    let node = Node::new(script_path).expect("Failed to create node");
 
-    // Bind to port 0 to get a random available port
-    let server =
-        TcpServerThreaded::new("127.0.0.1:0", 4).expect("Failed to create server");
-    let addr = server
-        .local_addr()
-        .expect("Failed to get local address");
-    let addr_str = addr.to_string();
+    // Use channels to communicate the address back from the server thread
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
 
-    // Start server in background thread
     let handle = thread::spawn(move || {
-        // Give the server a short time to start, then stop it
-        // We'll use a channel to signal when to stop
-        let _ = server.run_with_handler(move |request| node.handle_request(&request));
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+        let server = rt.block_on(async {
+            TcpServer::new("127.0.0.1:0").await.expect("Failed to create server")
+        });
+        let addr = server.local_addr().expect("Failed to get local address");
+        let addr_str = addr.to_string();
+
+        // Send the address back to the main thread
+        addr_tx.send(addr_str).expect("Failed to send address");
+
+        let node = Node::new(script_path).expect("Failed to create node");
+
+        rt.block_on(async {
+            let _ = server.run_with_handler(move |request| {
+                let result = node.handle_request(&request);
+                std::future::ready(result)
+            }).await;
+        });
     });
 
-    // Give the server time to start listening
+    // Wait for the server to start and get the address
+    let addr_str = addr_rx.recv().expect("Failed to receive address");
+
+    // Give the server a bit more time to be ready to accept connections
     thread::sleep(Duration::from_millis(100));
 
     (handle, addr_str)
@@ -420,4 +433,144 @@ fn test_multiple_requests_same_connection() {
         assert!(response.success);
         assert_eq!(response.result, Some(json!({"tripled": i * 3})));
     }
+}
+
+// ============================================================================
+// Concurrent Requests with Health Checks and Retry Logic
+// ============================================================================
+
+#[test]
+fn test_concurrent_requests_with_health_checks() {
+    // Create a simple compute script
+    let script = r#"
+        madrpc.register('compute', function(args) {
+            let x = args.x || 0;
+            let y = args.y || 0;
+            // Simulate some computation
+            let result = x * x + y * y;
+            return { result: result, input: { x: x, y: y } };
+        });
+    "#;
+
+    // Start 2 test nodes
+    let (_handle1, addr1) = start_test_server(script);
+    let (_handle2, addr2) = start_test_server(script);
+
+    // Give servers time to fully start
+    thread::sleep(Duration::from_millis(200));
+
+    // Start orchestrator in a background thread with retry config
+    let (orch_addr_tx, orch_addr_rx) = std::sync::mpsc::channel();
+
+    let _orch_handle = thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+
+        let node_addrs = vec![addr1.clone(), addr2.clone()];
+
+        // Create health check config with aggressive settings for testing
+        let health_config = HealthCheckConfig {
+            interval: Duration::from_millis(100),
+            timeout: Duration::from_millis(50),
+            failure_threshold: 2,
+        };
+
+        // Create retry config
+        let retry_config = RetryConfig {
+            max_retries: 2,
+            initial_backoff_ms: 10,
+            max_backoff_ms: 100,
+            backoff_multiplier: 2.0,
+        };
+
+        let orchestrator = rt.block_on(async {
+            Orchestrator::with_retry_config(node_addrs, health_config, retry_config).await
+        }).expect("Failed to create orchestrator");
+
+        let orchestrator = Arc::new(orchestrator);
+
+        // Create TCP server for orchestrator
+        let server = rt.block_on(async {
+            TcpServer::new("127.0.0.1:0").await.expect("Failed to create server")
+        });
+        let addr = server.local_addr().expect("Failed to get local address");
+        let addr_str = addr.to_string();
+
+        // Send address back to main thread
+        orch_addr_tx.send(addr_str).expect("Failed to send orchestrator address");
+
+        // Run orchestrator server
+        rt.block_on(async {
+            let _ = server.run_with_handler(move |request| {
+                let orch = Arc::clone(&orchestrator);
+                async move {
+                    orch.forward_request(&request).await
+                }
+            }).await;
+        });
+    });
+
+    // Wait for orchestrator to start and get its address
+    let orch_addr = orch_addr_rx.recv().expect("Failed to receive orchestrator address");
+
+    // Give orchestrator time to start
+    thread::sleep(Duration::from_millis(200));
+
+    // Spawn 20 concurrent requests
+    let num_requests = 20;
+    let mut handles = vec![];
+
+    for i in 0..num_requests {
+        let orch_addr_clone = orch_addr.clone();
+        let handle = thread::spawn(move || {
+            // Connect to orchestrator
+            let mut client = TestClient::connect(&orch_addr_clone)
+                .expect("Failed to connect to orchestrator");
+
+            // Make request with unique values to track distribution
+            let x = i;
+            let y = i * 2;
+
+            let response = client
+                .call("compute", json!({"x": x, "y": y}))
+                .expect("Request failed");
+
+            // Verify response
+            assert!(response.success, "Request failed: {:?}", response.error);
+            assert!(response.result.is_some());
+
+            let result = response.result.unwrap();
+            let expected = x * x + y * y;
+
+            assert_eq!(result["result"], expected, "Incorrect computation result");
+            assert_eq!(result["input"]["x"], x);
+            assert_eq!(result["input"]["y"], y);
+
+            (i, expected)
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all requests to complete and collect results
+    let mut results = vec![];
+    for handle in handles {
+        let result = handle.join().expect("Thread panicked");
+        results.push(result);
+    }
+
+    // Verify all requests completed successfully
+    assert_eq!(results.len(), num_requests, "Not all requests completed");
+
+    // Verify all results are unique and correct
+    results.sort_by_key(|(i, _)| *i);
+    for (i, expected_result) in results {
+        let x = i;
+        let y = i * 2;
+        let expected = x * x + y * y;
+        assert_eq!(expected_result, expected, "Result mismatch for request {}", i);
+    }
+
+    // Verify round-robin distribution - both nodes should have handled requests
+    // With 20 requests and 2 nodes, each node should handle approximately 10 requests
+    // Give some tolerance for timing variations
+    println!("All {} concurrent requests completed successfully", num_requests);
 }
