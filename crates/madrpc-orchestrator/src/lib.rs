@@ -6,4 +6,4 @@ pub mod orchestrator;
 pub use load_balancer::LoadBalancer;
 pub use node::{Node, DisableReason, HealthCheckStatus};
 pub use health_checker::{HealthChecker, HealthCheckConfig};
-pub use orchestrator::Orchestrator;
+pub use orchestrator::{Orchestrator, RetryConfig};
