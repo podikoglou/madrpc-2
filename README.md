@@ -123,8 +123,8 @@ MaDRPC consists of three main components:
 ### Wire Protocol
 
 - Transport: TCP
-- Serialization: postcard (binary format)
-- Message format: `[4-byte length (u32 BE)] + [postcard data]`
+- Serialization: JSON
+- Message format: `[4-byte length (u32 BE)] + [JSON data]`
 - Keep-alive: Each connection processes multiple requests
 
 ## Writing RPCs
@@ -273,7 +273,7 @@ Nodes limit concurrent connections using a semaphore:
 
 ### TCP vs QUIC
 
-MaDRPC uses plain TCP instead of QUIC for simplicity and to avoid the complexity of TLS certificate management. The wire protocol uses postcard for efficient binary serialization.
+MaDRPC uses plain TCP instead of QUIC for simplicity and to avoid the complexity of TLS certificate management. The wire protocol uses JSON serialization.
 
 ## Workspace Structure
 
