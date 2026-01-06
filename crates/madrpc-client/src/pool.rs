@@ -56,30 +56,34 @@ impl ConnectionPool {
 
     /// Get a connection from the pool or create a new one
     pub async fn acquire(&self, addr: &str) -> Result<PooledConnection> {
-        // First, try to get an available connection
-        {
-            let mut inner = self.inner.lock().await;
+        loop {
+            // First, try to get an available connection
+            {
+                let mut inner = self.inner.lock().await;
 
-            // Check if we have any available connections
-            let avail_count = inner.available.get(addr).copied().unwrap_or(0);
+                // Check if we have any available connections
+                let avail_count = inner.available.get(addr).copied().unwrap_or(0);
 
-            if avail_count > 0 {
-                // We have an available connection
-                if let Some(conns) = inner.connections.get_mut(addr) {
-                    // Return the last connection (LIFO for better cache locality)
-                    let conn = conns.last().cloned().unwrap();
-                    *inner.available.get_mut(addr).unwrap() -= 1;
-                    return Ok(conn);
+                if avail_count > 0 {
+                    // We have an available connection
+                    if let Some(conns) = inner.connections.get_mut(addr) {
+                        // Return the last connection (LIFO for better cache locality)
+                        let conn = conns.last().cloned().unwrap();
+                        *inner.available.get_mut(addr).unwrap() -= 1;
+                        return Ok(conn);
+                    }
                 }
-            }
 
-            // Check if we've reached max connections
-            let current_count = inner.connections.get(addr).map(|v| v.len()).unwrap_or(0);
-            if current_count >= inner.config.max_connections {
+                // Check if we've reached max connections
+                let current_count = inner.connections.get(addr).map(|v| v.len()).unwrap_or(0);
+                if current_count < inner.config.max_connections {
+                    // We can create a new connection
+                    break;
+                }
+
+                // Pool is full, wait and retry
                 drop(inner);
-                // Wait a bit and retry (simple blocking strategy)
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                return self.acquire(addr).await;
             }
         }
 
