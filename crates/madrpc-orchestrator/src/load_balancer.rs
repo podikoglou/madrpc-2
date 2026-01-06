@@ -26,7 +26,7 @@ impl LoadBalancer {
         let len = self.nodes.len();
         for _ in 0..len {
             let idx = self.round_robin_index % len;
-            self.round_robin_index = (self.round_robin_index + 1) % len;
+            self.round_robin_index = self.round_robin_index.wrapping_add(1) % len;
 
             if self.nodes[idx].enabled {
                 return Some(self.nodes[idx].addr.clone());
@@ -370,5 +370,73 @@ mod tests {
 
         lb.disable_node("node2");
         assert_eq!(lb.enabled_count(), 1);
+    }
+
+    #[test]
+    fn test_round_robin_index_wraps_at_usize_max() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+        lb.round_robin_index = usize::MAX;
+        assert_eq!(lb.next_node(), Some("node1".to_string()));
+        assert_eq!(lb.round_robin_index, 0);
+    }
+
+    #[test]
+    fn test_round_robin_with_disabled_nodes() {
+        let nodes = vec!["node1".to_string(), "node2".to_string(), "node3".to_string()];
+        let mut lb = LoadBalancer::new(nodes);
+        lb.disable_node("node2");
+        assert_eq!(lb.next_node(), Some("node1".to_string()));
+        assert_eq!(lb.next_node(), Some("node3".to_string()));
+        assert_eq!(lb.next_node(), Some("node1".to_string()));
+        assert_eq!(lb.next_node(), Some("node3".to_string()));
+    }
+
+    #[test]
+    fn test_concurrent_round_robin_calls() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let lb = Arc::new(Mutex::new(LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+            "node4".to_string(),
+        ])));
+
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let lb_clone = Arc::clone(&lb);
+            let handle = thread::spawn(move || {
+                for _ in 0..100 {
+                    let mut lb = lb_clone.lock().unwrap();
+                    let result = lb.next_node();
+                    assert!(result.is_some());
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_round_robin_distributes_evenly() {
+        let mut lb = LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ]);
+
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..300 {
+            let node = lb.next_node().unwrap();
+            *counts.entry(node).or_insert(0) += 1;
+        }
+
+        assert_eq!(counts["node1"], 100);
+        assert_eq!(counts["node2"], 100);
+        assert_eq!(counts["node3"], 100);
     }
 }
