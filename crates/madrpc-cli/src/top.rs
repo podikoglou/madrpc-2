@@ -553,3 +553,79 @@ pub async fn run_top(server_address: String, interval_ms: u64) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // UI Timestamp Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_duration_ms_with_zero() {
+        // Test that UI handles timestamp=0 gracefully
+        let result = format_duration_ms(0);
+        assert_eq!(result, "0ms");
+    }
+
+    #[test]
+    fn test_format_duration_ms_edge_cases() {
+        // Test various edge cases for duration formatting
+
+        // Milliseconds
+        assert_eq!(format_duration_ms(1), "1ms");
+        assert_eq!(format_duration_ms(500), "500ms");
+        assert_eq!(format_duration_ms(999), "999ms");
+
+        // Seconds
+        assert_eq!(format_duration_ms(1000), "1s");
+        assert_eq!(format_duration_ms(1500), "1s");
+        assert_eq!(format_duration_ms(5000), "5s");
+        assert_eq!(format_duration_ms(59999), "59s");
+
+        // Minutes and seconds
+        assert_eq!(format_duration_ms(60000), "1m 0s");
+        assert_eq!(format_duration_ms(60000), "1m 0s");
+        assert_eq!(format_duration_ms(65000), "1m 5s");
+        assert_eq!(format_duration_ms(120000), "2m 0s");
+        assert_eq!(format_duration_ms(3599999), "59m 59s");
+
+        // Hours and minutes
+        assert_eq!(format_duration_ms(3600000), "1h 0m");
+        assert_eq!(format_duration_ms(3600000), "1h 0m");
+        assert_eq!(format_duration_ms(3660000), "1h 1m");
+        assert_eq!(format_duration_ms(7200000), "2h 0m");
+
+        // Large values
+        assert_eq!(format_duration_ms(86400000), "24h 0m"); // 1 day
+    }
+
+    #[test]
+    fn test_format_latency_us_with_zero() {
+        // Test that UI handles zero latency gracefully
+        let result = format_latency_us(0);
+        assert_eq!(result, "-");
+    }
+
+    #[test]
+    fn test_format_latency_us_edge_cases() {
+        // Test various edge cases for latency formatting
+
+        // Microseconds
+        assert_eq!(format_latency_us(1), "1μs");
+        assert_eq!(format_latency_us(500), "500μs");
+        assert_eq!(format_latency_us(999), "999μs");
+
+        // Milliseconds
+        assert_eq!(format_latency_us(1000), "1ms");
+        assert_eq!(format_latency_us(1500), "1ms");
+        assert_eq!(format_latency_us(5000), "5ms");
+        assert_eq!(format_latency_us(999999), "999ms");
+
+        // Seconds
+        assert_eq!(format_latency_us(1_000_000), "1.0s");
+        assert_eq!(format_latency_us(1_500_000), "1.5s");
+        assert_eq!(format_latency_us(5_000_000), "5.0s");
+    }
+}
