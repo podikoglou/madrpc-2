@@ -59,4 +59,62 @@ mod tests {
         let deserialized: Response = serde_json::from_value(serialized).unwrap();
         assert_eq!(resp, deserialized);
     }
+
+    // ========================================================================
+    // Request ID Stress Tests
+    // ========================================================================
+
+    #[test]
+    fn test_request_id_uniqueness_under_stress() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let ids = Arc::new(Mutex::new(HashSet::new()));
+        let mut handles = vec![];
+
+        // Spawn 10 threads, each creating 1000 requests
+        for _ in 0..10 {
+            let ids_clone = Arc::clone(&ids);
+            let handle = thread::spawn(move || {
+                for _ in 0..1000 {
+                    let id = Request::new("test", json!({})).id;
+                    let mut ids = ids_clone.lock().unwrap();
+                    assert!(!ids.contains(&id), "Duplicate ID detected: {}", id);
+                    ids.insert(id);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Should have exactly 10,000 unique IDs
+        assert_eq!(ids.lock().unwrap().len(), 10_000);
+    }
+
+    #[test]
+    fn test_request_id_monotonicity() {
+        let mut prev_id = Request::new("test", json!({})).id;
+
+        for _ in 0..1000 {
+            let id = Request::new("test", json!({})).id;
+            // Most IDs should be >= previous (due to counter increment)
+            assert!(id >= prev_id || id < 1000, "ID went backward significantly: {} -> {}", prev_id, id);
+            prev_id = id;
+        }
+    }
+
+    #[test]
+    fn test_request_id_structure() {
+        let id = Request::new("test", json!({})).id;
+
+        // Lower 32 bits should be counter (small, increasing)
+        let lower = id & 0xFFFFFFFF;
+        assert!(lower < 1_000_000, "Lower 32 bits should be counter: {}", lower);
+
+        // ID should be non-zero
+        assert!(id > 0, "ID should be non-zero");
+    }
 }
