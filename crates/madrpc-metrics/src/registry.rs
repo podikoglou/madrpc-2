@@ -16,9 +16,33 @@ use crate::snapshot::{MethodMetrics, MetricsSnapshot, NodeMetrics};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 const LATENCY_BUFFER_SIZE: usize = 1000;
+
+/// Configuration for metrics cleanup behavior
+#[derive(Debug, Clone)]
+pub struct MetricsConfig {
+    /// Maximum number of unique methods to track
+    pub max_methods: usize,
+    /// Maximum number of unique nodes to track
+    pub max_nodes: usize,
+    /// Time-to-live for method entries in seconds
+    pub method_ttl_secs: u64,
+    /// Time-to-live for node entries in seconds
+    pub node_ttl_secs: u64,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            max_methods: 1000,
+            max_nodes: 100,
+            method_ttl_secs: 3600,
+            node_ttl_secs: 3600,
+        }
+    }
+}
 
 /// Ring buffer for storing latency samples
 #[derive(Debug)]
