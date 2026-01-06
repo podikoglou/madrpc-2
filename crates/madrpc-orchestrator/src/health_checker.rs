@@ -4,10 +4,18 @@ use madrpc_common::transport::TcpTransportAsync;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::load_balancer::LoadBalancer;
 use crate::node::{DisableReason, HealthCheckStatus, Node};
+
+/// Batched health check update to apply atomically
+struct HealthCheckUpdate {
+    node_addr: String,
+    status: HealthCheckStatus,
+    should_enable: bool,
+    should_disable: bool,
+}
 
 /// Health check configuration
 #[derive(Debug, Clone)]
@@ -89,7 +97,8 @@ impl HealthChecker {
 
         // Process results
         for (node, health_result) in results {
-            self.process_health_result(node, health_result).await;
+            let update = self.process_health_result(node, health_result).await;
+            self.apply_health_update(update).await;
         }
     }
 
@@ -124,68 +133,65 @@ impl HealthChecker {
     }
 
     /// Process health check result for a node
-    async fn process_health_result(&self, node: Node, result: MadrpcResult<()>) {
+    async fn process_health_result(&self, node: Node, result: MadrpcResult<()>) -> HealthCheckUpdate {
         match result {
             Ok(()) => {
-                // Node is healthy
-                {
-                    let mut lb = self.load_balancer.write().await;
-                    lb.update_health_status(&node.addr, HealthCheckStatus::Healthy);
-                }
-
-                // Check if node should be re-enabled
-                if !node.enabled {
-                    if node.disable_reason == Some(DisableReason::HealthCheck) {
-                        let mut lb = self.load_balancer.write().await;
-                        if lb.auto_enable_node(&node.addr) {
-                            info!(
-                                "Node {} re-enabled after health check recovery",
-                                node.addr
-                            );
-                        }
-                    }
+                HealthCheckUpdate {
+                    node_addr: node.addr.clone(),
+                    status: HealthCheckStatus::Healthy,
+                    should_enable: !node.enabled && node.disable_reason == Some(DisableReason::HealthCheck),
+                    should_disable: false,
                 }
             }
             Err(e) => {
-                // Node is unhealthy
-                let error_msg = e.to_string();
-                debug!("Node {} health check failed: {}", node.addr, error_msg);
-
-                {
-                    let mut lb = self.load_balancer.write().await;
-                    lb.update_health_status(
-                        &node.addr,
-                        HealthCheckStatus::Unhealthy(error_msg.clone()),
-                    );
-                }
-
-                // Check if node should be disabled
                 let failures = {
                     let lb = self.load_balancer.read().await;
-                    lb.consecutive_failures(&node.addr)
+                    lb.consecutive_failures(&node.addr) + 1
                 };
+                let should_disable = failures >= self.config.failure_threshold
+                    && node.enabled
+                    && node.disable_reason != Some(DisableReason::Manual);
 
-                if failures >= self.config.failure_threshold && node.enabled {
-                    // Check if not manually disabled
-                    let should_disable = {
-                        let lb = self.load_balancer.read().await;
-                        lb.all_nodes()
-                            .iter()
-                            .find(|n| n.addr == node.addr)
-                            .map(|n| n.disable_reason != Some(DisableReason::Manual))
-                            .unwrap_or(false)
-                    };
-
-                    if should_disable {
-                        let mut lb = self.load_balancer.write().await;
-                        if lb.auto_disable_node(&node.addr) {
-                            warn!(
-                                "Node {} disabled after {} consecutive health check failures: {}",
-                                node.addr, failures, error_msg
-                            );
-                        }
-                    }
+                HealthCheckUpdate {
+                    node_addr: node.addr.clone(),
+                    status: HealthCheckStatus::Unhealthy(e.to_string()),
+                    should_enable: false,
+                    should_disable,
                 }
+            }
+        }
+    }
+
+    /// Apply a health check update atomically
+    async fn apply_health_update(&self, update: HealthCheckUpdate) {
+        let mut lb = self.load_balancer.write().await;
+
+        // Extract error message before moving status
+        let error_msg = match &update.status {
+            HealthCheckStatus::Unhealthy(msg) => Some(msg.clone()),
+            _ => None,
+        };
+
+        lb.update_health_status(&update.node_addr, update.status);
+
+        if update.should_enable {
+            if lb.auto_enable_node(&update.node_addr) {
+                info!(
+                    "Node {} re-enabled after health check recovery",
+                    update.node_addr
+                );
+            }
+        }
+
+        if update.should_disable {
+            let failures = lb.consecutive_failures(&update.node_addr);
+            if lb.auto_disable_node(&update.node_addr) {
+                warn!(
+                    "Node {} disabled after {} consecutive health check failures: {}",
+                    update.node_addr,
+                    failures,
+                    error_msg.unwrap_or_else(|| "unknown error".to_string())
+                );
             }
         }
     }
