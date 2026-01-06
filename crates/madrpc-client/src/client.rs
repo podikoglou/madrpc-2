@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use crate::pool::{ConnectionPool, PoolConfig};
 
-/// Retry configuration for RPC calls
+/// Retry configuration for RPC calls.
 #[derive(Clone, Debug)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (including the initial attempt)
@@ -31,7 +31,13 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
-    /// Create a new retry config with custom settings
+    /// Creates a new retry config with custom settings.
+    ///
+    /// # Arguments
+    /// * `max_attempts` - Maximum number of retry attempts
+    /// * `base_delay_ms` - Base delay in milliseconds
+    /// * `max_delay_ms` - Maximum delay cap in milliseconds
+    /// * `backoff_multiplier` - Exponential backoff multiplier
     pub fn new(max_attempts: u32, base_delay_ms: u64, max_delay_ms: u64, backoff_multiplier: f64) -> Self {
         Self {
             max_attempts,
@@ -69,7 +75,10 @@ pub struct MadrpcClient {
 }
 
 impl MadrpcClient {
-    /// Create a new client connected to an orchestrator
+    /// Creates a new client connected to an orchestrator.
+    ///
+    /// # Arguments
+    /// * `orchestrator_addr` - The orchestrator address (e.g., "127.0.0.1:8080")
     pub async fn new(orchestrator_addr: impl Into<String>) -> Result<Self> {
         let orchestrator_addr = orchestrator_addr.into();
         let pool = Arc::new(ConnectionPool::new(PoolConfig::default())?);
@@ -82,7 +91,11 @@ impl MadrpcClient {
         })
     }
 
-    /// Create a new client with custom pool configuration
+    /// Creates a new client with custom pool configuration.
+    ///
+    /// # Arguments
+    /// * `orchestrator_addr` - The orchestrator address
+    /// * `config` - The pool configuration
     pub async fn with_config(orchestrator_addr: impl Into<String>, config: PoolConfig) -> Result<Self> {
         let orchestrator_addr = orchestrator_addr.into();
         let pool = Arc::new(ConnectionPool::new(config)?);
@@ -95,7 +108,12 @@ impl MadrpcClient {
         })
     }
 
-    /// Create a new client with custom pool and retry configuration
+    /// Creates a new client with custom pool and retry configuration.
+    ///
+    /// # Arguments
+    /// * `orchestrator_addr` - The orchestrator address
+    /// * `pool_config` - The pool configuration
+    /// * `retry_config` - The retry configuration
     pub async fn with_retry_config(
         orchestrator_addr: impl Into<String>,
         pool_config: PoolConfig,
@@ -111,16 +129,23 @@ impl MadrpcClient {
         })
     }
 
-    /// Set retry configuration for this client
+    /// Sets retry configuration for this client.
+    ///
+    /// # Arguments
+    /// * `retry_config` - The retry configuration
     pub fn with_retry(mut self, retry_config: RetryConfig) -> Self {
         self.retry_config = retry_config;
         self
     }
 
-    /// Call an RPC method
+    /// Calls an RPC method.
     ///
     /// Acquires a connection from the pool, sends the request, and returns the connection to the pool.
     /// Implements automatic retry logic with exponential backoff for transient failures.
+    ///
+    /// # Arguments
+    /// * `method` - The method name to call
+    /// * `args` - The method arguments
     pub async fn call(
         &self,
         method: impl Into<String>,

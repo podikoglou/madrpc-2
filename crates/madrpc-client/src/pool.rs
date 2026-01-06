@@ -6,15 +6,17 @@ use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-/// Pooled connection wrapper
+/// Pooled connection wrapper.
 #[derive(Clone)]
 pub struct PooledConnection {
+    /// The TCP stream
     pub stream: Arc<Mutex<TcpStream>>,
+    /// The address this connection is to
     pub addr: String,
 }
 
 impl PooledConnection {
-    /// Check if the connection is still valid
+    /// Checks if the connection is still valid.
     pub async fn is_valid(&self) -> bool {
         // Try to check if the socket is still connected
         let stream = self.stream.try_lock();
@@ -32,7 +34,7 @@ impl PooledConnection {
     }
 }
 
-/// Connection pool configuration
+/// Connection pool configuration.
 #[derive(Clone)]
 pub struct PoolConfig {
     /// Maximum number of connections per node
@@ -50,7 +52,7 @@ impl Default for PoolConfig {
     }
 }
 
-/// Connection pool for TCP connections
+/// Connection pool for TCP connections.
 pub struct ConnectionPool {
     transport: TcpTransportAsync,
     inner: Arc<Mutex<PoolInner>>,
@@ -63,7 +65,10 @@ struct PoolInner {
 }
 
 impl ConnectionPool {
-    /// Create a new connection pool
+    /// Creates a new connection pool.
+    ///
+    /// # Arguments
+    /// * `config` - The pool configuration
     pub fn new(config: PoolConfig) -> Result<Self> {
         let transport = TcpTransportAsync::new()?;
 
@@ -77,7 +82,10 @@ impl ConnectionPool {
         })
     }
 
-    /// Get a connection from the pool or create a new one
+    /// Gets a connection from the pool or creates a new one.
+    ///
+    /// # Arguments
+    /// * `addr` - The address to connect to
     pub async fn acquire(&self, addr: &str) -> Result<PooledConnection> {
         let timeout_duration = tokio::time::Duration::from_millis({
             let inner = self.inner.lock().await;
@@ -159,7 +167,10 @@ impl ConnectionPool {
         Ok(pooled)
     }
 
-    /// Return a connection to the pool
+    /// Returns a connection to the pool.
+    ///
+    /// # Arguments
+    /// * `conn` - The connection to release
     pub async fn release(&self, conn: PooledConnection) {
         let mut inner = self.inner.lock().await;
 

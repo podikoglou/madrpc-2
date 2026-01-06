@@ -1,3 +1,7 @@
+//! MaDRPC Client
+//!
+//! This crate provides the RPC client for making requests to MaDRPC orchestrators.
+
 pub mod pool;
 pub mod client;
 
