@@ -36,6 +36,23 @@ pub enum MadrpcError {
     Connection(String),
 }
 
+impl MadrpcError {
+    /// Check if this error is retryable
+    ///
+    /// Returns true for transient errors like network issues, timeouts, and unavailable nodes.
+    /// Returns false for permanent errors like invalid requests or JavaScript execution errors.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            MadrpcError::Transport(_)
+                | MadrpcError::Timeout(_)
+                | MadrpcError::NodeUnavailable(_)
+                | MadrpcError::Io(_)
+                | MadrpcError::Connection(_)
+        )
+    }
+}
+
 impl From<std::net::AddrParseError> for MadrpcError {
     fn from(err: std::net::AddrParseError) -> Self {
         MadrpcError::InvalidRequest(err.to_string())
