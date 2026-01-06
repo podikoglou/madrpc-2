@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::registry::MetricsRegistry;
+use crate::registry::{MetricsConfig, MetricsRegistry};
 use crate::snapshot::{MetricsSnapshot, ServerInfo, ServerType};
 use madrpc_common::protocol::{Request, Response};
 use madrpc_common::protocol::error::Result as MadrpcResult;
@@ -44,6 +44,12 @@ impl NodeMetricsCollector {
     pub fn new() -> Self {
         Self {
             registry: Arc::new(MetricsRegistry::new()),
+        }
+    }
+
+    pub fn with_config(config: MetricsConfig) -> Self {
+        Self {
+            registry: Arc::new(MetricsRegistry::with_config(config)),
         }
     }
 
@@ -89,6 +95,12 @@ impl OrchestratorMetricsCollector {
     pub fn new() -> Self {
         Self {
             registry: Arc::new(MetricsRegistry::new()),
+        }
+    }
+
+    pub fn with_config(config: MetricsConfig) -> Self {
+        Self {
+            registry: Arc::new(MetricsRegistry::with_config(config)),
         }
     }
 
