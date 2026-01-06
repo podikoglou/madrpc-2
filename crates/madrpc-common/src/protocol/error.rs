@@ -8,6 +8,9 @@ pub enum MadrpcError {
     #[error("JSON serialization error: {0}")]
     JsonSerialization(#[from] serde_json::Error),
 
+    #[error("MessagePack serialization error: {0}")]
+    MessagePackSerialization(String),
+
     #[error("Request timeout after {0}ms")]
     Timeout(u64),
 
