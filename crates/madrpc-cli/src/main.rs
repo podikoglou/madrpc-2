@@ -108,12 +108,7 @@ async fn main() -> Result<()> {
             server.run_with_handler(move |request| {
                 let node = node.clone();
                 async move {
-                    // Run the sync handle_request in a blocking thread
-                    let response = tokio::task::spawn_blocking(move || {
-                        node.handle_request(&request)
-                    }).await??;
-
-                    Ok(response)
+                    node.handle_request(&request)
                 }
             }).await?;
 
