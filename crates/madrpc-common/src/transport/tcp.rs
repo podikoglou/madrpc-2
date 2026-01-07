@@ -6,10 +6,36 @@ use crate::protocol::{Request, Response};
 use crate::protocol::error::{Result, MadrpcError};
 use crate::transport::codec::JsonCodec;
 
-/// Default timeout for TCP operations
+/// Default timeout for TCP operations (5 seconds)
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// TCP transport wrapper for MaDRPC (synchronous).
+///
+/// This is the synchronous TCP transport used by nodes. It provides blocking
+/// I/O operations with built-in timeouts and error handling.
+///
+/// # Wire Protocol
+///
+/// Messages are sent with a 4-byte length prefix (big-endian u32) followed
+/// by the JSON-encoded data:
+///
+/// ```text
+/// [4-byte length] [JSON data]
+/// ```
+///
+/// # Example
+///
+/// ```no_run
+/// use madrpc_common::transport::TcpTransport;
+/// use madrpc_common::protocol::Request;
+/// use serde_json::json;
+///
+/// let transport = TcpTransport::new().unwrap();
+/// let mut stream = transport.connect("127.0.0.1:8080").unwrap();
+///
+/// let request = Request::new("compute", json!({"n": 100}));
+/// let response = transport.send_request(&mut stream, &request).unwrap();
+/// ```
 pub struct TcpTransport;
 
 impl TcpTransport {
@@ -20,8 +46,23 @@ impl TcpTransport {
 
     /// Connects to a remote endpoint.
     ///
+    /// This method resolves the address (which may resolve to multiple addresses)
+    /// and attempts to connect to each until one succeeds.
+    ///
     /// # Arguments
+    ///
     /// * `addr` - The address to connect to (e.g., "127.0.0.1:8080")
+    ///
+    /// # Returns
+    ///
+    /// A connected TCP stream with read/write timeouts configured
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The address cannot be parsed
+    /// - Connection fails to all resolved addresses
+    /// - Timeouts cannot be set on the stream
     pub fn connect(&self, addr: &str) -> Result<TcpStream> {
         // Parse the address
         let socket_addrs = addr
@@ -58,9 +99,17 @@ impl TcpTransport {
 
     /// Sends a request and waits for response.
     ///
+    /// This is a convenience method that combines `send_message` and `receive_message`
+    /// with JSON encoding/decoding.
+    ///
     /// # Arguments
+    ///
     /// * `stream` - The TCP stream to use
     /// * `request` - The request to send
+    ///
+    /// # Returns
+    ///
+    /// The response from the server
     pub fn send_request(&self, stream: &mut TcpStream, request: &Request) -> Result<Response> {
         // Encode the request
         let encoded = JsonCodec::encode_request(request)?;
@@ -79,11 +128,16 @@ impl TcpTransport {
 
     /// Sends a message with length prefix.
     ///
-    /// Wire format: [4-byte length as u32 big-endian] + [data]
+    /// Wire format: `[4-byte length as u32 big-endian] + [data]`
     ///
     /// # Arguments
+    ///
     /// * `stream` - The TCP stream to use
     /// * `data` - The data to send
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if writing to the stream fails
     pub fn send_message(stream: &mut TcpStream, data: &[u8]) -> Result<()> {
         let len = data.len() as u32;
 
@@ -107,10 +161,22 @@ impl TcpTransport {
 
     /// Receives a message with length prefix.
     ///
-    /// Wire format: [4-byte length as u32 big-endian] + [data]
+    /// Wire format: `[4-byte length as u32 big-endian] + [data]`
     ///
     /// # Arguments
+    ///
     /// * `stream` - The TCP stream to read from
+    ///
+    /// # Returns
+    ///
+    /// The received message data
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Reading the length prefix fails
+    /// - Message exceeds maximum size (100 MB)
+    /// - Reading the data fails
     pub fn receive_message(stream: &mut TcpStream) -> Result<Vec<u8>> {
         // Read length prefix
         let mut len_buf = [0u8; 4];
@@ -139,6 +205,11 @@ impl TcpTransport {
     }
 
     /// Map IO errors to appropriate MadrpcError variants
+    ///
+    /// Converts standard IO errors into domain-specific errors:
+    /// - Timeouts/would block -> `Timeout`
+    /// - Connection errors -> `Connection`
+    /// - Other IO errors -> `Io`
     fn map_io_error(err: std::io::Error, context: &str) -> MadrpcError {
         match err.kind() {
             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
@@ -162,8 +233,36 @@ impl Default for TcpTransport {
 
 /// Async TCP transport wrapper for MaDRPC.
 ///
-/// This is the async version of TcpTransport, used by the Orchestrator
-/// which needs to maintain async/await for its operations.
+/// This is the async version of `TcpTransport`, used by the Orchestrator
+/// which needs to maintain async/await for its operations. It provides
+/// the same functionality as `TcpTransport` but with async/await support.
+///
+/// # Wire Protocol
+///
+/// Messages are sent with a 4-byte length prefix (big-endian u32) followed
+/// by the JSON-encoded data:
+///
+/// ```text
+/// [4-byte length] [JSON data]
+/// ```
+///
+/// # Example
+///
+/// ```no_run
+/// use madrpc_common::transport::TcpTransportAsync;
+/// use madrpc_common::protocol::Request;
+/// use serde_json::json;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let transport = TcpTransportAsync::new()?;
+/// let mut stream = transport.connect("127.0.0.1:8080").await?;
+///
+/// let request = Request::new("compute", json!({"n": 100}));
+/// let response = transport.send_request(&mut stream, &request).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct TcpTransportAsync;
 
 // Import the async traits needed for tokio::net::TcpStream
@@ -177,8 +276,15 @@ impl TcpTransportAsync {
 
     /// Connects to a remote endpoint (async).
     ///
+    /// This method resolves the address and attempts to connect asynchronously.
+    ///
     /// # Arguments
+    ///
     /// * `addr` - The address to connect to
+    ///
+    /// # Returns
+    ///
+    /// A connected TCP stream
     pub async fn connect(&self, addr: &str) -> Result<tokio::net::TcpStream> {
         // Parse the address
         let socket_addrs = addr
@@ -207,9 +313,17 @@ impl TcpTransportAsync {
 
     /// Sends a request and waits for response (async).
     ///
+    /// This is a convenience method that combines `send_message` and `receive_message`
+    /// with JSON encoding/decoding.
+    ///
     /// # Arguments
+    ///
     /// * `stream` - The TCP stream to use
     /// * `request` - The request to send
+    ///
+    /// # Returns
+    ///
+    /// The response from the server
     pub async fn send_request(&self, stream: &mut tokio::net::TcpStream, request: &Request) -> Result<Response> {
         // Encode the request
         let encoded = JsonCodec::encode_request(request)?;
@@ -228,9 +342,10 @@ impl TcpTransportAsync {
 
     /// Sends a message with length prefix (async).
     ///
-    /// Wire format: [4-byte length as u32 big-endian] + [data]
+    /// Wire format: `[4-byte length as u32 big-endian] + [data]`
     ///
     /// # Arguments
+    ///
     /// * `stream` - The TCP stream to use
     /// * `data` - The data to send
     pub async fn send_message(stream: &mut tokio::net::TcpStream, data: &[u8]) -> Result<()> {
@@ -259,10 +374,22 @@ impl TcpTransportAsync {
 
     /// Receives a message with length prefix (async).
     ///
-    /// Wire format: [4-byte length as u32 big-endian] + [data]
+    /// Wire format: `[4-byte length as u32 big-endian] + [data]`
     ///
     /// # Arguments
+    ///
     /// * `stream` - The TCP stream to read from
+    ///
+    /// # Returns
+    ///
+    /// The received message data
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Reading the length prefix fails
+    /// - Message exceeds maximum size (100 MB)
+    /// - Reading the data fails
     pub async fn receive_message(stream: &mut tokio::net::TcpStream) -> Result<Vec<u8>> {
         // Read length prefix
         let mut len_buf = [0u8; 4];
@@ -293,6 +420,11 @@ impl TcpTransportAsync {
     }
 
     /// Map IO errors to appropriate MadrpcError variants
+    ///
+    /// Converts standard IO errors into domain-specific errors:
+    /// - Timeouts/would block -> `Timeout`
+    /// - Connection errors -> `Connection`
+    /// - Other IO errors -> `Io`
     fn map_io_error(err: std::io::Error, context: &str) -> MadrpcError {
         match err.kind() {
             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {

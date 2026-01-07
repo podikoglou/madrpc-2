@@ -1,3 +1,8 @@
+//! Integration tests for the protocol module
+//!
+//! These tests verify the correctness of request/response serialization,
+//! ID generation, and error handling.
+
 #[cfg(test)]
 mod tests {
     use super::super::*;

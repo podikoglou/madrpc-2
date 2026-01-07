@@ -1,21 +1,65 @@
 //! MaDRPC Request Types
+//!
+//! This module defines the RPC request structure and unique ID generation.
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 /// Unique identifier for an RPC request
+///
+/// Each request is assigned a unique 64-bit ID that combines a timestamp
+/// with a counter to ensure uniqueness across the system.
 pub type RequestId = u64;
 
 /// Name of the RPC method to call
+///
+/// This is the string name of the JavaScript function registered on the node.
 pub type MethodName = String;
 
 /// RPC method arguments (JSON value)
+///
+/// Arguments are passed as a JSON value and can contain any JSON-serializable data.
 pub type RpcArgs = serde_json::Value;
 
+/// Global counter for ensuring unique request IDs
 static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// An RPC request to be sent from client to node.
+///
+/// # Request Flow
+///
+/// 1. Client creates a `Request` with method name and arguments
+/// 2. Request is serialized to JSON and sent via TCP
+/// 3. Node deserializes and executes the method
+/// 4. Node returns a `Response` with the same request ID
+///
+/// # Fields
+///
+/// - `id`: Unique identifier (combines timestamp + counter for uniqueness)
+/// - `method`: Name of the JavaScript function to call
+/// - `args`: Arguments to pass to the function (JSON value)
+/// - `timeout_ms`: Optional timeout for request execution
+/// - `idempotency_key`: Optional key for safe retry of requests
+///
+/// # Example
+///
+/// ```
+/// use madrpc_common::protocol::requests::Request;
+/// use serde_json::json;
+///
+/// // Create a basic request
+/// let request = Request::new("compute", json!({"n": 100}));
+///
+/// // Create a request with timeout
+/// let request = Request::new("compute", json!({"n": 100}))
+///     .with_timeout(5000);
+///
+/// // Create a request with idempotency for safe retries
+/// let request = Request::new("transfer", json!({"amount": 100}))
+///     .with_timeout(5000)
+///     .with_idempotency_key("txn-123");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Request {
     /// Unique request identifier
@@ -33,9 +77,24 @@ pub struct Request {
 impl Request {
     /// Creates a new RPC request.
     ///
+    /// Automatically generates a unique request ID by combining the current
+    /// timestamp with an atomic counter.
+    ///
     /// # Arguments
-    /// * `method` - The method name to call
-    /// * `args` - The method arguments as JSON value
+    ///
+    /// * `method` - The method name to call (e.g., "compute_pi")
+    /// * `args` - The method arguments as a JSON value
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use madrpc_common::protocol::requests::Request;
+    /// use serde_json::json;
+    ///
+    /// let request = Request::new("compute", json!({"n": 100}));
+    /// assert_eq!(request.method, "compute");
+    /// assert_eq!(request.args, json!({"n": 100}));
+    /// ```
     pub fn new(method: impl Into<String>, args: RpcArgs) -> Self {
         Request {
             id: generate_request_id(),
@@ -48,8 +107,23 @@ impl Request {
 
     /// Sets the timeout for this request.
     ///
+    /// If the request takes longer than the specified timeout, it will be
+    /// cancelled and a timeout error will be returned.
+    ///
     /// # Arguments
+    ///
     /// * `timeout_ms` - Timeout in milliseconds
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use madrpc_common::protocol::requests::Request;
+    /// use serde_json::json;
+    ///
+    /// let request = Request::new("compute", json!({}))
+    ///     .with_timeout(5000);
+    /// assert_eq!(request.timeout_ms, Some(5000));
+    /// ```
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = Some(timeout_ms);
         self
@@ -57,14 +131,37 @@ impl Request {
 
     /// Sets an idempotency key for safe retries.
     ///
+    /// Idempotency keys ensure that retrying a request won't cause duplicate
+    /// operations. The server should track processed keys and return cached
+    /// results for duplicate keys.
+    ///
     /// # Arguments
-    /// * `key` - Unique key for idempotency
+    ///
+    /// * `key` - Unique key for idempotency (e.g., UUID, transaction ID)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use madrpc_common::protocol::requests::Request;
+    /// use serde_json::json;
+    ///
+    /// let request = Request::new("transfer", json!({"amount": 100}))
+    ///     .with_idempotency_key("txn-abc-123");
+    /// assert_eq!(request.idempotency_key, Some("txn-abc-123".to_string()));
+    /// ```
     pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
         self.idempotency_key = Some(key.into());
         self
     }
 }
 
+/// Generates a unique request ID.
+///
+/// The ID combines:
+/// - Upper 32 bits: Timestamp (seconds since UNIX epoch)
+/// - Lower 32 bits: Atomic counter
+///
+/// This ensures uniqueness across restarts and within the same runtime.
 fn generate_request_id() -> RequestId {
     // Try to use system time as the base
     let timestamp = SystemTime::now()
