@@ -1,66 +1,116 @@
 # MaDRPC
 
-A distributed RPC system in Rust that runs JavaScript functions across multiple nodes. Uses Boa as the JS engine and TCP for transport.
+Distributed RPC system in Rust. Run JavaScript functions across multiple nodes using Boa.
 
-## Architecture
+## Protocol
 
 ```
-client -> orchestrator (round-robin) -> node 1, node 2, ...
-                                      (Boa JS engine)
+[4-byte length (big-endian)][JSON payload]
 ```
 
-- **Orchestrator**: Simple round-robin load balancer, forwards requests to nodes
-- **Node**: Executes JavaScript functions using Boa, thread-per-connection
-- **Client**: Makes RPC calls with connection pooling
+Request:
+```json
+{
+  "method": "function_name",
+  "args": {"key": "value"},
+  "id": 123
+}
+```
 
-## Quick Start
+Response:
+```json
+{
+  "result": {"key": "value"},
+  "error": null,
+  "id": 123
+}
+```
+
+Connections stay alive for multiple requests.
+
+## CLI
 
 ```bash
-# Build
-cargo build --release
+# Orchestrator (load balancer)
+madrpc orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002
 
-# Start orchestrator
-cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001
+# Node (compute worker)
+madrpc node -s script.js -b 0.0.0.0:9001 --pool-size 8
 
-# Start node
-cargo run --bin madrpc -- node -s script.js -b 0.0.0.0:9001
+# Monitor
+madrpc top 127.0.0.1:8080
 ```
 
 ## Writing RPCs
 
-Register functions in JavaScript:
+Create a JavaScript file and load it with the node:
 
 ```javascript
+// Register a function
 madrpc.register('add', (args) => {
-    return { result: args.a + args.b };
+    const a = args.a || 0;
+    const b = args.b || 0;
+    return { sum: a + b };
 });
 ```
 
-## Client Usage
+### Calling other RPCs from within an RPC
 
-```rust
-let client = MadrpcClient::new("127.0.0.1:8080").await?;
-let result = client.call("add", json!({"a": 1, "b": 2})).await?;
+```javascript
+madrpc.register('parallel_sum', async (args) => {
+    const numbers = args.numbers || [];
+
+    // Call another RPC
+    const result1 = await madrpc.call('add', { a: numbers[0], b: numbers[1] });
+    const result2 = await madrpc.call('add', { a: numbers[2], b: numbers[3] });
+
+    return { total: result1.sum + result2.sum };
+});
 ```
 
-## Workspace
+### Async RPCs
 
-```
-crates/
-  madrpc-common/       # Protocol, TCP transport
-  madrpc-server/       # Node (thread-per-connection)
-  madrpc-orchestrator/ # Load balancer
-  madrpc-client/       # RPC client with pooling
-  madrpc-metrics/      # Metrics for `top` command
-  madrpc-cli/          # CLI entry point
+```javascript
+madrpc.register('fetch_data', async (args) => {
+    // Do async work
+    const response = await fetch(args.url);
+    const data = await response.json();
+    return { data };
+});
 ```
 
 ## Examples
 
 ```bash
-# Monte Carlo Pi estimation
+# Run the Monte Carlo Pi example
 cargo run -p monte-carlo-pi
+```
 
-# Monitor metrics
-cargo run --bin madrpc -- top 127.0.0.1:8080
+Example script (`examples/monte-carlo-pi/scripts/pi.js`):
+
+```javascript
+// LCG random number generator
+class LCG {
+    constructor(seed) { this.state = seed; }
+    next() {
+        this.state = (this.state * 1103515245 + 12345) & 0x7fffffff;
+        return this.state / 0x7fffffff;
+    }
+}
+
+// Monte Carlo sampling
+madrpc.register('monte_carlo_sample', (args) => {
+    const samples = args.samples || 1000000;
+    const seed = args.seed || 0;
+    const rng = new LCG(seed);
+    let inside = 0;
+
+    for (let i = 0; i < samples; i++) {
+        const x = rng.next();
+        const y = rng.next();
+        if (x * x + y * y <= 1) inside++;
+    }
+
+    return { inside, total: samples };
+});
 ```
