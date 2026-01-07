@@ -1,7 +1,6 @@
 use anyhow::Result;
 use madrpc_client::MadrpcClient;
 use serde_json::json;
-use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,62 +15,31 @@ async fn main() -> Result<()> {
     let num_nodes = 50;
     let samples_per_node = total_samples / num_nodes;
 
+    println!("Computing Pi using Monte Carlo...");
     println!(
-        "Computing Pi using Monte Carlo with {} samples...",
-        total_samples
+        "JavaScript will orchestrate {} parallel calls",
+        num_nodes
     );
-    println!(
-        "Using {} nodes, {} samples per node",
-        num_nodes, samples_per_node
-    );
+    println!("Total samples: {}", total_samples);
 
-    // Spawn parallel requests to multiple nodes
-    let mut tasks = Vec::new();
+    // Single RPC call to JavaScript aggregate function
+    // JavaScript handles all parallelization using madrpc.call() and Promise.all()
+    let args = json!({
+        "numNodes": num_nodes,
+        "samplesPerNode": samples_per_node
+    });
 
-    for i in 0..num_nodes {
-        let client = client.clone();
-        let start = Instant::now();
-        let task = tokio::spawn(async move {
-            let args = json!({
-                "samples": samples_per_node,
-                "seed": i, // Different seed for each node
-            });
+    let result = client.call("aggregate", args).await?;
 
-            client.call("monte_carlo_sample", args).await
-        });
-        tasks.push((i, start, task));
-    }
-
-    // Wait for all results and aggregate
-    let mut total_inside = 0u64;
-
-    for (i, start, task) in tasks.into_iter() {
-        match task.await {
-            Ok(Ok(result)) => {
-                let inside: u64 = serde_json::from_value(result["inside"].clone()).unwrap_or(0);
-                let total: u64 = serde_json::from_value(result["total"].clone()).unwrap_or(0);
-                let elapsed = start.elapsed().as_millis();
-                println!(
-                    "Node {}: {} inside out of {} samples ({}ms)",
-                    i, inside, total, elapsed
-                );
-                total_inside += inside;
-            }
-            Ok(Err(e)) => {
-                eprintln!("Node {} failed: {}", i, e);
-            }
-            Err(e) => {
-                eprintln!("Node {} task failed: {}", i, e);
-            }
-        }
-    }
-
-    // Calculate Pi
-    let pi_estimate = 4.0 * (total_inside as f64) / (total_samples as f64);
+    // Extract and display results from the JS-aggregated response
+    let total_inside: u64 = serde_json::from_value(result["totalInside"].clone())?;
+    let total_samples_result: u64 =
+        serde_json::from_value(result["totalSamples"].clone())?;
+    let pi_estimate: f64 = serde_json::from_value(result["piEstimate"].clone())?;
 
     println!("\n=== Results ===");
     println!("Total inside: {}", total_inside);
-    println!("Total samples: {}", total_samples);
+    println!("Total samples: {}", total_samples_result);
     println!("Pi estimate:  {:.10}", pi_estimate);
     println!("Actual Pi:     {:.10}", std::f64::consts::PI);
     println!(
