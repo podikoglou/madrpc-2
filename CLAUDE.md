@@ -26,7 +26,7 @@ cargo run -p monte-carlo-pi
 cargo run -p simple-test
 ```
 
-## Architecture
+## Architecture Overview
 
 The system consists of three main components that communicate via TCP:
 
@@ -41,7 +41,136 @@ The system consists of three main components that communicate via TCP:
 - **Connection Pooling**: Client maintains connection pools for performance
 - **Keep-Alive**: Each TCP connection processes multiple requests until closed
 
-### JavaScript Scripts
+### Data Flow
+
+1. Client makes RPC call to orchestrator
+2. Orchestrator selects next node via round-robin (`LoadBalancer::next_node()`)
+3. Request forwarded to selected compute node via TCP
+4. Node creates a fresh Boa Context on the worker thread and executes function
+5. Result returned through orchestrator to client
+
+### Wire Protocol
+
+- **Transport**: TCP with keep-alive connections
+- **Serialization**: JSON over TCP
+- **Message Format**: `[4-byte length prefix as u32 big-endian] + [JSON data]`
+- **Max Message Size**: 100 MB (to prevent memory exhaustion)
+
+## Directory Structure
+
+```
+madrpc-2/
+├── crates/                          # Core library crates
+│   ├── madrpc-common/               # Shared protocol and transport
+│   ├── madrpc-server/              # Node implementation (JavaScript execution)
+│   ├── madrpc-orchestrator/       # Load balancer and request forwarder
+│   ├── madrpc-client/              # RPC client with connection pooling
+│   ├── madrpc-metrics/            # Metrics collection infrastructure
+│   └── madrpc-cli/               # CLI entry point
+├── examples/                      # Example applications
+│   ├── monte-carlo-pi/           # Monte Carlo Pi estimation
+│   └── simple-test/              # Basic RPC test
+├── tests/                        # Integration tests
+└── Cargo.toml                    # Workspace configuration
+```
+
+## Crate-by-Crate Guide
+
+### `crates/madrpc-common` - Protocol and Transport Layer
+
+**Purpose**: Core protocol definitions and TCP transport layer shared across all components
+
+**Where to find what**:
+- `src/lib.rs` - Public API exports
+- `src/protocol/` - RPC protocol definitions
+  - `requests.rs` - `Request` struct with unique IDs, timeouts, idempotency keys
+  - `responses.rs` - `Response` struct with success/error handling
+  - `error.rs` - `MadrpcError` enum with retryable error classification
+- `src/transport/` - TCP transport and codecs
+  - `tcp.rs` - Synchronous and async TCP transports
+  - `tcp_server.rs` - Async TCP server (used by orchestrator)
+  - `codec.rs` - JSON encoding/decoding with 4-byte length prefix
+
+**Key Types**:
+```rust
+pub type RequestId = u64;
+pub type MethodName = String;
+pub type RpcArgs = serde_json::Value;
+pub type RpcResult = serde_json::Value;
+
+pub struct Request { /* id, method, args, timeout_ms, idempotency_key */ }
+pub struct Response { /* id, result, error, success */ }
+pub enum MadrpcError { /* Transport, JsonSerialization, Timeout, etc. */ }
+```
+
+### `crates/madrpc-server` - Node Implementation
+
+**Purpose**: Execute JavaScript functions using Boa JavaScript engine
+
+**Where to find what**:
+- `src/lib.rs` - Public API and Node struct
+- `src/node.rs` - Main `Node` struct that handles RPC requests
+- `src/runtime/` - Boa JavaScript integration
+  - `context.rs` - Thread-safe Boa context wrapper with distributed RPC support
+  - `bindings.rs` - JavaScript bindings (`madrpc.register`, `madrpc.call`)
+  - `conversions.rs` - JSON ↔ JavaScript value conversions
+  - `job_executor.rs` - Tokio integration for async JavaScript
+
+**Critical Implementation Details**:
+- **Thread Safety**: Each request creates a fresh Boa Context to enable true parallelism
+- **Script Caching**: Nodes cache script source to avoid file I/O, but parse in each Context due to Boa's string interner
+
+### `crates/madrpc-orchestrator` - Load Balancer
+
+**Purpose**: Round-robin load balancer with circuit breaker and health checking
+
+**Where to find what**:
+- `src/lib.rs` - Public API exports
+- `src/orchestrator.rs` - Main orchestrator implementation
+- `src/load_balancer.rs` - Round-robin selection with circuit breaker
+- `src/node.rs` - Node state management with health tracking
+- `src/health_checker.rs` - Periodic health checks
+
+**Circuit Breaker**: Exponential backoff with configurable failure threshold, timeout, and multiplier.
+
+### `crates/madrpc-client` - RPC Client
+
+**Purpose**: Client for making RPC calls with connection pooling and retry logic
+
+**Where to find what**:
+- `src/lib.rs` - Public API exports
+- `src/client.rs` - Main `MadrpcClient` with retry logic
+- `src/pool.rs` - TCP connection pooling with timeout and validation
+
+**Retry Logic**: Exponential backoff with jitter for transient errors (network issues, timeouts).
+
+### `crates/madrpc-metrics` - Metrics Infrastructure
+
+**Purpose**: Metrics collection for nodes and orchestrators
+
+**Where to find what**:
+- `src/lib.rs` - Public API exports
+- `src/collector.rs` - `MetricsCollector` trait and implementations
+- `src/registry.rs` - Thread-safe metrics storage
+- `src/snapshot.rs` - Metrics snapshot types
+
+**Built-in Endpoints**: `_metrics` and `_info` for monitoring.
+
+### `crates/madrpc-cli` - Command Line Interface
+
+**Purpose**: CLI entry point with commands for all components
+
+**Where to find what**:
+- `src/main.rs` - CLI argument parsing and command dispatch
+- `src/top.rs` - Real-time metrics TUI using ratatui
+- `src/commands/` - Individual command implementations
+  - `node.rs` - Node command implementation
+  - `orchestrator.rs` - Orchestrator command implementation
+  - `call.rs` - RPC call command implementation
+
+## JavaScript Integration
+
+### Script Registration Pattern
 
 Scripts register functions using the global `madrpc.register(name, function)`:
 
@@ -54,13 +183,94 @@ madrpc.register('monte_carlo_sample', (args) => {
 });
 ```
 
-### Data Flow
+### Distributed RPC Calls
 
-1. Client makes RPC call to orchestrator
-2. Orchestrator selects next node via round-robin (`LoadBalancer::next_node()`)
-3. Request forwarded to selected compute node via TCP
-4. Node creates a fresh Boa Context on the worker thread and executes function
-5. Result returned through orchestrator to client
+Nodes can make distributed RPC calls using `madrpc.call()`:
+
+```javascript
+madrpc.register('aggregate', async (args) => {
+    const promises = [];
+    for (let i = 0; i < args.numNodes; i++) {
+        promises.push(madrpc.call('monte_carlo_sample', {
+            samples: args.samplesPerNode,
+            seed: i
+        }));
+    }
+    const results = await Promise.all(promises);
+    // ... aggregation
+    return { piEstimate: 4 * totalInside / totalSamples };
+});
+```
+
+**Where to find JavaScript integration**:
+- `crates/madrpc-server/src/runtime/bindings.rs` - JavaScript function implementations
+- `crates/madrpc-server/src/runtime/context.rs` - Boa context management
+- `examples/` - JavaScript script examples
+
+## Thread Model
+
+### Orchestrator (Async)
+- Uses tokio async runtime
+- `TcpServer` spawns async task per connection
+- Single thread can handle many connections efficiently
+- No JavaScript execution (just forwarding)
+
+### Nodes (Threaded)
+- `TcpServerThreaded` spawns OS thread per connection
+- Limited by semaphore (default: `num_cpus * 2`)
+- Each request gets fresh Boa Context
+- True parallelism with no shared JavaScript state
+
+## Error Handling
+
+### Error Classification
+
+**Retryable Errors** (transient):
+- Network issues, timeouts, connection failures
+- Node unavailable, pool exhaustion
+
+**Non-Retryable Errors** (permanent):
+- Invalid requests, JavaScript execution errors
+- Invalid responses, all nodes failed
+
+**Where to find**: `crates/madrpc-common/src/protocol/error.rs`
+
+### Circuit Breaker Implementation
+
+- **Closed**: Normal operation
+- **Open**: Fail fast after consecutive failures
+- **Half-Open**: Test recovery with exponential backoff
+
+**Where to find**: `crates/madrpc-orchestrator/src/load_balancer.rs`
+
+## Examples
+
+### Monte Carlo Pi Estimation
+- **Location**: `examples/monte-carlo-pi/`
+- **Purpose**: Demonstrates distributed parallel computation
+- **Features**: JavaScript orchestrates 50 parallel RPC calls using LCG for reproducible random numbers
+
+### Simple Test
+- **Location**: `examples/simple-test/`
+- **Purpose**: Basic RPC call example
+- **Use**: Good starting point for understanding the system
+
+## Key Dependencies
+
+### Core Dependencies
+- **tokio** - Async runtime (orchestrator, client)
+- **boa_engine** - JavaScript engine (nodes)
+- **serde_json** - JSON serialization
+- **thiserror** - Error handling
+- **tracing** - Structured logging
+
+### CLI Dependencies
+- **argh** - Command line parsing
+- **ratatui** - Terminal UI for monitoring
+- **crossterm** - Cross-platform terminal handling
+
+### External Dependencies
+- **Boa JavaScript engine** at `/tmp/boa/core/engine` (local path)
 
 ## Important Implementation Notes
 
@@ -70,17 +280,6 @@ madrpc.register('monte_carlo_sample', (args) => {
 - **Thread-Per-Connection**: Nodes use `TcpServerThreaded` which spawns OS threads (not async tasks) for each connection, limited by a custom `StdSemaphore` using `AtomicUsize` and `Condvar`.
 - **Orchestrator is Async**: The orchestrator uses `TcpServer` (tokio async) since it doesn't use Boa and handles many concurrent connections efficiently.
 - **Metrics**: Built-in metrics collection on nodes/orchestrator via `madrpc-metrics` - see `top` command for TUI monitoring
-
-## Workspace Structure
-
-- `crates/madrpc-common` - Protocol definitions and TCP transport
-- `crates/madrpc-server` - Node implementation with thread-per-connection
-- `crates/madrpc-orchestrator` - Load balancer and request forwarder
-- `crates/madrpc-client` - RPC client with connection pooling
-- `crates/madrpc-metrics` - Metrics collection infrastructure
-- `crates/madrpc-cli` - CLI entry point with `node`, `orchestrator`, and `top` commands
-- `examples/` - Example applications demonstrating usage
-- `tests/` - Integration tests
 
 ## Development Practices
 
