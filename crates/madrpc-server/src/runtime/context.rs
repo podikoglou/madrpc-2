@@ -106,7 +106,11 @@ impl MadrpcContext {
         client: Option<madrpc_client::MadrpcClient>,
     ) -> Result<Self> {
         let client = client.map(Arc::new);
-        let mut ctx = Context::default();
+        let job_executor = std::rc::Rc::new(crate::runtime::TokioJobExecutor::new());
+        let mut ctx = Context::builder()
+            .job_executor(job_executor)
+            .build()
+            .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to build context: {}", e)))?;
 
         // Install madrpc bindings (native Rust functions)
         bindings::install_madrpc_bindings(&mut ctx, client.clone())?;
@@ -132,7 +136,11 @@ impl MadrpcContext {
         client: Option<madrpc_client::MadrpcClient>,
     ) -> Result<Self> {
         let client = client.map(Arc::new);
-        let mut ctx = Context::default();
+        let job_executor = std::rc::Rc::new(crate::runtime::TokioJobExecutor::new());
+        let mut ctx = Context::builder()
+            .job_executor(job_executor)
+            .build()
+            .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to build context: {}", e)))?;
 
         // Install madrpc bindings (native Rust functions)
         bindings::install_madrpc_bindings(&mut ctx, client.clone())?;

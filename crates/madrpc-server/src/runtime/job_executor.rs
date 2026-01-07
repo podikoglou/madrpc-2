@@ -80,14 +80,27 @@ impl JobExecutor for TokioJobExecutor {
 
     /// Runs all jobs synchronously (blocking).
     ///
-    /// This creates a tokio runtime and blocks until all jobs are complete.
+    /// This creates a tokio runtime if one doesn't exist, or uses the existing one.
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> boa_engine::JsResult<()> {
+        // Try to use the current runtime if we're in one
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // We're inside a tokio runtime, use block_in_place to run synchronously
+            return tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    // Create a LocalSet for this scope
+                    let local_set = tokio::task::LocalSet::new();
+                    local_set.run_until(self.run_jobs_async(&RefCell::new(context))).await
+                })
+            });
+        }
+
+        // No current runtime, create a new one
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
             .unwrap();
 
-        tokio::task::LocalSet::default()
+        tokio::task::LocalSet::new()
             .block_on(&runtime, self.run_jobs_async(&RefCell::new(context)))
     }
 
