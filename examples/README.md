@@ -4,7 +4,11 @@ This directory contains JavaScript examples demonstrating various features of th
 
 ## Overview
 
-Each example is a standalone JavaScript file that can be loaded into a MaDRPC node. The examples demonstrate different aspects of distributed RPC programming, from basic operations to complex parallel computations.
+Each example is a standalone JavaScript file that can be loaded into a MaDRPC node. The examples demonstrate different aspects of distributed RPC programming, from basic operations to complex parallel computations:
+
+- **basic-operations.js** - Simple number, string, and JSON operations for beginners
+- **monte-carlo-pi.js** - Distributed Pi estimation using Monte Carlo sampling
+- **distributed-wordcount.js** - Map-Reduce pattern for distributed data processing
 
 ## Running the Examples
 
@@ -13,7 +17,7 @@ Each example is a standalone JavaScript file that can be loaded into a MaDRPC no
 First, start the orchestrator (load balancer):
 
 ```bash
-cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080
+cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002 -n 127.0.0.1:9003
 ```
 
 ### 2. Start Compute Nodes
@@ -26,6 +30,9 @@ cargo run --bin madrpc -- node -s examples/basic-operations.js -b 0.0.0.0:9001 -
 
 # Terminal 2: Node with Monte Carlo example
 cargo run --bin madrpc -- node -s examples/monte-carlo-pi.js -b 0.0.0.0:9002 --pool-size 4
+
+# Terminal 3: Node with distributed wordcount
+cargo run --bin madrpc -- node -s examples/distributed-wordcount.js -b 0.0.0.0:9003 --pool-size 4
 ```
 
 ### 3. Make RPC Calls
@@ -40,6 +47,9 @@ cargo run --bin madrpc -- call 127.0.0.1:8080 concatenate '{"str1": "Hello", "st
 # Monte Carlo Pi estimation
 cargo run --bin madrpc -- call 127.0.0.1:8080 aggregate '{"numNodes": 10, "samplesPerNode": 100000}'
 cargo run --bin madrpc -- call 127.0.0.1:8080 estimate_single '{"totalSamples": 1000000}'
+
+# Distributed wordcount (Map-Reduce)
+cargo run --bin madrpc -- call 127.0.0.1:8080 run_wordcount '{"numChunks": 20, "wordsPerChunk": 500}'
 ```
 
 ### 4. Monitor Performance (Optional)
@@ -123,6 +133,51 @@ cargo run --bin madrpc -- call 127.0.0.1:8080 aggregate '{"numNodes": 10, "sampl
 - `piEstimate`: Estimated value of Pi (should be close to 3.14159...)
 
 **Best for**: Learning about distributed computation, parallel processing, and async RPC patterns in MaDRPC.
+
+---
+
+### distributed-wordcount.js
+
+**Purpose**: Demonstrates the classic Map-Reduce pattern for distributed data processing, similar to Apache Spark.
+
+**Features demonstrated**:
+- **Map phase**: Parallel word counting across distributed nodes
+- **Reduce phase**: Aggregating results using `Promise.all()`
+- **Filtered variant**: Stop word removal and configurable word length filtering
+- **Benchmark function**: Comparing parallel vs sequential execution
+- **End-to-end workflow**: Data generation, map, and reduce phases
+
+**Registered functions**:
+- `map_wordcount`: Basic word counting (tokenizes and counts words in a text chunk)
+- `map_wordcount_filtered`: Enhanced counting with stop word filtering
+- `reduce_wordcount`: Orchestrates parallel map operations and aggregates results
+- `benchmark_wordcount`: Performance benchmark comparing execution times
+- `generate_sample_data`: Creates synthetic datasets for testing
+- `run_wordcount`: Complete end-to-end workflow
+
+**Example calls**:
+
+```bash
+# Quick end-to-end run (generates data, processes, and shows results)
+cargo run --bin madrpc -- call 127.0.0.1:8080 run_wordcount '{"numChunks": 20, "wordsPerChunk": 500, "filtered": true}'
+
+# Generate sample data
+cargo run --bin madrpc -- call 127.0.0.1:8080 generate_sample_data '{"numChunks": 10, "wordsPerChunk": 1000}'
+
+# Run map-reduce on existing chunks
+cargo run --bin madrpc -- call 127.0.0.1:8080 reduce_wordcount '{"chunks": ["hello world", "world hello"], "filtered": false}'
+
+# Benchmark parallel execution
+cargo run --bin madrpc -- call 127.0.0.1:8080 benchmark_wordcount '{"chunks": ["test data here"], "iterations": 3}'
+```
+
+**Expected output**: The result will include:
+- `finalCounts`: Complete word frequency map
+- `stats.totalChunks`: Number of chunks processed
+- `stats.totalUniqueWords`: Total unique words across all chunks
+- `stats.topWords`: Top 10 most frequent words
+
+**Best for**: Understanding distributed computing patterns, Map-Reduce algorithms, and how madrpc can scale data processing tasks across multiple nodes.
 
 ---
 
