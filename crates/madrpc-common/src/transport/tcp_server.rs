@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tracing::{debug, error, info, warn};
 
 use crate::protocol::{Request, Response};
 use crate::protocol::error::{MadrpcError, Result};
@@ -54,12 +55,12 @@ impl TcpServer {
             let (stream, peer_addr) = self.listener.accept().await
                 .map_err(|e| MadrpcError::Connection(format!("Failed to accept connection: {}", e)))?;
 
-            eprintln!("Connection established from {}", peer_addr);
+            info!(%peer_addr, "Connection established");
 
             let handler = handler.clone();
             tokio::spawn(async move {
                 if let Err(e) = handle_connection(stream, handler).await {
-                    eprintln!("Connection error: {}", e);
+                    error!(error = %e, %peer_addr, "Connection error");
                 }
             });
         }
@@ -77,6 +78,7 @@ where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Response>> + Send + 'static,
 {
+    let peer_addr = stream.peer_addr().ok();
     loop {
         // Read length prefix
         let mut len_buf = [0u8; 4];
@@ -84,7 +86,7 @@ where
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 // Connection closed by peer
-                eprintln!("Connection closed by peer");
+                debug!(?peer_addr, "Connection closed by peer");
                 return Ok(());
             }
             Err(e) => {
@@ -115,7 +117,7 @@ where
         let request = match JsonCodec::decode_request(&buf) {
             Ok(req) => req,
             Err(e) => {
-                eprintln!("Failed to decode request: {}", e);
+                warn!(error = %e, ?peer_addr, "Failed to decode request");
                 let error_response = Response::error(0, e.to_string());
                 let _ = send_response(&mut stream, &error_response).await;
                 continue;
@@ -127,14 +129,14 @@ where
         let response = match handler(request).await {
             Ok(resp) => resp,
             Err(e) => {
-                eprintln!("Handler error: {}", e);
+                error!(error = %e, request_id, ?peer_addr, "Handler error");
                 Response::error(request_id, e.to_string())
             }
         };
 
         // Send response
         if let Err(e) = send_response(&mut stream, &response).await {
-            eprintln!("Failed to send response: {}", e);
+            error!(error = %e, request_id, ?peer_addr, "Failed to send response");
             return Err(e);
         }
     }
