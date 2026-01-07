@@ -8,7 +8,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     // Connect to orchestrator
-    let client = MadrpcClient::new("127.0.0.1:8080").await?;
+    let client = MadrpcClient::new("0.0.0.0:8080").await?;
 
     // Total samples to compute
     let total_samples = 10_000_000;
@@ -16,10 +16,7 @@ async fn main() -> Result<()> {
     let samples_per_node = total_samples / num_nodes;
 
     println!("Computing Pi using Monte Carlo...");
-    println!(
-        "JavaScript will orchestrate {} parallel calls",
-        num_nodes
-    );
+    println!("JavaScript will orchestrate {} parallel calls", num_nodes);
     println!("Total samples: {}", total_samples);
 
     // Single RPC call to JavaScript aggregate function
@@ -33,8 +30,7 @@ async fn main() -> Result<()> {
 
     // Extract and display results from the JS-aggregated response
     let total_inside: u64 = serde_json::from_value(result["totalInside"].clone())?;
-    let total_samples_result: u64 =
-        serde_json::from_value(result["totalSamples"].clone())?;
+    let total_samples_result: u64 = serde_json::from_value(result["totalSamples"].clone())?;
     let pi_estimate: f64 = serde_json::from_value(result["piEstimate"].clone())?;
 
     println!("\n=== Results ===");

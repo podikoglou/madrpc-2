@@ -1,4 +1,4 @@
-use boa_engine::{Context, Source, js_string, value::JsValue};
+use boa_engine::{Context, Source, js_string, value::JsValue, object::builtins::JsPromise, builtins::promise::PromiseState};
 use std::path::Path;
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use serde_json::Value as JsonValue;
@@ -183,6 +183,52 @@ impl MadrpcContext {
         let args_js = json_to_js_value(args, &mut *ctx)?;
         let result = func_obj.call(&JsValue::undefined(), &[args_js], &mut *ctx)
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Function execution error: {}", e)))?;
+
+        // Check if result is a Promise
+        if let Some(result_obj) = result.as_object() {
+            if let Ok(promise) = JsPromise::from_object(result_obj.clone()) {
+                tracing::debug!("call_rpc: Result is a Promise, waiting for resolution...");
+
+                // Poll the promise by running jobs in a loop
+                let max_iterations = 100_000;
+                for iteration in 0..max_iterations {
+                    // Run pending jobs (this processes promise callbacks)
+                    let _ = ctx.run_jobs();
+
+                    // Check promise state
+                    match promise.state() {
+                        PromiseState::Pending => {
+                            // Continue polling
+                            if iteration % 100 == 0 {
+                                std::thread::sleep(std::time::Duration::from_micros(100));
+                            }
+                            continue;
+                        }
+                        PromiseState::Fulfilled(value) => {
+                            tracing::debug!("call_rpc: Promise fulfilled after {} iterations", iteration);
+                            // Convert the fulfillment value to JSON
+                            return js_value_to_json(value, &mut *ctx);
+                        }
+                        PromiseState::Rejected(reason) => {
+                            tracing::debug!("call_rpc: Promise rejected after {} iterations", iteration);
+                            // Convert rejection reason to string for error message
+                            let reason_str = if let Some(s) = reason.as_string() {
+                                s.to_std_string()
+                                    .unwrap_or_else(|_| "Unknown error".to_string())
+                            } else {
+                                format!("{:?}", reason)
+                            };
+                            return Err(MadrpcError::JavaScriptExecution(format!("Promise rejected: {}", reason_str)));
+                        }
+                    }
+                }
+
+                return Err(MadrpcError::JavaScriptExecution("Promise did not resolve within timeout".to_string()));
+            }
+        }
+
+        // Not a promise, just run jobs once for any microtasks
+        let _ = ctx.run_jobs();
 
         tracing::debug!("call_rpc: Converting result to JSON...");
         js_value_to_json(result, &mut *ctx)
