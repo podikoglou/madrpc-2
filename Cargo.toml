@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/madrpc-common", "crates/madrpc-server", "crates/madrpc-client", "crates/madrpc-orchestrator", "crates/madrpc-cli", "crates/madrpc-metrics", "examples/monte-carlo-pi", "examples/simple-test", "tests"]
+members = ["crates/madrpc-common", "crates/madrpc-server", "crates/madrpc-client", "crates/madrpc-orchestrator", "crates/madrpc-cli", "crates/madrpc-metrics", "tests"]
 resolver = "2"
 
 [workspace.package]
