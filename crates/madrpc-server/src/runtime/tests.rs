@@ -1,3 +1,13 @@
+//! Integration tests for the MaDRPC server runtime.
+//!
+//! This module tests the JavaScript runtime integration, including:
+//! - Context creation and initialization
+//! - Function registration and calling
+//! - Promise handling and async execution
+//! - Error handling
+//! - Thread safety guarantees
+//! - Security properties (no pointer-as-number storage)
+
 #[cfg(test)]
 mod tests {
     use crate::runtime::context::MadrpcContext;
@@ -8,6 +18,23 @@ mod tests {
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+    /// Helper function to create a temporary test script file.
+    ///
+    /// This function generates a unique file path for each test to avoid
+    /// conflicts when running tests in parallel.
+    ///
+    /// # Parameters
+    ///
+    /// * `content` - The JavaScript source code to write to the file
+    ///
+    /// # Returns
+    ///
+    /// The path to the created script file.
+    ///
+    /// # Note
+    ///
+    /// Test files are created in `/tmp/` with unique names. They are not
+    /// automatically cleaned up; tests should clean up after themselves if needed.
     fn create_test_script(content: &str) -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = PathBuf::from(format!("/tmp/test_madrpc_{}.js", id));
@@ -15,6 +42,10 @@ mod tests {
         path
     }
 
+    /// Test that a MadrpcContext can be created from a script file.
+    ///
+    /// This test verifies the basic initialization path: loading a script
+    /// and creating a Boa context with MaDRPC bindings.
     #[test]
     fn test_context_creation() {
         let script = create_test_script("void 0;");
@@ -22,6 +53,10 @@ mod tests {
         assert!(ctx.is_ok());
     }
 
+    /// Test that JavaScript functions can be registered via `madrpc.register()`.
+    ///
+    /// This test verifies that the registration binding works correctly and
+    /// functions are stored in the registry.
     #[test]
     fn test_register_function() {
         let script = create_test_script(r#"
@@ -33,6 +68,12 @@ mod tests {
         assert!(ctx.is_ok());
     }
 
+    /// Test that registered JavaScript functions can be called from Rust.
+    ///
+    /// This test verifies the full RPC flow:
+    /// 1. Register a function in JavaScript
+    /// 2. Call it from Rust via `call_rpc()`
+    /// 3. Receive the result
     #[test]
     fn test_call_registered_function() {
         let script = create_test_script(r#"
@@ -46,6 +87,10 @@ mod tests {
         assert_eq!(result, json!({"msg": "test"}));
     }
 
+    /// Test that JavaScript functions can perform computations and return results.
+    ///
+    /// This test verifies that argument passing and return value conversion
+    /// work correctly for simple computations.
     #[test]
     fn test_call_function_with_computation() {
         let script = create_test_script(r#"
@@ -59,6 +104,10 @@ mod tests {
         assert_eq!(result, json!({"sum": 8}));
     }
 
+    /// Test that calling an unregistered function returns an error.
+    ///
+    /// This test verifies that the RPC system properly validates method
+    /// names and returns an appropriate error for non-existent methods.
     #[test]
     fn test_call_unregistered_function_returns_error() {
         let script = create_test_script("void 0;");
@@ -68,6 +117,10 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Test that scripts with syntax errors fail to load.
+    ///
+    /// This test verifies that the context creation process properly
+    /// detects and reports JavaScript syntax errors.
     #[test]
     fn test_load_script_with_syntax_error_returns_error() {
         let script = create_test_script("this is not valid javascript ))");
@@ -75,6 +128,10 @@ mod tests {
         assert!(ctx.is_err());
     }
 
+    /// Test that JavaScript functions can return null.
+    ///
+    /// This test verifies that the null value is properly converted
+    /// between JavaScript and JSON representations.
     #[test]
     fn test_function_returning_null() {
         let script = create_test_script(r#"
@@ -86,6 +143,10 @@ mod tests {
         assert_eq!(result, json!(null));
     }
 
+    /// Test that JavaScript functions can return nested objects.
+    ///
+    /// This test verifies that deeply nested objects are properly
+    /// converted between JavaScript and JSON representations.
     #[test]
     fn test_function_with_nested_object() {
         let script = create_test_script(r#"
@@ -105,6 +166,10 @@ mod tests {
         assert_eq!(result, json!({"deep": {"nested": {"value": 42}}}));
     }
 
+    /// Test that a context can be created with an optional client.
+    ///
+    /// This test verifies the `with_client()` constructor works correctly
+    /// even when no client is provided (None).
     #[test]
     fn test_context_with_client() {
         let script = create_test_script("// empty");
@@ -116,7 +181,15 @@ mod tests {
     // Security Tests
     // ========================================================================
 
-    /// Test that MadrpcContext is NOT Send (cannot be sent across threads)
+    /// Test that MadrpcContext is NOT Send (cannot be sent across threads).
+    ///
+    /// This is a compile-time test that verifies the `!Send` marker is working.
+    /// If MadrpcContext were Send, this test would fail to compile.
+    ///
+    /// # Safety
+    ///
+    /// This is critical for preventing undefined behavior with Boa's
+    /// thread-local Context.
     #[test]
     fn test_context_is_not_send() {
         // This test verifies at compile-time that MadrpcContext cannot be sent
@@ -128,7 +201,15 @@ mod tests {
         assert_not_send::<MadrpcContext>();
     }
 
-    /// Test that MadrpcContext is NOT Sync (cannot be shared between threads)
+    /// Test that MadrpcContext is NOT Sync (cannot be shared between threads).
+    ///
+    /// This is a compile-time test that verifies the `!Sync` marker is working.
+    /// If MadrpcContext were Sync, this test would fail to compile.
+    ///
+    /// # Safety
+    ///
+    /// This is critical for preventing undefined behavior with Boa's
+    /// thread-local Context.
     #[test]
     fn test_context_is_not_sync() {
         // This test verifies at compile-time that MadrpcContext cannot be shared
@@ -140,7 +221,18 @@ mod tests {
         assert_not_sync::<MadrpcContext>();
     }
 
-    /// Test that bindings don't use pointer-as-number storage
+    /// Test that bindings don't use pointer-as-number storage.
+    ///
+    /// This security test verifies that the old unsafe pattern of storing
+    /// raw pointers as JavaScript numbers has been eliminated. The test
+    /// scans all properties on the madrpc object to ensure no pointer-like
+    /// values exist.
+    ///
+    /// # Background
+    ///
+    /// Previous versions of the code stored the client pointer as a number
+    /// on the madrpc object, which is unsafe and can lead to memory corruption.
+    /// The new implementation uses closure capture instead.
     #[test]
     fn test_no_pointer_as_number_storage() {
         use boa_engine::{Context, js_string};
@@ -189,7 +281,11 @@ mod tests {
         }
     }
 
-    /// Test that setOrchestrator was removed from the API
+    /// Test that setOrchestrator was removed from the API.
+    ///
+    /// This test verifies that the unsafe `setOrchestrator` function has
+    /// been removed from the public API. Users should now create nodes
+    /// with orchestrator support via `Node::with_orchestrator()` instead.
     #[test]
     fn test_set_orchestrator_removed_from_api() {
         use boa_engine::{Context, js_string};
@@ -216,7 +312,10 @@ mod tests {
             "setOrchestrator should not exist (removed from API for security)");
     }
 
-    /// Test that shared runtime is reused instead of creating new ones
+    /// Test that shared runtime is reused instead of creating new ones.
+    ///
+    /// This test verifies that the blocking runtime is created once and
+    /// reused for all blocking calls, preventing resource exhaustion.
     #[test]
     fn test_shared_blocking_runtime_reuse() {
         use crate::runtime::bindings::get_blocking_runtime;

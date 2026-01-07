@@ -1,3 +1,28 @@
+//! JSON <-> JavaScript Value Conversions
+//!
+//! This module provides bidirectional conversion between `serde_json::Value` and
+//! Boa's `JsValue`. These conversions are essential for:
+//!
+//! - Passing RPC arguments from the wire format (JSON) to JavaScript functions
+//! - Returning JavaScript function results as JSON for transmission
+//!
+//! # Type Mapping
+//!
+//! | JSON Type | JavaScript Type |
+//! |-----------|-----------------|
+//! | null | null |
+//! | boolean | Boolean |
+//! | number | Number |
+//! | string | String |
+//! | array | Array |
+//! | object | Object |
+//!
+//! # Limitations
+//!
+//! - Symbol keys in JavaScript objects are skipped during conversion
+//! - JavaScript symbols are converted to JSON null
+//! - Numbers outside valid JSON ranges cause errors
+
 use boa_engine::{
     Context,
     value::JsValue,
@@ -8,7 +33,34 @@ use boa_engine::{
 use serde_json::Value as JsonValue;
 use madrpc_common::protocol::error::{Result, MadrpcError};
 
-/// Convert serde_json::Value to Boa JsValue
+/// Convert serde_json::Value to Boa JsValue.
+///
+/// This function recursively converts JSON values to their JavaScript equivalents,
+/// handling primitive types, arrays, and nested objects.
+///
+/// # Arguments
+///
+/// * `json` - The JSON value to convert
+/// * `ctx` - Mutable reference to the Boa context (used for object creation)
+///
+/// # Returns
+///
+/// A `JsValue` representing the equivalent JavaScript value
+///
+/// # Errors
+///
+/// Returns `MadrpcError::InvalidRequest` if:
+/// - A number is out of range for JavaScript's Number type
+/// - Object property creation fails
+/// - Array push operation fails
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut ctx = Context::default();
+/// let json = json!({"name": "test", "value": 42});
+/// let js_value = json_to_js_value(json, &mut ctx)?;
+/// ```
 pub fn json_to_js_value(json: JsonValue, ctx: &mut Context) -> Result<JsValue> {
     match json {
         JsonValue::Null => Ok(JsValue::null()),
@@ -49,7 +101,37 @@ pub fn json_to_js_value(json: JsonValue, ctx: &mut Context) -> Result<JsValue> {
     }
 }
 
-/// Convert Boa JsValue to serde_json::Value
+/// Convert Boa JsValue to serde_json::Value.
+///
+/// This function recursively converts JavaScript values to their JSON equivalents,
+/// handling primitives, arrays, objects, and special cases like undefined and symbols.
+///
+/// # Arguments
+///
+/// * `value` - The JavaScript value to convert
+/// * `ctx` - Mutable reference to the Boa context (used for property access)
+///
+/// # Returns
+///
+/// A `serde_json::Value` representing the equivalent JSON value
+///
+/// # Conversion Rules
+///
+/// - `undefined` and `null` → JSON `null`
+/// - `Boolean` → JSON `boolean`
+/// - `Number` → JSON `number`
+/// - `String` → JSON `string`
+/// - `Array` → JSON `array` (recursively converts elements)
+/// - `Object` → JSON `object` (skips symbol keys, recursively converts values)
+/// - `Symbol` → JSON `null`
+///
+/// # Errors
+///
+/// Returns `MadrpcError::InvalidRequest` if:
+/// - Array length overflows when converting to usize
+/// - String conversion from UTF-16 fails
+/// - Property access fails
+/// - A float value cannot be represented as a JSON number
 pub fn js_value_to_json(value: JsValue, ctx: &mut Context) -> Result<JsonValue> {
     if value.is_undefined() || value.is_null() {
         return Ok(JsonValue::Null);

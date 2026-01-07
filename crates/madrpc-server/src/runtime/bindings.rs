@@ -1,3 +1,23 @@
+//! JavaScript bindings for MaDRPC
+//!
+//! This module provides the native Rust functions that are exposed to JavaScript
+//! code running in Boa. These functions allow JavaScript to interact with the
+//! MaDRPC system.
+//!
+//! # JavaScript API
+//!
+//! The following global functions are registered on the `madrpc` object:
+//!
+//! - `madrpc.register(name, function)` - Register a JavaScript function for RPC
+//! - `madrpc.call(method, args)` - Make an async distributed RPC call (returns Promise)
+//! - `madrpc.callSync(method, args)` - Make a synchronous blocking RPC call
+//!
+//! # Safety
+//!
+//! The client `Arc` is safely stored in closure capture data instead of using
+//! pointer-as-number storage. Each closure that needs the client gets its own
+//! cloned Arc, ensuring proper reference counting and lifetime management.
+
 use boa_engine::{Context, js_string, native_function::NativeFunction, value::JsValue, object::{JsObject, FunctionObjectBuilder, builtins::JsPromise}, JsNativeError, job::Job};
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use crate::runtime::conversions::{json_to_js_value, js_value_to_json};
@@ -6,16 +26,30 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Global tokio runtime for blocking calls.
 ///
 /// This is a single shared runtime that is created once and reused for all
-/// blocking synchronous RPC calls (callSync, setOrchestrator). This avoids
-/// the performance overhead and resource exhaustion of creating a new runtime
-/// for each call.
+/// blocking synchronous RPC calls (callSync). This avoids the performance
+/// overhead and resource exhaustion of creating a new runtime for each call.
+///
+/// # Thread Safety
+///
+/// The runtime is wrapped in a Mutex to allow safe concurrent access from
+/// multiple threads. Each blocking call will lock the mutex, run the async
+/// operation to completion, then release the lock.
 static BLOCKING_RUNTIME: OnceLock<Mutex<tokio::runtime::Runtime>> = OnceLock::new();
 
 /// Gets or creates the shared blocking runtime.
 ///
-/// This runtime is used for synchronous blocking operations like callSync
-/// and setOrchestrator. It's created once and reused to avoid the overhead
-/// of creating a new runtime on each call.
+/// This runtime is used for synchronous blocking operations like callSync.
+/// It's created once and reused to avoid the overhead of creating a new
+/// runtime on each call.
+///
+/// # Returns
+///
+/// A static reference to the mutex-wrapped tokio runtime.
+///
+/// # Errors
+///
+/// Returns an error if tokio runtime creation fails (e.g., due to system
+/// resource limits).
 pub fn get_blocking_runtime() -> std::io::Result<&'static Mutex<tokio::runtime::Runtime>> {
     BLOCKING_RUNTIME.get_or_try_init(|| {
         tokio::runtime::Runtime::new()
@@ -23,8 +57,19 @@ pub fn get_blocking_runtime() -> std::io::Result<&'static Mutex<tokio::runtime::
     })
 }
 
-/// Async RPC call implementation using NativeFunction::from_async_fn
+/// Async RPC call implementation using NativeFunction::from_async_fn.
+///
 /// This uses the existing tokio runtime instead of creating a new one.
+///
+/// # Parameters
+///
+/// * `client` - Arc-wrapped MadrpcClient for making the RPC call
+/// * `method` - Name of the RPC method to call
+/// * `json_args` - Arguments to pass to the RPC method (JSON)
+///
+/// # Returns
+///
+/// The RPC call result as JSON, or an error string if the call fails.
 async fn rpc_call_async(
     client: Arc<madrpc_client::MadrpcClient>,
     method: String,
@@ -38,11 +83,33 @@ async fn rpc_call_async(
 ///
 /// This is the SINGLE place where we expose custom functions to the JavaScript VM.
 ///
+/// # Functions Registered
+///
+/// - `madrpc.register(name, function)` - Register a JavaScript function
+/// - `madrpc.call(method, args)` - Async distributed RPC call (only if client provided)
+/// - `madrpc.callSync(method, args)` - Synchronous distributed RPC call (only if client provided)
+///
 /// # Safety
 ///
 /// The client Arc is stored safely in the closure data of the native functions.
 /// We do NOT use pointer-as-number storage. The Arc is cloned into each closure
 /// that needs it, ensuring proper reference counting and lifetime management.
+///
+/// # Parameters
+///
+/// * `ctx` - Mutable reference to the Boa context
+/// * `client` - Optional Arc-wrapped MadrpcClient for distributed calls
+///
+/// # Returns
+///
+/// `Ok(())` if bindings were installed successfully, or an error if installation fails.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Creating the madrpc global object fails
+/// - Setting properties on the madrpc object fails
+/// - Registering the madrpc global property fails
 pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madrpc_client::MadrpcClient>>) -> Result<()> {
     // Create madrpc global object
     let madrpc_object = JsObject::default(ctx.intrinsics());

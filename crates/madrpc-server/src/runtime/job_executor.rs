@@ -1,3 +1,31 @@
+//! Tokio job executor for Boa's promise job queue
+//!
+//! This module implements a custom `JobExecutor` that integrates Boa's promise
+//! job queue with tokio's async runtime. This is essential for supporting
+//! JavaScript promises and async functions within MaDRPC.
+//!
+//! # Architecture
+//!
+//! Boa's JavaScript engine uses a job queue to manage promise resolution and
+//! async operations. This executor:
+//!
+//! 1. Stores jobs in separate queues (promise, async, generic)
+//! 2. Provides async execution via `run_jobs_async()`
+//! 3. Integrates with tokio's runtime for concurrent async job execution
+//!
+//! # Job Types
+//!
+//! - **PromiseJob**: Microtasks for promise resolution (then/catch handlers)
+//! - **AsyncJob**: Native async jobs created by `NativeFunction::from_async_fn`
+//! - **GenericJob**: General-purpose jobs
+//!
+//! # Execution Model
+//!
+//! When `run_jobs_async()` is called:
+//! 1. All pending async jobs are polled concurrently using `FutureGroup`
+//! 2. After each async job completes, promise and generic jobs are drained
+//! 3. The loop continues until all queues are empty
+
 use boa_engine::{context::Context, job::{GenericJob, Job, JobExecutor, NativeAsyncJob, PromiseJob}};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -8,9 +36,29 @@ use std::rc::Rc;
 /// This executor stores pending promise jobs in separate queues and provides an async
 /// method to process them, allowing JavaScript promises to be resolved within
 /// an async context.
+///
+/// # Thread Safety
+///
+/// This executor uses `Rc<RefCell<_>>` for interior mutability, which is safe
+/// because Boa's job executor is designed to be used from a single thread.
+///
+/// # Example
+///
+/// ```ignore
+/// let executor = Rc::new(TokioJobExecutor::new());
+/// let mut ctx = Context::builder()
+///     .job_executor(executor.clone())
+///     .build()?;
+///
+/// // Run any pending jobs
+/// executor.run_jobs_async(&RefCell::new(&mut ctx)).await?;
+/// ```
 pub struct TokioJobExecutor {
+    /// Queue for promise microtasks (then/catch handlers)
     promise_jobs: RefCell<VecDeque<PromiseJob>>,
+    /// Queue for native async jobs
     async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
+    /// Queue for general-purpose jobs
     generic_jobs: RefCell<VecDeque<GenericJob>>,
 }
 
@@ -28,6 +76,11 @@ impl TokioJobExecutor {
     ///
     /// This can be used to check if `run_jobs_async()` would do any work
     /// before calling it.
+    ///
+    /// # Returns
+    ///
+    /// `true` if any of the three job queues (promise, async, or generic) contain
+    /// pending jobs; `false` otherwise.
     pub fn has_pending_jobs(&self) -> bool {
         !self.promise_jobs.borrow().is_empty()
             || !self.async_jobs.borrow().is_empty()
@@ -35,6 +88,20 @@ impl TokioJobExecutor {
     }
 
     /// Drains all pending jobs (except async jobs which are polled separately).
+    ///
+    /// This method:
+    /// 1. Runs at most one generic job (macrotask semantics)
+    /// 2. Runs all pending promise jobs (microtask semantics)
+    /// 3. Clears Boa's kept objects cache
+    ///
+    /// # Parameters
+    ///
+    /// * `context` - Mutable reference to the Boa context for job execution
+    ///
+    /// # Note
+    ///
+    /// Async jobs are NOT drained here; they must be polled separately via
+    /// `run_jobs_async()`.
     fn drain_jobs(&self, context: &mut Context) {
         // Run one generic job if available
         if let Some(generic) = self.generic_jobs.borrow_mut().pop_front() {
@@ -65,7 +132,18 @@ impl JobExecutor for TokioJobExecutor {
     /// Enqueues a job to be executed later.
     ///
     /// This is called by Boa's promise implementation when a promise
-    /// resolution job needs to be scheduled.
+    /// resolution job needs to be scheduled. Jobs are stored in separate
+    /// queues based on their type.
+    ///
+    /// # Parameters
+    ///
+    /// * `job` - The job to enqueue (PromiseJob, AsyncJob, or GenericJob)
+    /// * `_context` - Unused parameter (required by trait)
+    ///
+    /// # Note
+    ///
+    /// TimeoutJob and other job types are not supported and will be logged
+    /// as warnings.
     fn enqueue_job(self: Rc<Self>, job: Job, _context: &mut Context) {
         match job {
             Job::PromiseJob(job) => self.promise_jobs.borrow_mut().push_back(job),
@@ -81,6 +159,21 @@ impl JobExecutor for TokioJobExecutor {
     /// Runs all jobs synchronously (blocking).
     ///
     /// This creates a tokio runtime if one doesn't exist, or uses the existing one.
+    /// If already inside a tokio runtime, it uses `block_in_place` to avoid
+    /// nested runtime issues.
+    ///
+    /// # Parameters
+    ///
+    /// * `context` - Mutable reference to the Boa context
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if all jobs ran successfully, or an error if a job failed.
+    ///
+    /// # Blocking Behavior
+    ///
+    /// This function will block the current thread until all jobs complete.
+    /// It should only be called when async execution is not possible.
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> boa_engine::JsResult<()> {
         // Try to use the current runtime if we're in one
         if tokio::runtime::Handle::try_current().is_ok() {
@@ -108,6 +201,28 @@ impl JobExecutor for TokioJobExecutor {
     ///
     /// This processes async jobs concurrently while draining promise and
     /// generic jobs after each async job completes.
+    ///
+    /// # Execution Algorithm
+    ///
+    /// 1. Poll all pending async jobs concurrently using `FutureGroup`
+    /// 2. Wait for at least one async job to complete
+    /// 3. Drain all promise and generic jobs (microtasks)
+    /// 4. Yield back to the tokio scheduler
+    /// 5. Repeat until all queues are empty
+    ///
+    /// # Parameters
+    ///
+    /// * `context` - RefCell-wrapped mutable reference to the Boa context
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when all jobs have completed, or an error if a job failed.
+    ///
+    /// # Concurrency
+    ///
+    /// Multiple async jobs are polled concurrently, but promise jobs are
+    /// executed sequentially between async job completions to maintain
+    /// proper microtask semantics.
     async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> boa_engine::JsResult<()>
     where
         Self: Sized,

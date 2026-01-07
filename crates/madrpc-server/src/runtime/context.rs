@@ -22,6 +22,12 @@ use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}
 /// This is a safer alternative to `unsafe impl Send/Sync` because it relies
 /// on Rust's type system to enforce thread safety rather than documentation
 /// and programmer discipline.
+///
+/// # How It Works
+///
+/// `Rc<()>` is !Send and !Sync. By including it as PhantomData in the
+/// ThreadNotSendSync struct, we propagate these marker traits to the entire
+/// MadrpcContext struct, making it also !Send and !Sync.
 use std::marker::PhantomData;
 use std::rc::Rc;
 
@@ -31,8 +37,9 @@ struct ThreadNotSendSync {
 
 /// Boa context wrapper with MaDRPC bindings.
 ///
-/// The Context is wrapped in Mutex for internal use, but the entire
-/// MadrpcContext is designed to be used on a single thread only.
+/// This type wraps Boa's JavaScript context with custom MaDRPC-specific
+/// bindings that allow JavaScript code to register functions and make
+/// distributed RPC calls.
 ///
 /// # Thread Safety
 ///
@@ -44,8 +51,21 @@ struct ThreadNotSendSync {
 /// is always accessed from the same thread, preventing data races and
 /// undefined behavior.
 ///
+/// # Usage Pattern
+///
 /// Each request should create its own fresh MadrpcContext instance.
-/// Contexts should never be shared between threads.
+/// Contexts should never be shared between threads or reused across
+/// requests.
+///
+/// # Example
+///
+/// ```ignore
+/// // Create a new context from a script file
+/// let mut ctx = MadrpcContext::new("script.js")?;
+///
+/// // Call a registered function
+/// let result = ctx.call_rpc("myFunction", json!({"arg": 42}))?;
+/// ```
 pub struct MadrpcContext {
     /// Thread-local marker that prevents Send/Sync
     _thread_marker: ThreadNotSendSync,
@@ -58,20 +78,71 @@ pub struct MadrpcContext {
 }
 
 impl MadrpcContext {
-    /// Create a new Boa context with MaDRPC bindings
+    /// Create a new Boa context with MaDRPC bindings.
+    ///
+    /// This constructor reads the script from the given path, creates a fresh
+    /// Boa context with MaDRPC bindings, and evaluates the script.
+    ///
+    /// # Parameters
+    ///
+    /// * `script_path` - Path to the JavaScript script file to load and evaluate
+    ///
+    /// # Returns
+    ///
+    /// A new MadrpcContext instance with the script loaded and evaluated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The script file cannot be read
+    /// - The Boa context cannot be built
+    /// - The script contains syntax errors or fails to evaluate
     pub fn new(script_path: impl AsRef<Path>) -> Result<Self> {
         Self::with_client(script_path, None)
     }
 
-    /// Create a new Boa context from a cached script source string
+    /// Create a new Boa context from a cached script source string.
     ///
     /// This is more efficient than `new()` because it avoids file I/O.
     /// The script source is parsed and evaluated in a fresh context.
+    ///
+    /// # Parameters
+    ///
+    /// * `script_source` - The JavaScript source code as a string
+    ///
+    /// # Returns
+    ///
+    /// A new MadrpcContext instance with the script evaluated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The Boa context cannot be built
+    /// - The script contains syntax errors or fails to evaluate
     pub fn from_source(script_source: &str) -> Result<Self> {
         Self::with_client_from_source(script_source, None)
     }
 
-    /// Create a new Boa context with optional client for distributed calls
+    /// Create a new Boa context with optional client for distributed calls.
+    ///
+    /// This constructor is similar to `new()` but allows passing an optional
+    /// MadrpcClient for making distributed RPC calls to other nodes.
+    ///
+    /// # Parameters
+    ///
+    /// * `script_path` - Path to the JavaScript script file
+    /// * `client` - Optional MadrpcClient for distributed calls
+    ///
+    /// # Returns
+    ///
+    /// A new MadrpcContext instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The script file cannot be read
+    /// - The Boa context cannot be built
+    /// - The script fails to evaluate
     pub fn with_client(
         script_path: impl AsRef<Path>,
         client: Option<madrpc_client::MadrpcClient>,
@@ -100,9 +171,26 @@ impl MadrpcContext {
         })
     }
 
-    /// Create a new Boa context from cached script source with optional client
+    /// Create a new Boa context from cached script source with optional client.
     ///
     /// This is more efficient than `with_client()` because it avoids file I/O.
+    /// Use this when you have already loaded the script source and want to
+    /// create multiple contexts.
+    ///
+    /// # Parameters
+    ///
+    /// * `script_source` - The JavaScript source code as a string
+    /// * `client` - Optional MadrpcClient for distributed calls
+    ///
+    /// # Returns
+    ///
+    /// A new MadrpcContext instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The Boa context cannot be built
+    /// - The script fails to evaluate
     pub fn with_client_from_source(
         script_source: &str,
         client: Option<madrpc_client::MadrpcClient>,
@@ -128,7 +216,42 @@ impl MadrpcContext {
         })
     }
 
-    /// Call a registered RPC function
+    /// Call a registered RPC function.
+    ///
+    /// This method looks up a function by name in the madrpc registry and
+    /// calls it with the provided arguments. The function can be synchronous
+    /// or async (returning a Promise).
+    ///
+    /// # Parameters
+    ///
+    /// * `method` - Name of the registered function to call
+    /// * `args` - Arguments to pass to the function (must be valid JSON)
+    ///
+    /// # Returns
+    ///
+    /// The function's return value as JSON.
+    ///
+    /// # Promise Handling
+    ///
+    /// If the function returns a Promise, this method will poll it to
+    /// completion before returning. It uses a loop that:
+    /// 1. Runs pending promise jobs
+    /// 2. Checks the promise state
+    /// 3. Continues polling until the promise settles
+    /// 4. Returns the fulfillment value or a rejection error
+    ///
+    /// The polling has a maximum iteration limit of 100,000 to prevent
+    /// infinite loops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The method is not registered
+    /// - The registered value is not a function
+    /// - Function execution fails
+    /// - Arguments cannot be converted
+    /// - A promise is rejected
+    /// - A promise times out
     pub fn call_rpc(&mut self, method: &str, args: JsonValue) -> Result<JsonValue> {
         tracing::debug!("call_rpc: calling method '{}'", method);
 
@@ -213,7 +336,25 @@ impl MadrpcContext {
         js_value_to_json(result, &mut self.ctx)
     }
 
-    /// Make a distributed RPC call (callable from JavaScript via a callback)
+    /// Make a distributed RPC call.
+    ///
+    /// This method can be called from JavaScript via a callback to make
+    /// RPC calls to other nodes in the cluster.
+    ///
+    /// # Parameters
+    ///
+    /// * `method` - Name of the RPC method to call on another node
+    /// * `args` - Arguments to pass to the remote function
+    ///
+    /// # Returns
+    ///
+    /// The remote function's return value as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No client is configured (node was created without orchestrator)
+    /// - The RPC call fails (network error, timeout, remote execution error)
     pub async fn distributed_call(&self, method: &str, args: JsonValue) -> Result<JsonValue> {
         let client = self.client.as_ref()
             .ok_or_else(|| MadrpcError::InvalidRequest("No client configured".into()))?;
