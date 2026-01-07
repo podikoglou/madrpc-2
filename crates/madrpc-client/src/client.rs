@@ -7,6 +7,34 @@ use std::time::Duration;
 use crate::pool::{ConnectionPool, PoolConfig};
 
 /// Retry configuration for RPC calls.
+///
+/// This struct controls the retry behavior for transient failures. Retries use
+/// exponential backoff with jitter to avoid thundering herd problems when multiple
+/// clients experience similar failures.
+///
+/// # Fields
+///
+/// - `max_attempts`: Maximum number of retry attempts (including the initial attempt)
+/// - `base_delay_ms`: Base delay in milliseconds for exponential backoff
+/// - `max_delay_ms`: Maximum delay cap in milliseconds
+/// - `backoff_multiplier`: Exponential backoff multiplier
+///
+/// # Default Configuration
+///
+/// The default configuration is:
+/// - `max_attempts`: 3
+/// - `base_delay_ms`: 100ms
+/// - `max_delay_ms`: 5000ms
+/// - `backoff_multiplier`: 2.0
+///
+/// # Example
+///
+/// ```rust
+/// use madrpc_client::RetryConfig;
+///
+/// // Custom retry configuration: up to 5 attempts with longer delays
+/// let config = RetryConfig::new(5, 200, 10000, 2.0);
+/// ```
 #[derive(Clone, Debug)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (including the initial attempt)
@@ -34,10 +62,19 @@ impl RetryConfig {
     /// Creates a new retry config with custom settings.
     ///
     /// # Arguments
-    /// * `max_attempts` - Maximum number of retry attempts
-    /// * `base_delay_ms` - Base delay in milliseconds
+    ///
+    /// * `max_attempts` - Maximum number of retry attempts (including initial attempt)
+    /// * `base_delay_ms` - Base delay in milliseconds for exponential backoff
     /// * `max_delay_ms` - Maximum delay cap in milliseconds
-    /// * `backoff_multiplier` - Exponential backoff multiplier
+    /// * `backoff_multiplier` - Exponential backoff multiplier (e.g., 2.0 doubles each time)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use madrpc_client::RetryConfig;
+    ///
+    /// let config = RetryConfig::new(5, 200, 10000, 2.0);
+    /// ```
     pub fn new(max_attempts: u32, base_delay_ms: u64, max_delay_ms: u64, backoff_multiplier: f64) -> Self {
         Self {
             max_attempts,
@@ -47,7 +84,16 @@ impl RetryConfig {
         }
     }
 
-    /// Calculate delay for a given attempt using exponential backoff with jitter
+    /// Calculate delay for a given attempt using exponential backoff with jitter.
+    ///
+    /// The delay formula is: `min(base_delay_ms * multiplier^(attempt-1), max_delay_ms) + jitter`
+    ///
+    /// Jitter is added as +/- 10% of the calculated delay to prevent thundering herd
+    /// problems when multiple clients retry simultaneously.
+    ///
+    /// # Arguments
+    ///
+    /// * `attempt` - The attempt number (1-indexed, starting at 1 for first retry)
     fn calculate_delay(&self, attempt: u32) -> Duration {
         let delay_ms = (self.base_delay_ms as f64 * self.backoff_multiplier.powi(attempt as i32 - 1))
             .min(self.max_delay_ms as f64) as u64;
@@ -64,10 +110,41 @@ impl RetryConfig {
     }
 }
 
-/// MaDRPC client for making RPC calls
+/// MaDRPC client for making RPC calls.
 ///
-/// Uses a connection pool to efficiently manage TCP connections.
-/// Connections are reused across requests to improve performance.
+/// The client provides a high-level interface for making RPC calls to MaDRPC orchestrators.
+/// It handles connection pooling, automatic retries with exponential backoff, and error
+/// classification.
+///
+/// # Architecture
+///
+/// The client maintains a connection pool to each orchestrator address, allowing multiple
+/// concurrent requests to reuse existing TCP connections. When making a request:
+///
+/// 1. A connection is acquired from the pool (or created if needed)
+/// 2. The request is sent to the orchestrator
+/// 3. The response is received and decoded
+/// 4. The connection is returned to the pool
+///
+/// # Retries
+///
+/// Transient errors (network issues, timeouts, node unavailability) are automatically
+/// retried with exponential backoff and jitter. Permanent errors (invalid requests,
+/// JavaScript execution errors) fail immediately.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use madrpc_client::MadrpcClient;
+/// use serde_json::json;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = MadrpcClient::new("127.0.0.1:8080").await?;
+/// let result = client.call("compute", json!({"n": 42})).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct MadrpcClient {
     orchestrator_addr: String,
     pool: Arc<ConnectionPool>,
@@ -77,8 +154,27 @@ pub struct MadrpcClient {
 impl MadrpcClient {
     /// Creates a new client connected to an orchestrator.
     ///
+    /// This uses default configuration for both the connection pool and retry logic.
+    ///
     /// # Arguments
+    ///
     /// * `orchestrator_addr` - The orchestrator address (e.g., "127.0.0.1:8080")
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the client or an error if pool initialization fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use madrpc_client::MadrpcClient;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = MadrpcClient::new("127.0.0.1:8080").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn new(orchestrator_addr: impl Into<String>) -> Result<Self> {
         let orchestrator_addr = orchestrator_addr.into();
         let pool = Arc::new(ConnectionPool::new(PoolConfig::default())?);
@@ -93,9 +189,29 @@ impl MadrpcClient {
 
     /// Creates a new client with custom pool configuration.
     ///
+    /// Use this when you need to control connection pool parameters such as maximum
+    /// connections per address or acquisition timeout.
+    ///
     /// # Arguments
-    /// * `orchestrator_addr` - The orchestrator address
+    ///
+    /// * `orchestrator_addr` - The orchestrator address (e.g., "127.0.0.1:8080")
     /// * `config` - The pool configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use madrpc_client::{MadrpcClient, PoolConfig};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let config = PoolConfig {
+    ///     max_connections: 20,
+    ///     acquire_timeout_ms: 60000,
+    /// };
+    /// let client = MadrpcClient::with_config("127.0.0.1:8080", config).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn with_config(orchestrator_addr: impl Into<String>, config: PoolConfig) -> Result<Self> {
         let orchestrator_addr = orchestrator_addr.into();
         let pool = Arc::new(ConnectionPool::new(config)?);
@@ -110,10 +226,34 @@ impl MadrpcClient {
 
     /// Creates a new client with custom pool and retry configuration.
     ///
+    /// Use this when you need full control over both connection pool and retry behavior.
+    ///
     /// # Arguments
-    /// * `orchestrator_addr` - The orchestrator address
+    ///
+    /// * `orchestrator_addr` - The orchestrator address (e.g., "127.0.0.1:8080")
     /// * `pool_config` - The pool configuration
     /// * `retry_config` - The retry configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use madrpc_client::{MadrpcClient, PoolConfig, RetryConfig};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let pool_config = PoolConfig {
+    ///     max_connections: 20,
+    ///     acquire_timeout_ms: 60000,
+    /// };
+    /// let retry_config = RetryConfig::new(5, 200, 10000, 2.0);
+    /// let client = MadrpcClient::with_retry_config(
+    ///     "127.0.0.1:8080",
+    ///     pool_config,
+    ///     retry_config
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn with_retry_config(
         orchestrator_addr: impl Into<String>,
         pool_config: PoolConfig,
@@ -131,8 +271,26 @@ impl MadrpcClient {
 
     /// Sets retry configuration for this client.
     ///
+    /// This is a builder-style method that consumes the client and returns a new one
+    /// with the specified retry configuration.
+    ///
     /// # Arguments
+    ///
     /// * `retry_config` - The retry configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use madrpc_client::{MadrpcClient, RetryConfig};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = MadrpcClient::new("127.0.0.1:8080")
+    ///     .await?
+    ///     .with_retry(RetryConfig::new(5, 200, 10000, 2.0));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_retry(mut self, retry_config: RetryConfig) -> Self {
         self.retry_config = retry_config;
         self
@@ -140,12 +298,57 @@ impl MadrpcClient {
 
     /// Calls an RPC method.
     ///
-    /// Acquires a connection from the pool, sends the request, and returns the connection to the pool.
-    /// Implements automatic retry logic with exponential backoff for transient failures.
+    /// This method acquires a connection from the pool, sends the request, and returns
+    /// the connection to the pool. It implements automatic retry logic with exponential
+    /// backoff for transient failures.
+    ///
+    /// # Retry Behavior
+    ///
+    /// - Transient errors (network issues, timeouts, node unavailability) are automatically
+    ///   retried up to `max_attempts` times
+    /// - Non-retryable errors (invalid requests, JavaScript execution errors) fail immediately
+    /// - Retries use exponential backoff with jitter to avoid thundering herd problems
     ///
     /// # Arguments
-    /// * `method` - The method name to call
-    /// * `args` - The method arguments
+    ///
+    /// * `method` - The method name to call (must be registered on the compute nodes)
+    /// * `args` - The method arguments as a JSON value
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the JSON response from the RPC call, or an error if:
+    /// - All retry attempts are exhausted
+    /// - A non-retryable error occurs
+    /// - The connection pool times out
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if:
+    /// - The method is not found on any compute node
+    /// - JavaScript execution fails on the node
+    /// - Network connectivity is lost after all retries
+    /// - The connection pool times out acquiring a connection
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use madrpc_client::MadrpcClient;
+    /// use serde_json::json;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = MadrpcClient::new("127.0.0.1:8080").await?;
+    ///
+    /// // Call a method with arguments
+    /// let result = client.call("compute", json!({"n": 42})).await?;
+    /// println!("Result: {}", result);
+    ///
+    /// // Call a method with no arguments
+    /// let status = client.call("status", json!({})).await?;
+    /// println!("Status: {}", status);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn call(
         &self,
         method: impl Into<String>,
@@ -207,7 +410,18 @@ impl MadrpcClient {
         }))
     }
 
-    /// Internal method to execute a single RPC call attempt
+    /// Internal method to execute a single RPC call attempt.
+    ///
+    /// This method:
+    /// 1. Acquires a connection from the pool
+    /// 2. Locks the stream for exclusive access
+    /// 3. Sends the request via TCP transport
+    /// 4. Receives and decodes the response
+    /// 5. Returns the connection to the pool
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The RPC request to execute
     async fn try_call(&self, request: &Request) -> Result<Value> {
         // Acquire connection from pool
         let conn = self.pool.acquire(&self.orchestrator_addr).await?;
@@ -240,6 +454,30 @@ impl MadrpcClient {
     }
 }
 
+/// Clone implementation for `MadrpcClient`.
+///
+/// Cloning a client creates a new handle that shares the same underlying connection pool
+/// and retry configuration. This is useful for making concurrent requests from multiple
+/// tasks or threads.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use madrpc_client::MadrpcClient;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = MadrpcClient::new("127.0.0.1:8080").await?;
+/// let client2 = client.clone(); // Shares the same connection pool
+///
+/// // Both clients can make concurrent requests
+/// let task1 = client.call("method1", serde_json::json!({}));
+/// let task2 = client2.call("method2", serde_json::json!({}));
+///
+/// let (result1, result2) = tokio::join!(task1, task2);
+/// # Ok(())
+/// # }
+/// ```
 impl Clone for MadrpcClient {
     fn clone(&self) -> Self {
         Self {

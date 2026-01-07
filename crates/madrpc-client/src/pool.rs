@@ -7,6 +7,15 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 /// Pooled connection wrapper.
+///
+/// Wraps a TCP stream with its associated address for use in the connection pool.
+/// The stream is wrapped in an `Arc<Mutex<T>>` to allow safe concurrent access
+/// across multiple async tasks.
+///
+/// # Fields
+///
+/// - `stream`: The TCP stream wrapped in an async mutex for thread-safe access
+/// - `addr`: The address this connection is connected to
 #[derive(Clone)]
 pub struct PooledConnection {
     /// The TCP stream
@@ -22,6 +31,20 @@ impl PooledConnection {
     /// false negatives during contention. If the lock is held by another active
     /// request, we consider the connection valid (since it's in use).
     ///
+    /// # Implementation Details
+    ///
+    /// The validation strategy is:
+    /// - Try to acquire the stream lock with a 10ms timeout
+    /// - If the lock is acquired: the connection is idle and available (valid)
+    /// - If the timeout expires: the lock is held by another request, meaning
+    ///   the connection is active and in use (also valid)
+    ///
+    /// This approach ensures that connections are not incorrectly marked as
+    /// invalid during periods of high contention.
+    ///
+    /// # Returns
+    ///
+    /// Always returns `true` - connections are assumed valid unless real I/O fails.
     /// The actual connection health will be verified during request execution
     /// when the stream is used for real I/O.
     pub async fn is_valid(&self) -> bool {
@@ -39,9 +62,35 @@ impl PooledConnection {
 }
 
 /// Connection pool configuration.
+///
+/// Controls the behavior of the connection pool including maximum connections
+/// and acquisition timeout.
+///
+/// # Fields
+///
+/// - `max_connections`: Maximum number of connections to maintain per unique address
+/// - `acquire_timeout_ms`: Maximum time in milliseconds to wait for a connection
+///
+/// # Default Configuration
+///
+/// The default configuration is:
+/// - `max_connections`: 10
+/// - `acquire_timeout_ms`: 30000 (30 seconds)
+///
+/// # Example
+///
+/// ```rust
+/// use madrpc_client::PoolConfig;
+///
+/// // Custom configuration: up to 20 connections, 60-second timeout
+/// let config = PoolConfig {
+///     max_connections: 20,
+///     acquire_timeout_ms: 60000,
+/// };
+/// ```
 #[derive(Clone)]
 pub struct PoolConfig {
-    /// Maximum number of connections per node
+    /// Maximum number of connections per unique address
     pub max_connections: usize,
     /// Maximum time to wait for pool acquisition in milliseconds
     pub acquire_timeout_ms: u64,
@@ -57,6 +106,42 @@ impl Default for PoolConfig {
 }
 
 /// Connection pool for TCP connections.
+///
+/// The pool manages connections to multiple addresses, allowing efficient reuse
+/// of TCP connections across multiple requests. Connections are acquired and
+/// released using [`acquire`](Self::acquire) and [`release`](Self::release).
+///
+/// # Architecture
+///
+/// - Connections are grouped by target address
+/// - Each address maintains its own pool with `max_connections` limit
+/// - LIFO (last-in-first-out) strategy is used for reusing connections
+/// - Invalid connections are automatically removed from the pool
+///
+/// # Thread Safety
+///
+/// The pool is thread-safe and can be safely used from multiple async tasks
+/// concurrently. Internal state is protected by an async mutex.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use madrpc_client::{ConnectionPool, PoolConfig};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let pool = ConnectionPool::new(PoolConfig::default())?;
+///
+/// // Acquire a connection
+/// let conn = pool.acquire("127.0.0.1:8080").await?;
+///
+/// // Use the connection...
+///
+/// // Return it to the pool
+/// pool.release(conn).await;
+/// # Ok(())
+/// # }
+/// ```
 pub struct ConnectionPool {
     transport: TcpTransportAsync,
     inner: Arc<Mutex<PoolInner>>,
@@ -72,7 +157,21 @@ impl ConnectionPool {
     /// Creates a new connection pool.
     ///
     /// # Arguments
+    ///
     /// * `config` - The pool configuration
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the pool or an error if transport initialization fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use madrpc_client::{ConnectionPool, PoolConfig};
+    ///
+    /// let pool = ConnectionPool::new(PoolConfig::default());
+    /// assert!(pool.is_ok());
+    /// ```
     pub fn new(config: PoolConfig) -> Result<Self> {
         let transport = TcpTransportAsync::new()?;
 
@@ -86,10 +185,31 @@ impl ConnectionPool {
         })
     }
 
-    /// Gets a connection from the pool or creates a new one.
+    /// Acquires a connection from the pool or creates a new one.
+    ///
+    /// This method implements the following strategy:
+    ///
+    /// 1. Check if a valid connection is available in the pool
+    /// 2. If yes, return it (LIFO strategy for better cache locality)
+    /// 3. If no, check if we can create a new connection (under `max_connections` limit)
+    /// 4. If at limit, wait and retry (with timeout)
+    /// 5. If under limit, create a new connection
     ///
     /// # Arguments
-    /// * `addr` - The address to connect to
+    ///
+    /// * `addr` - The address to connect to (e.g., "127.0.0.1:8080")
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing a pooled connection, or an error if:
+    /// - The pool acquisition times out
+    /// - Connection establishment fails
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if:
+    /// - The pool is full and the acquisition timeout is exceeded
+    /// - The TCP connection cannot be established
     pub async fn acquire(&self, addr: &str) -> Result<PooledConnection> {
         let timeout_duration = tokio::time::Duration::from_millis({
             let inner = self.inner.lock().await;
@@ -173,8 +293,19 @@ impl ConnectionPool {
 
     /// Returns a connection to the pool.
     ///
+    /// This marks the connection as available for reuse. The connection itself
+    /// remains in the pool's internal storage and will be returned by future
+    /// calls to [`acquire`](Self::acquire).
+    ///
     /// # Arguments
+    ///
     /// * `conn` - The connection to release
+    ///
+    /// # Note
+    ///
+    /// The connection is not closed when released. It remains open and can be
+    /// reused for future requests. Connections are only removed from the pool
+    /// if they fail validation during acquisition.
     pub async fn release(&self, conn: PooledConnection) {
         let mut inner = self.inner.lock().await;
 

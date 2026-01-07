@@ -1,3 +1,8 @@
+//! Integration tests for the transport layer
+//!
+//! These tests verify codec functionality for encoding/decoding
+//! requests and responses.
+
 #[cfg(test)]
 mod tests {
     use crate::protocol::{Request, Response};

@@ -10,18 +10,41 @@ use crate::load_balancer::LoadBalancer;
 use crate::node::{DisableReason, HealthCheckStatus, Node};
 
 /// Batched health check update to apply atomically.
+///
+/// This structure allows health check results to be computed independently
+/// from load balancer state mutations, enabling better separation of concerns
+/// and reducing lock contention.
 pub struct HealthCheckUpdate {
+    /// Address of the node this update applies to
     pub node_addr: String,
+    /// Health check result to record
     pub status: HealthCheckStatus,
+    /// Whether the node should be auto-enabled (only if auto-disabled previously)
     pub should_enable: bool,
+    /// Whether the node should be auto-disabled (threshold exceeded, not manual)
     pub should_disable: bool,
 }
 
 /// Health check configuration.
+///
+/// Controls the frequency, timeout, and failure threshold for periodic health
+/// checks performed by the `HealthChecker`.
 #[derive(Debug, Clone)]
 pub struct HealthCheckConfig {
+    /// How often to run health checks on all nodes
+    ///
+    /// Default: 5 seconds
     pub interval: Duration,
+    /// Maximum time to wait for each health check to complete
+    ///
+    /// Includes both TCP connection and `_info` request response.
+    /// Default: 2000ms
     pub timeout: Duration,
+    /// Number of consecutive failures before auto-disabling a node
+    ///
+    /// Once this threshold is reached, the node is marked as unhealthy and
+    /// excluded from round-robin selection (unless manually disabled).
+    /// Default: 3
     pub failure_threshold: u32,
 }
 
@@ -35,19 +58,51 @@ impl Default for HealthCheckConfig {
     }
 }
 
-/// Health checker for nodes.
+/// Periodic health checker for nodes.
+///
+/// The health checker runs as a background tokio task that periodically:
+///
+/// 1. Checks circuit breaker timeouts (Open → HalfOpen transitions)
+/// 2. Performs parallel TCP health checks on all nodes
+/// 3. Updates node health status and circuit breaker state
+/// 4. Auto-disables/auto-enables nodes based on health and threshold
+///
+/// # Health Check Method
+///
+/// Each health check:
+/// 1. Opens TCP connection to node (with timeout)
+/// 2. Sends `_info` request (built-in Madrpc method)
+/// 3. Verifies response is successful
+///
+/// # Thread Safety
+///
+/// The health checker holds an `Arc<RwLock<LoadBalancer>>` and periodically
+/// acquires write locks to update node state. This is designed to work with
+/// the orchestrator which also holds the same Arc.
 pub struct HealthChecker {
+    /// Load balancer to check nodes for and update
     load_balancer: Arc<RwLock<LoadBalancer>>,
+    /// Transport for TCP connections to nodes
     transport: TcpTransportAsync,
+    /// Health check configuration
     config: HealthCheckConfig,
 }
 
 impl HealthChecker {
     /// Creates a new health checker.
     ///
+    /// The health checker must be spawned with `spawn()` to start running.
+    /// Once spawned, it runs indefinitely in the background.
+    ///
     /// # Arguments
     /// * `load_balancer` - The load balancer to check nodes for
     /// * `config` - Health check configuration
+    ///
+    /// # Returns
+    /// A new HealthChecker instance (not yet running)
+    ///
+    /// # Errors
+    /// Returns error if TCP transport initialization fails
     pub fn new(
         load_balancer: Arc<RwLock<LoadBalancer>>,
         config: HealthCheckConfig,
@@ -61,13 +116,22 @@ impl HealthChecker {
     }
 
     /// Starts the health checker task.
+    ///
+    /// This spawns a tokio task that runs health checks indefinitely at the
+    /// configured interval. The task will run until the orchestrator is dropped.
+    ///
+    /// # Returns
+    /// A JoinHandle for the spawned task (can be used to await completion)
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             self.run().await;
         })
     }
 
-    /// Main health check loop
+    /// Main health check loop.
+    ///
+    /// Runs indefinitely, checking all nodes at the configured interval.
+    /// This is called by the spawned task and never returns.
     async fn run(self) {
         let mut interval = tokio::time::interval(self.config.interval);
 
@@ -77,7 +141,14 @@ impl HealthChecker {
         }
     }
 
-    /// Check health of all nodes
+    /// Check health of all nodes in parallel.
+    ///
+    /// This method:
+    /// 1. Checks circuit breaker timeouts (may transition Open → HalfOpen)
+    /// 2. Performs parallel health checks on all nodes
+    /// 3. Processes results and updates node state atomically
+    ///
+    /// Parallel health checks use `futures::join_all` for efficiency.
     async fn check_all_nodes(&self) {
         // First, check for circuit breaker timeouts
         {
@@ -115,7 +186,21 @@ impl HealthChecker {
         }
     }
 
-    /// Check a single node's health
+    /// Check a single node's health via TCP.
+    ///
+    /// This performs the actual health check by:
+    /// 1. Opening TCP connection (with timeout)
+    /// 2. Sending `_info` request (built-in Madrpc method)
+    /// 3. Verifying response success
+    ///
+    /// # Arguments
+    /// * `transport` - TCP transport to use
+    /// * `addr` - Node address to connect to
+    /// * `timeout` - Maximum time to wait for connection and response
+    ///
+    /// # Returns
+    /// - `Ok(())` - Node is healthy
+    /// - `Err(...)` - Node is unhealthy or unreachable
     async fn check_node_health(
         transport: &TcpTransportAsync,
         addr: &str,
@@ -145,7 +230,18 @@ impl HealthChecker {
         Ok(())
     }
 
-    /// Process health check result for a node
+    /// Process health check result for a node.
+    ///
+    /// This computes the necessary state updates based on the health check
+    /// result and the node's current state. It returns a `HealthCheckUpdate`
+    /// which is then applied atomically.
+    ///
+    /// # Arguments
+    /// * `node` - The node that was checked
+    /// * `result` - The health check result
+    ///
+    /// # Returns
+    /// A HealthCheckUpdate with the computed state changes
     async fn process_health_result(&self, node: Node, result: MadrpcResult<()>) -> HealthCheckUpdate {
         match result {
             Ok(()) => {
@@ -175,7 +271,17 @@ impl HealthChecker {
         }
     }
 
-    /// Apply a health check update atomically
+    /// Apply a health check update atomically.
+    ///
+    /// This applies the computed update to the load balancer state, including:
+    /// - Recording health status
+    /// - Auto-enabling recovered nodes (if auto-disabled)
+    /// - Auto-disabling failed nodes (if threshold exceeded)
+    ///
+    /// All mutations happen while holding the write lock to ensure atomicity.
+    ///
+    /// # Arguments
+    /// * `update` - The health check update to apply
     async fn apply_health_update(&self, update: HealthCheckUpdate) {
         let mut lb = self.load_balancer.write().await;
 

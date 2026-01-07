@@ -1,3 +1,26 @@
+//! # Real-time Metrics TUI
+//!
+//! Terminal User Interface (TUI) for monitoring MaDRPC servers in real-time.
+//! Uses `ratatui` for rendering and `crossterm` for terminal control.
+//!
+//! ## Features
+//!
+//! - **Auto-detection**: Automatically detects server type (orchestrator vs node)
+//! - **Live metrics**: Request counts, success rates, latency percentiles
+//! - **Node distribution**: Shows per-node request distribution for orchestrators
+//! - **Responsive UI**: Configurable refresh interval (default 250ms)
+//! - **Safe cleanup**: Properly restores terminal state on exit or panic
+//!
+//! ## Layout
+//!
+//! The TUI is divided into three sections:
+//!
+//! 1. **Title Bar**: Server address, type, refresh interval, controls
+//! 2. **Summary**: Total requests, success rate, active connections, uptime
+//! 3. **Content**:
+//!    - For orchestrators: Node distribution table + method metrics table
+//!    - For nodes: Method metrics table only
+
 use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent},
@@ -18,7 +41,13 @@ use std::io;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 
-/// Format duration in milliseconds to human-readable string
+/// Formats a duration in milliseconds to a human-readable string.
+///
+/// Output format depends on magnitude:
+/// - `< 1000ms`: "Xms" (e.g., "500ms")
+/// - `< 60s`: "Xs" (e.g., "5s")
+/// - `< 1h`: "Xm Ys" (e.g., "5m 30s")
+/// - `>= 1h`: "Xh Ym" (e.g., "2h 15m")
 fn format_duration_ms(ms: u64) -> String {
     if ms < 1000 {
         format!("{}ms", ms)
@@ -31,7 +60,13 @@ fn format_duration_ms(ms: u64) -> String {
     }
 }
 
-/// Format latency in microseconds to human-readable string
+/// Formats a latency in microseconds to a human-readable string.
+///
+/// Output format depends on magnitude:
+/// - `0`: "-" (no data)
+/// - `< 1000μs`: "Xμs" (e.g., "500μs")
+/// - `< 1s`: "Xms" (e.g., "5ms")
+/// - `>= 1s`: "X.Xs" (e.g., "1.5s")
 fn format_latency_us(us: u64) -> String {
     if us == 0 {
         "-".to_string()
@@ -44,24 +79,39 @@ fn format_latency_us(us: u64) -> String {
     }
 }
 
-/// Guard to restore terminal state on drop (even during panic)
+/// RAII guard for restoring terminal state.
+///
+/// Ensures the terminal is properly restored to its original state when
+/// dropped, even if a panic occurs. This prevents leaving the terminal in
+/// raw mode with messed up settings.
 struct TerminalGuard {
     terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
 }
 
 impl TerminalGuard {
+    /// Creates a new guard from the given terminal.
     fn new(terminal: Terminal<CrosstermBackend<io::Stdout>>) -> Self {
         Self {
             terminal: Some(terminal),
         }
     }
 
+    /// Returns a mutable reference to the terminal.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the terminal has already been taken (should not happen
+    /// in normal usage).
     fn mut_terminal(&mut self) -> &mut Terminal<CrosstermBackend<io::Stdout>> {
         self.terminal.as_mut().expect("Terminal not available")
     }
 }
 
 impl Drop for TerminalGuard {
+    /// Restores terminal state when the guard is dropped.
+    ///
+    /// This implementation ignores any errors during cleanup to avoid
+    /// panicking during unwind if the terminal is already in a bad state.
     fn drop(&mut self) {
         if let Some(mut terminal) = self.terminal.take() {
             let _ = disable_raw_mode();
@@ -75,7 +125,10 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// TUI application state
+/// Application state for the metrics TUI.
+///
+/// Holds all mutable state for the TUI including server connection info,
+/// cached metrics, error state, and timing information.
 struct TopApp {
     server_address: String,
     server_type: Option<ServerType>,
@@ -87,6 +140,7 @@ struct TopApp {
 }
 
 impl TopApp {
+    /// Creates a new TUI application instance.
     fn new(server_address: String, interval_ms: u64) -> Self {
         Self {
             server_address,
@@ -99,7 +153,11 @@ impl TopApp {
         }
     }
 
-    /// Detect server type by calling _info endpoint
+    /// Detects the server type by calling the `_info` endpoint.
+    ///
+    /// Updates `self.server_type` on success or `self.error_message` on failure.
+    /// The `_info` endpoint is built into all MaDRPC servers and returns
+    /// metadata including the server type (Node or Orchestrator).
     async fn detect_server_type(&mut self, client: &MadrpcClient) {
         match client.call("_info", serde_json::json!({})).await {
             Ok(info_value) => {
@@ -119,7 +177,12 @@ impl TopApp {
         }
     }
 
-    /// Update metrics by calling _metrics endpoint
+    /// Updates metrics by calling the `_metrics` endpoint.
+    ///
+    /// Updates `self.current_metrics` and `self.last_update` on success,
+    /// or `self.error_message` on failure. The `_metrics` endpoint is
+    /// built into all MaDRPC servers and returns a snapshot of current
+    /// metrics including request counts, latency percentiles, etc.
     async fn update_metrics(&mut self, client: &MadrpcClient) {
         match client.call("_metrics", serde_json::json!({})).await {
             Ok(metrics_value) => {
@@ -140,7 +203,10 @@ impl TopApp {
         }
     }
 
-    /// Handle key events
+    /// Handles a key event from the terminal.
+    ///
+    /// Currently supports:
+    /// - `q` or `Q`: Quit the application
     fn handle_key_event(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -150,7 +216,12 @@ impl TopApp {
         }
     }
 
-    /// Draw the TUI
+    /// Draws the TUI to the given frame.
+    ///
+    /// The layout is:
+    /// - Top: Title bar with server info
+    /// - Middle: Summary section or error/loading message
+    /// - Bottom: Content tables (nodes + methods for orchestrator, methods only for node)
     fn draw(&self, f: &mut Frame<'_>) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -201,7 +272,10 @@ impl TopApp {
         }
     }
 
-    /// Draw the title bar
+    /// Draws the title bar at the top of the screen.
+    ///
+    /// Displays: MaDRPC logo, server type, server address, refresh interval,
+    /// and quit hint.
     fn draw_title_bar(&self, f: &mut Frame<'_>, area: Rect) {
         let server_type_str = self.server_type
             .as_ref()
@@ -245,7 +319,10 @@ impl TopApp {
         f.render_widget(paragraph, area);
     }
 
-    /// Draw the summary section
+    /// Draws the summary section with key metrics.
+    ///
+    /// Displays: Total requests, success/failure counts, success rate,
+    /// active connections, uptime, and method count.
     fn draw_summary(&self, f: &mut Frame<'_>, area: Rect, metrics: &MetricsSnapshot) {
         let uptime_secs = metrics.uptime_ms / 1000;
         let uptime_mins = uptime_secs / 60;
@@ -326,7 +403,10 @@ impl TopApp {
         f.render_widget(paragraph, area);
     }
 
-    /// Draw error message
+    /// Draws an error message in the summary area.
+    ///
+    /// Shows the error text and indicates that the TUI will keep trying
+    /// to connect.
     fn draw_error(&self, f: &mut Frame<'_>, area: Rect, error: &str) {
         let text = vec![
             Line::from(vec![
@@ -352,7 +432,10 @@ impl TopApp {
         f.render_widget(paragraph, area);
     }
 
-    /// Draw loading message
+    /// Draws a loading message in the summary area.
+    ///
+    /// Displayed during initial connection attempt before any data has
+    /// been fetched.
     fn draw_loading(&self, f: &mut Frame<'_>, area: Rect) {
         let text = vec![
             Line::from(vec![
@@ -374,7 +457,11 @@ impl TopApp {
         f.render_widget(paragraph, area);
     }
 
-    /// Draw the nodes table (orchestrator only)
+    /// Draws the nodes distribution table (orchestrator only).
+    ///
+    /// Shows each node's address, request count, and time since last request.
+    /// Nodes are sorted by request count (descending) to show which nodes
+    /// are handling the most load.
     fn draw_nodes_table(&self, f: &mut Frame<'_>, area: Rect, nodes: &HashMap<String, NodeMetrics>) {
         let mut node_vec: Vec<_> = nodes.values().collect();
         node_vec.sort_by(|a, b| b.request_count.cmp(&a.request_count));
@@ -431,7 +518,11 @@ impl TopApp {
         f.render_widget(table, area);
     }
 
-    /// Draw the methods table
+    /// Draws the methods performance table.
+    ///
+    /// Shows each method's name, call count, success/failure counts, and
+    /// latency percentiles (P50, P95, P99). Methods are sorted by call count
+    /// (descending) to prioritize showing the most active methods.
     fn draw_methods_table(&self, f: &mut Frame<'_>, area: Rect, methods: &HashMap<String, MethodMetrics>) {
         let mut method_vec: Vec<_> = methods.iter().collect();
         method_vec.sort_by(|a, b| b.1.call_count.cmp(&a.1.call_count));
@@ -489,7 +580,25 @@ impl TopApp {
     }
 }
 
-/// Run the top TUI
+/// Runs the metrics monitoring TUI.
+///
+/// This is the main entry point for the `top` command. It:
+///
+/// 1. Sets up the terminal in raw mode with alternate screen
+/// 2. Creates a TUI application and RPC client
+/// 3. Detects the server type (node vs orchestrator)
+/// 4. Runs the main event loop:
+///    - Updates metrics at the configured interval
+///    - Redraws the UI
+///    - Handles keyboard events
+/// 5. Restores terminal state on exit (via RAII guard)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Terminal setup fails
+/// - Connection to the server fails
+/// - A fatal error occurs during the event loop
 pub async fn run_top(server_address: String, interval_ms: u64) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -540,6 +649,10 @@ pub async fn run_top(server_address: String, interval_ms: u64) -> Result<()> {
     Ok(())
 }
 
+/// Unit tests for formatting functions.
+///
+/// Tests verify that the timestamp and latency formatting functions handle
+/// edge cases correctly (zero values, large values, boundary conditions).
 #[cfg(test)]
 mod tests {
     use super::*;

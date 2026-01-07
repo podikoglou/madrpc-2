@@ -6,21 +6,55 @@ use std::time::{Instant, SystemTime};
 
 const LATENCY_BUFFER_SIZE: usize = 1000;
 
-/// Fallback timestamp counter for when SystemTime::duration_since() fails
+/// Fallback timestamp counter for when SystemTime::duration_since() fails.
+///
 /// This ensures LRU eviction continues to work correctly even if the
 /// system clock is set before UNIX_EPOCH or otherwise returns an error.
+/// The counter uses monotonically increasing values as a fallback timestamp.
 static TIMESTAMP_FALLBACK: AtomicU64 = AtomicU64::new(1);
 
-/// Configuration for metrics cleanup behavior.
+/// Configuration for metrics cleanup and size limits.
+///
+/// Controls memory usage and entry lifetime for both method and node metrics.
+/// These settings prevent unbounded growth of metrics data in long-running
+/// servers.
+///
+/// # Fields
+///
+/// - **max_methods**: Maximum number of unique method names to track
+/// - **max_nodes**: Maximum number of unique node addresses to track (orchestrator)
+/// - **method_ttl_secs**: Time-to-live for stale method entries in seconds
+/// - **node_ttl_secs**: Time-to-live for stale node entries in seconds
+///
+/// # Example
+///
+/// ```rust
+/// use madrpc_metrics::MetricsConfig;
+///
+/// let config = MetricsConfig {
+///     max_methods: 500,        // Track up to 500 unique methods
+///     max_nodes: 50,           // Track up to 50 nodes
+///     method_ttl_secs: 1800,   // Remove methods after 30 minutes of inactivity
+///     node_ttl_secs: 600,      // Remove nodes after 10 minutes of inactivity
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct MetricsConfig {
     /// Maximum number of unique methods to track
+    ///
+    /// When this limit is exceeded, least-recently-used methods are evicted.
     pub max_methods: usize,
-    /// Maximum number of unique nodes to track
+    /// Maximum number of unique nodes to track (orchestrator only)
+    ///
+    /// When this limit is exceeded, least-recently-used nodes are evicted.
     pub max_nodes: usize,
     /// Time-to-live for method entries in seconds
+    ///
+    /// Methods not accessed within this duration are eligible for cleanup.
     pub method_ttl_secs: u64,
-    /// Time-to-live for node entries in seconds
+    /// Time-to-live for node entries in seconds (orchestrator only)
+    ///
+    /// Nodes not receiving requests within this duration are eligible for cleanup.
     pub node_ttl_secs: u64,
 }
 
@@ -35,15 +69,34 @@ impl Default for MetricsConfig {
     }
 }
 
-/// Ring buffer for storing latency samples
+/// Ring buffer for storing latency samples.
+///
+/// Maintains a fixed-size circular buffer of latency measurements.
+/// Once the buffer is full, old samples are overwritten. This provides
+/// a sliding window of recent latency data for percentile calculations.
+///
+/// # Performance
+///
+/// - Lock-free design using atomic operations
+/// - Supports concurrent writes from multiple threads
+/// - Relaxed memory ordering for maximum throughput
+///
+/// # Capacity
+///
+/// Stores up to 1000 samples (LATENCY_BUFFER_SIZE). Percentiles are
+/// calculated from the available samples when a snapshot is taken.
 #[derive(Debug)]
 struct LatencyBuffer {
+    /// Atomic storage for latency samples (microseconds)
     samples: Vec<AtomicU64>,
+    /// Current write position in the ring buffer
     index: AtomicU64,
+    /// Number of valid samples (capped at buffer size)
     count: AtomicU64,
 }
 
 impl LatencyBuffer {
+    /// Creates a new empty latency buffer.
     fn new() -> Self {
         Self {
             samples: (0..LATENCY_BUFFER_SIZE)
@@ -54,6 +107,20 @@ impl LatencyBuffer {
         }
     }
 
+    /// Records a latency sample in the buffer.
+    ///
+    /// Samples are written in a circular pattern. Once the buffer is full,
+    /// old samples are overwritten. The count is capped at the buffer size.
+    ///
+    /// # Arguments
+    /// * `latency_us` - Latency in microseconds
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for maximum performance. This is safe because:
+    /// - We only need the final count/percentiles, not intermediate states
+    /// - Each sample is independent (no ordering requirements between samples)
+    /// - The ring buffer index wraparound is handled by modulo operation
     fn record(&self, latency_us: u64) {
         // Relaxed ordering is safe here because:
         // - We only need the final count/percentiles, not intermediate states
@@ -66,6 +133,22 @@ impl LatencyBuffer {
         self.count.fetch_min(LATENCY_BUFFER_SIZE as u64, Ordering::Relaxed);
     }
 
+    /// Calculates latency percentiles from recorded samples.
+    ///
+    /// Returns the average, P50 (median), P95, and P99 latencies.
+    /// Only samples greater than zero are included in the calculation.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(avg, p50, p95, p99)` latency values in microseconds.
+    /// Returns `(0, 0, 0, 0)` if no samples have been recorded.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for reading samples. This is safe because:
+    /// - We're calculating percentiles on a best-effort snapshot
+    /// - Missing or slightly stale samples don't affect correctness
+    /// - The metrics are eventually consistent by design
     fn calculate_percentiles(&self) -> (u64, u64, u64, u64) {
         // Relaxed ordering is safe for reading samples because:
         // - We're calculating percentiles on a best-effort snapshot
@@ -100,17 +183,39 @@ impl Default for LatencyBuffer {
     }
 }
 
-/// Per-method metrics storage
+/// Internal storage for per-method metrics.
+///
+/// Tracks call counts, success/failure rates, latency samples, and last access
+/// time for a single RPC method. Used internally by `MetricsRegistry`.
+///
+/// # Thread Safety
+///
+/// All fields use atomic operations for lock-free concurrent access.
+/// Relaxed memory ordering is used throughout for maximum performance.
+///
+/// # Fields
+///
+/// - **call_count**: Total number of calls to this method
+/// - **success_count**: Number of successful calls
+/// - **failure_count**: Number of failed calls
+/// - **latencies**: Ring buffer of latency samples (up to 1000)
+/// - **last_access_ms**: Unix timestamp (ms) of last access (for TTL cleanup)
 #[derive(Debug)]
 struct MethodStats {
+    /// Total number of calls to this method
     call_count: AtomicU64,
+    /// Number of successful calls
     success_count: AtomicU64,
+    /// Number of failed calls
     failure_count: AtomicU64,
+    /// Ring buffer of latency samples
     latencies: LatencyBuffer,
+    /// Last access timestamp in milliseconds (for TTL cleanup)
     last_access_ms: AtomicU64,
 }
 
 impl MethodStats {
+    /// Creates a new method stats struct with current timestamp.
     fn new() -> Self {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -125,6 +230,17 @@ impl MethodStats {
         }
     }
 
+    /// Updates the last access timestamp to the current time.
+    ///
+    /// Uses either `SystemTime` or the fallback counter if the system clock
+    /// is unavailable. This timestamp is used for TTL-based cleanup.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for the timestamp store. This is safe because:
+    /// - Timestamps are used for approximate TTL checking, not precise ordering
+    /// - Small timing variations don't affect correctness
+    /// - The RwLock provides synchronization for entry access
     fn update_last_access(&self) {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -137,6 +253,14 @@ impl MethodStats {
         self.last_access_ms.store(now, Ordering::Relaxed);
     }
 
+    /// Increments the call counter and updates last access time.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for counter operations. This is safe because:
+    /// - Each counter is independent and doesn't need synchronization with others
+    /// - Metrics snapshots are eventually consistent by design
+    /// - No operations depend on the order of counter updates
     fn increment_call(&self) {
         // Relaxed ordering is safe for counters because:
         // - Each counter is independent and doesn't need synchronization with others
@@ -146,23 +270,45 @@ impl MethodStats {
         self.update_last_access();
     }
 
+    /// Increments the success counter and updates last access time.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` (see `increment_call` for rationale).
     fn increment_success(&self) {
         // Relaxed ordering is safe (see increment_call comment)
         self.success_count.fetch_add(1, Ordering::Relaxed);
         self.update_last_access();
     }
 
+    /// Increments the failure counter and updates last access time.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` (see `increment_call` for rationale).
     fn increment_failure(&self) {
         // Relaxed ordering is safe (see increment_call comment)
         self.failure_count.fetch_add(1, Ordering::Relaxed);
         self.update_last_access();
     }
 
+    /// Records a latency sample and updates last access time.
     fn record_latency(&self, latency_us: u64) {
         self.latencies.record(latency_us);
         self.update_last_access();
     }
 
+    /// Creates a snapshot of current method metrics.
+    ///
+    /// Returns a `MethodMetrics` struct with current counters and
+    /// calculated latency percentiles.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for loading counter values. This is safe because:
+    /// - We're taking a best-effort point-in-time snapshot
+    /// - Small inconsistencies between counters are acceptable
+    /// - Metrics are eventually consistent by design
     fn snapshot(&self) -> MethodMetrics {
         // Relaxed ordering is safe for snapshot because:
         // - We're taking a best-effort point-in-time snapshot
@@ -192,14 +338,30 @@ impl Default for MethodStats {
     }
 }
 
-/// Per-node metrics storage (for orchestrator)
+/// Internal storage for per-node metrics (orchestrator only).
+///
+/// Tracks how many requests have been forwarded to each node and when
+/// the last request was sent. Used internally by `MetricsRegistry` for
+/// orchestrator-level node tracking.
+///
+/// # Thread Safety
+///
+/// All fields use atomic operations for lock-free concurrent access.
+///
+/// # Fields
+///
+/// - **request_count**: Total number of requests forwarded to this node
+/// - **last_request_ms**: Unix timestamp (ms) of the last request (for TTL)
 #[derive(Debug)]
 struct NodeStats {
+    /// Total number of requests forwarded to this node
     request_count: AtomicU64,
+    /// Unix timestamp (ms) of the last request to this node
     last_request_ms: AtomicU64,
 }
 
 impl NodeStats {
+    /// Creates a new node stats struct with zeroed counters.
     fn new() -> Self {
         Self {
             request_count: AtomicU64::new(0),
@@ -207,6 +369,16 @@ impl NodeStats {
         }
     }
 
+    /// Records a request to this node.
+    ///
+    /// Increments the request counter and updates the last request timestamp.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for both operations. This is safe because:
+    /// - The counter is independent and doesn't need synchronization with others
+    /// - The timestamp is used for approximate TTL checking
+    /// - Metrics are eventually consistent by design
     fn record_request(&self) {
         // Relaxed ordering is safe for counters (see MethodStats::increment_call comment)
         self.request_count.fetch_add(1, Ordering::Relaxed);
@@ -218,6 +390,16 @@ impl NodeStats {
         self.last_request_ms.store(now, Ordering::Relaxed);
     }
 
+    /// Creates a snapshot of current node metrics.
+    ///
+    /// # Arguments
+    /// * `node_addr` - The node address to include in the snapshot
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for loading counter values. This is safe because:
+    /// - We're taking a best-effort point-in-time snapshot
+    /// - Small inconsistencies are acceptable for metrics
     fn snapshot(&self, node_addr: String) -> NodeMetrics {
         // Relaxed ordering is safe for snapshot (see MethodStats::snapshot comment)
         let request_count = self.request_count.load(Ordering::Relaxed);
@@ -238,6 +420,11 @@ impl Default for NodeStats {
 }
 
 /// Thread-safe metrics registry with hybrid concurrency model.
+///
+/// `MetricsRegistry` is the central storage for all metrics in MaDRPC. It provides
+/// lock-free performance for counter increments while using locks for metadata
+/// management. The registry supports automatic cleanup of stale entries and
+/// configurable size limits to prevent unbounded memory growth.
 ///
 /// # Concurrency Model
 ///
@@ -260,29 +447,79 @@ impl Default for NodeStats {
 /// - Metrics snapshots are eventually consistent by design
 /// - No operations depend on the order of counter updates
 /// - The RwLock provides synchronization for entry access
+///
+/// # Automatic Cleanup
+///
+/// The registry periodically performs cleanup (every 1000 operations) to:
+/// - Remove stale method/node entries based on TTL
+/// - Enforce `max_methods` and `max_nodes` limits using LRU eviction
+/// - Prevent memory leaks from abandoned methods/nodes
+///
+/// # Example
+///
+/// ```rust
+/// use madrpc_metrics::MetricsRegistry;
+///
+/// let registry = MetricsRegistry::new();
+///
+/// // Record a method call
+/// registry.record_method_call("compute", 150, true);
+///
+/// // Get a snapshot
+/// let snapshot = registry.snapshot(false);
+/// assert_eq!(snapshot.total_requests, 1);
+/// ```
 #[derive(Debug)]
 pub struct MetricsRegistry {
+    /// Total number of requests processed
     total_requests: AtomicU64,
+    /// Number of successful requests
     successful_requests: AtomicU64,
+    /// Number of failed requests
     failed_requests: AtomicU64,
+    /// Current number of active connections
     active_connections: AtomicU64,
+    /// Per-method metrics storage
     methods: StdRwLock<HashMap<String, Arc<MethodStats>>>,
+    /// Per-node metrics storage (orchestrator only)
     nodes: StdRwLock<HashMap<String, Arc<NodeStats>>>,
+    /// Server start time for uptime calculation
     start_time: Instant,
+    /// Configuration for cleanup behavior
     config: MetricsConfig,
+    /// Counter for triggering periodic cleanup
     cleanup_counter: AtomicU64,
 }
 
 impl MetricsRegistry {
     /// Creates a new metrics registry with default configuration.
+    ///
+    /// Uses default `MetricsConfig` values.
     pub fn new() -> Self {
         Self::with_config(MetricsConfig::default())
     }
 
     /// Creates a new metrics registry with custom configuration.
     ///
+    /// Use this to control memory usage and cleanup behavior. The configuration
+    /// determines how many methods/nodes can be tracked and how quickly stale
+    /// entries are removed.
+    ///
     /// # Arguments
-    /// * `config` - The metrics configuration
+    /// * `config` - The metrics configuration controlling limits and TTLs
+    ///
+    /// # Example
+    /// ```rust
+    /// use madrpc_metrics::{MetricsRegistry, MetricsConfig};
+    ///
+    /// let config = MetricsConfig {
+    ///     max_methods: 500,
+    ///     max_nodes: 50,
+    ///     method_ttl_secs: 1800,
+    ///     node_ttl_secs: 600,
+    /// };
+    /// let registry = MetricsRegistry::with_config(config);
+    /// ```
     pub fn with_config(config: MetricsConfig) -> Self {
         Self {
             total_requests: AtomicU64::new(0),
@@ -298,41 +535,90 @@ impl MetricsRegistry {
     }
 
     /// Increments the total request counter.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for maximum performance. See struct-level
+    /// documentation for rationale.
     pub fn increment_total(&self) {
         // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.total_requests.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increments the success counter.
+    /// Increments the successful request counter.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for maximum performance. See struct-level
+    /// documentation for rationale.
     pub fn increment_success(&self) {
         // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.successful_requests.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increments the failure counter.
+    /// Increments the failed request counter.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for maximum performance. See struct-level
+    /// documentation for rationale.
     pub fn increment_failure(&self) {
         // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.failed_requests.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increments the active connections counter.
+    ///
+    /// Call this when a new TCP connection is established.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for maximum performance.
     pub fn increment_active_connections(&self) {
         // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.active_connections.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Decrements the active connections counter.
+    ///
+    /// Call this when a TCP connection is closed.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for maximum performance.
     pub fn decrement_active_connections(&self) {
         // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
-    /// Records a method call with latency.
+    /// Records a method call with its latency and outcome.
+    ///
+    /// This is the primary method for tracking RPC calls. It updates global
+    /// counters, per-method statistics, and latency tracking. Cleanup is
+    /// triggered periodically (every 1000 calls).
     ///
     /// # Arguments
-    /// * `method` - The method name
-    /// * `latency_us` - The call latency in microseconds
-    /// * `success` - Whether the call succeeded
+    /// * `method` - The name of the method that was called
+    /// * `latency_us` - The call duration in microseconds
+    /// * `success` - `true` if the call succeeded, `false` if it failed
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe and can be called concurrently from multiple
+    /// threads. The method registry is briefly locked to create new entries,
+    /// but counter updates are lock-free.
+    ///
+    /// # Example
+    /// ```rust
+    /// use madrpc_metrics::MetricsRegistry;
+    /// use std::time::Instant;
+    ///
+    /// let registry = MetricsRegistry::new();
+    /// let start = Instant::now();
+    /// // ... execute RPC call ...
+    /// let latency = start.elapsed().as_micros() as u64;
+    /// registry.record_method_call("my_method", latency, true);
+    /// ```
     pub fn record_method_call(&self, method: &str, latency_us: u64, success: bool) {
         // Increment global counters
         self.increment_total();
@@ -367,10 +653,19 @@ impl MetricsRegistry {
         }
     }
 
-    /// Records a request to a specific node (for orchestrator).
+    /// Records a request to a specific node (orchestrator only).
+    ///
+    /// This method tracks how many requests are forwarded to each node,
+    /// enabling monitoring of load balancer behavior. Cleanup is triggered
+    /// periodically (every 1000 calls).
     ///
     /// # Arguments
-    /// * `node_addr` - The node address
+    /// * `node_addr` - The address of the node that received the request
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe. The node registry is briefly locked to
+    /// create new entries, but counter updates are lock-free.
     pub fn record_node_request(&self, node_addr: &str) {
         // Periodically check if cleanup is needed
         self.maybe_cleanup();
@@ -386,7 +681,17 @@ impl MetricsRegistry {
         stats.record_request();
     }
 
-    /// Check if cleanup is needed and run it periodically
+    /// Checks if cleanup is needed and runs it periodically.
+    ///
+    /// Cleanup is triggered every 1000 operations. This prevents excessive
+    /// lock contention while still cleaning up stale entries regularly.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Ordering::Relaxed` for the cleanup counter. This is safe because:
+    /// - We only care about the count reaching a multiple of CLEANUP_INTERVAL
+    /// - No synchronization with other operations is required
+    /// - Occasional missed cleanups (due to relaxed ordering) are acceptable
     fn maybe_cleanup(&self) {
         const CLEANUP_INTERVAL: u64 = 1000;
         // Relaxed ordering is safe for cleanup counter because:
@@ -399,7 +704,16 @@ impl MetricsRegistry {
         }
     }
 
-    /// Remove stale entries and enforce size limits using LRU eviction
+    /// Removes stale entries and enforces size limits using LRU eviction.
+    ///
+    /// This method performs two types of cleanup:
+    ///
+    /// 1. **TTL-based cleanup**: Removes entries that haven't been accessed
+    ///    within the configured TTL period
+    /// 2. **Size limit enforcement**: If the number of entries exceeds the
+    ///    configured maximum, removes the least-recently-used entries
+    ///
+    /// The cleanup is performed separately for methods and nodes.
     fn cleanup_stale_entries(&self) {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -469,15 +783,30 @@ impl MetricsRegistry {
         }
     }
 
-    /// Gets uptime in milliseconds.
+    /// Returns the server uptime in milliseconds.
+    ///
+    /// Calculated from the time the registry was created.
     pub fn uptime_ms(&self) -> u64 {
         self.start_time.elapsed().as_millis() as u64
     }
 
     /// Takes a snapshot of current metrics.
     ///
+    /// Returns a `MetricsSnapshot` containing all current metrics including
+    /// global counters, per-method statistics, and optionally per-node metrics.
+    ///
     /// # Arguments
-    /// * `include_nodes` - Whether to include node metrics
+    /// * `include_nodes` - Whether to include node metrics (should be `true` for orchestrators)
+    ///
+    /// # Returns
+    ///
+    /// A snapshot of all current metrics. The snapshot is immutable and can be
+    /// safely shared or serialized.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe. Read locks are held briefly while copying
+    /// the method and node registries.
     pub fn snapshot(&self, include_nodes: bool) -> MetricsSnapshot {
         let uptime_ms = self.uptime_ms();
         // Relaxed ordering is safe for snapshot (see MetricsRegistry docs)
