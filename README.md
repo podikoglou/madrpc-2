@@ -23,43 +23,46 @@ MaDRPC allows you to write JavaScript functions that can be called remotely via 
 
 ## Architecture
 
-```
-                    ┌─────────────────────────────────────┐
-                    │         Client Application          │
-                    │    (Rust, Python, Go, or anything)  │
-                    └─────────────────┬───────────────────┘
-                                        │ TCP + JSON
-                                        ▼
-                    ┌─────────────────────────────────────┐
-                    │          Orchestrator               │
-                    │  (Round-robin load balancer)        │
-                    │  - Circuit breaker                  │
-                    │  - Health checking                  │
-                    │  - No JavaScript execution          │
-                    └─────┬─────────────┬──────────────┬──┘
-                          │             │              │
-                          ▼             ▼              ▼
-                    ┌──────────┐  ┌──────────┐  ┌──────────┐
-                    │  Node 1  │  │  Node 2  │  │  Node 3  │
-                    │  :9001   │  │  :9002   │  │  :9003   │
-                    │          │  │          │  │          │
-                    │  Boa JS  │  │  Boa JS  │  │  Boa JS  │
-                    │  Engine  │  │  Engine  │  │  Engine  │
-                    │          │  │          │  │          │
-                    │ Thread-  │  │ Thread-  │  │ Thread-  │
-                    │ per-Conn │  │ per-Conn │  │ per-Conn │
-                    └──────────┘  └──────────┘  └──────────┘
+```mermaid
+graph TB
+    subgraph Client["Client Application"]
+        C1["Rust, Python, Go, or anything"]
+    end
 
-                        JavaScript can call other nodes via madrpc.call():
-                        ┌──────────────────────────────────────────┐
-                        │  Node 1 executing 'aggregate' function  │
-                        │                                          │
-                        │  madrpc.call('compute', {data: ...}) ───┼──► Node 2
-                        │  madrpc.call('compute', {data: ...}) ───┼──► Node 3
-                        │  madrpc.call('compute', {data: ...}) ───┼──► Node 1
-                        │                                          │
-                        │  await Promise.all([ ... ])              │
-                        └──────────────────────────────────────────┘
+    subgraph Orchestrator["Orchestrator (Round-robin load balancer)"]
+        O1["Circuit breaker"]
+        O2["Health checking"]
+        O3["No JavaScript execution"]
+    end
+
+    subgraph Nodes["Compute Nodes"]
+        N1["Node 1<br/>:9001<br/>Boa JS Engine<br/>Thread-per-Conn"]
+        N2["Node 2<br/>:9002<br/>Boa JS Engine<br/>Thread-per-Conn"]
+        N3["Node 3<br/>:9003<br/>Boa JS Engine<br/>Thread-per-Conn"]
+    end
+
+    subgraph DistributedCall["JavaScript madrpc.call() - Node 1 executing 'aggregate' function"]
+        DC1["madrpc.call('compute', {data: ...})"]
+        DC2["madrpc.call('compute', {data: ...})"]
+        DC3["madrpc.call('compute', {data: ...})"]
+        DC4["await Promise.all([ ... ])"]
+    end
+
+    C1 -->|"TCP + JSON"| Orchestrator
+    Orchestrator --> N1
+    Orchestrator --> N2
+    Orchestrator --> N3
+
+    DC1 -.->|Node 2| N2
+    DC2 -.->|Node 3| N3
+    DC3 -.->|Node 1| N1
+
+    style C1 fill:#e1f5fe
+    style Orchestrator fill:#fff3e0
+    style N1 fill:#e8f5e9
+    style N2 fill:#e8f5e9
+    style N3 fill:#e8f5e9
+    style DistributedCall fill:#f3e5f5
 ```
 
 ## Quick Start
