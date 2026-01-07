@@ -4,7 +4,7 @@ use madrpc_common::protocol::error::{Result, MadrpcError};
 use serde_json::Value as JsonValue;
 use std::sync::{Arc, Mutex};
 
-use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}};
+use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}, job_executor::TokioJobExecutor};
 
 /// Boa context wrapper with MaDRPC bindings
 ///
@@ -13,6 +13,7 @@ use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}
 pub struct MadrpcContext {
     ctx: Mutex<Context>,
     client: Option<Arc<madrpc_client::MadrpcClient>>,
+    job_executor: Option<Arc<TokioJobExecutor>>,
 }
 
 // ============================================================================
@@ -34,6 +35,10 @@ pub struct MadrpcContext {
 ///    - `Arc` provides thread-safe reference counting
 ///    - `MadrpcClient` is itself thread-safe (uses internal synchronization)
 ///
+/// 3. **Job Executor Thread Safety**: The `job_executor` field is `Option<Arc<TokioJobExecutor>>`:
+///    - `Arc` provides thread-safe reference counting
+///    - `TokioJobExecutor` is designed to be thread-safe
+///
 /// ## Usage Pattern Safety
 ///
 /// The actual usage pattern ensures thread safety:
@@ -49,7 +54,7 @@ pub struct MadrpcContext {
 ///
 /// 1. The `Mutex` wrapper ensures exclusive access
 /// 2. Each request gets an isolated context (no concurrent access)
-/// 3. The `Arc` on the client allows safe sharing across threads
+/// 3. The `Arc` on the client and job executor allows safe sharing across threads
 /// 4. No operation exposes the inner `Context` without acquiring the lock
 unsafe impl Send for MadrpcContext {}
 
@@ -73,6 +78,11 @@ unsafe impl Send for MadrpcContext {}
 ///
 /// - `Arc<MadrpcClient>` is inherently `Send` + `Sync`
 /// - `Option<T>` preserves thread-safety properties when `T` is thread-safe
+///
+/// ## Job Executor Field Safety
+///
+/// - `Arc<TokioJobExecutor>` is inherently `Send` + `Sync`
+/// - The job executor is designed for concurrent use
 ///
 /// ## Why This Is Sound
 ///
@@ -108,6 +118,16 @@ impl MadrpcContext {
         let mut ctx = Context::default();
         let client = client.map(Arc::new);
 
+        // Create job executor if client is present (async calls require a client)
+        let job_executor = if client.is_some() {
+            let executor = Arc::new(TokioJobExecutor::new());
+            // Register the job executor with the Boa context
+            ctx.set_job_executor(executor.queue());
+            Some(executor)
+        } else {
+            None
+        };
+
         // Install madrpc bindings (native Rust functions)
         bindings::install_madrpc_bindings(&mut ctx)?;
 
@@ -121,6 +141,7 @@ impl MadrpcContext {
         Ok(Self {
             ctx: Mutex::new(ctx),
             client,
+            job_executor,
         })
     }
 
@@ -134,6 +155,16 @@ impl MadrpcContext {
         let mut ctx = Context::default();
         let client = client.map(Arc::new);
 
+        // Create job executor if client is present (async calls require a client)
+        let job_executor = if client.is_some() {
+            let executor = Arc::new(TokioJobExecutor::new());
+            // Register the job executor with the Boa context
+            ctx.set_job_executor(executor.queue());
+            Some(executor)
+        } else {
+            None
+        };
+
         // Install madrpc bindings (native Rust functions)
         bindings::install_madrpc_bindings(&mut ctx)?;
 
@@ -144,6 +175,7 @@ impl MadrpcContext {
         Ok(Self {
             ctx: Mutex::new(ctx),
             client,
+            job_executor,
         })
     }
 
@@ -193,5 +225,43 @@ impl MadrpcContext {
         let client = self.client.as_ref()
             .ok_or_else(|| MadrpcError::InvalidRequest("No client configured".into()))?;
         client.call(method, args).await
+    }
+
+    /// Run pending promise jobs from the job executor
+    ///
+    /// This method should be called after executing JavaScript that may have
+    /// created promises, to ensure all async jobs are processed.
+    ///
+    /// # Implementation Note
+    ///
+    /// Jobs are processed synchronously while holding the context lock.
+    /// This is a simplified implementation that processes all pending jobs
+    /// in a loop without yielding.
+    pub async fn run_jobs(&self) {
+        if let Some(executor) = &self.job_executor {
+            while executor.has_pending_jobs() {
+                // Process one job iteration
+                let mut ctx = self.ctx.lock().unwrap();
+                let ctx_ref_cell = std::cell::RefCell::new(&mut *ctx);
+
+                // Try to get and execute a job
+                let queue = executor.queue();
+                if let Some(job) = queue.dequeue(&ctx_ref_cell) {
+                    job.call(&ctx_ref_cell);
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Check if there are pending jobs in the job executor
+    ///
+    /// Returns `true` if there are pending promise jobs that need to be processed.
+    pub fn has_pending_jobs(&self) -> bool {
+        self.job_executor
+            .as_ref()
+            .map(|executor| executor.has_pending_jobs())
+            .unwrap_or(false)
     }
 }
