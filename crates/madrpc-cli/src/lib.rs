@@ -12,8 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! MaDRPC CLI
+//! # MaDRPC CLI
 //!
-//! Command-line interface for MaDRPC orchestrator, nodes, and monitoring.
+//! Command-line interface for the MaDRPC distributed RPC system.
+//!
+//! This crate provides the main entry point for running MaDRPC components:
+//!
+//! - **Nodes**: JavaScript execution servers that process RPC calls
+//! - **Orchestrators**: Load balancers that distribute requests across nodes
+//! - **Monitoring**: Real-time metrics TUI via the `top` command
+//!
+//! ## Architecture
+//!
+//! The CLI uses the `argh` crate for argument parsing and dispatches to the
+//! appropriate component implementations in `madrpc-server`, `madrpc-orchestrator`,
+//! and `madrpc-client`.
+//!
+//! ## Key Commands
+//!
+//! - `madrpc node`: Start a compute node with a JavaScript script
+//! - `madrpc orchestrator`: Start a load balancer with health checking
+//! - `madrpc top`: Monitor a server with real-time metrics
+//! - `madrpc call`: Make an RPC call (outputs raw JSON for scripting)
 
 pub mod top;

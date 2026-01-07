@@ -1,6 +1,31 @@
+//! # MaDRPC CLI Entry Point
+//!
+//! Main binary for the MaDRPC distributed RPC system. Provides command-line
+//! interface for starting nodes, orchestrators, monitoring, and making RPC calls.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Start a node
+//! madrpc node -s script.js -b 0.0.0.0:9001
+//!
+//! # Start an orchestrator
+//! madrpc orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002
+//!
+//! # Monitor with real-time metrics
+//! madrpc top 127.0.0.1:8080
+//!
+//! # Make an RPC call (outputs raw JSON)
+//! madrpc call 127.0.0.1:8080 method_name '{"arg": "value"}'
+//! ```
+
 use argh::FromArgs;
 use anyhow::Result;
 
+/// Main CLI structure parsed from command-line arguments.
+///
+/// Uses `argh` for declarative argument parsing. The top-level command
+/// dispatches to one of the four subcommands: node, orchestrator, top, or call.
 #[derive(FromArgs)]
 /// MaDRPC - Massively Distributed RPC system
 struct Cli {
@@ -8,6 +33,14 @@ struct Cli {
     command: Commands,
 }
 
+/// Available CLI subcommands.
+///
+/// Each variant represents a distinct operational mode:
+///
+/// - **Node**: Start a JavaScript execution server
+/// - **Orchestrator**: Start a load-balancing request forwarder
+/// - **Top**: Monitor a server with real-time metrics TUI
+/// - **Call**: Make a single RPC call (unix-friendly JSON output)
 #[derive(FromArgs)]
 #[argh(subcommand)]
 enum Commands {
@@ -17,78 +50,197 @@ enum Commands {
     Call(CallArgs),
 }
 
+/// Arguments for starting a MaDRPC node.
+///
+/// Nodes are JavaScript execution servers that load a script file and expose
+/// registered functions via RPC. Each node maintains its own Boa JavaScript
+/// context and processes requests on the configured bind address.
+///
+/// # Example
+///
+/// ```bash
+/// madrpc node -s examples/monte-carlo-pi/scripts/pi.js -b 0.0.0.0:9001
+/// ```
 #[derive(FromArgs)]
 #[argh(subcommand, name = "node")]
 /// start a MaDRPC node
 struct NodeArgs {
-    /// javascript file to load
+    /// Path to the JavaScript file to load and execute.
+    ///
+    /// The script should use `madrpc.register(name, function)` to expose
+    /// RPC methods. The file is read once at startup and cached.
     #[argh(option, short = 's')]
     script: String,
 
-    /// address to bind to
+    /// Address to bind the node's TCP server to.
+    ///
+    /// Defaults to "0.0.0.0:0" which assigns a random available port.
+    /// The actual bound address is logged at startup.
     #[argh(option, short = 'b', default = "\"0.0.0.0:0\".into()")]
     bind: String,
 
-    /// orchestrator address to register with
+    /// Optional orchestrator address to register with.
+    ///
+    /// If provided, the node will register itself with the orchestrator
+    /// for automatic discovery. Otherwise, the node operates standalone.
     #[argh(option, long = "orchestrator")]
     orchestrator: Option<String>,
 }
 
+/// Arguments for starting a MaDRPC orchestrator.
+///
+/// Orchestrators are load balancers that forward RPC requests to registered
+/// nodes using round-robin selection. They provide health checking and
+/// circuit breaker functionality for high availability.
+///
+/// # Health Checking
+///
+/// The orchestrator periodically pings nodes to verify liveness. After the
+/// configured number of consecutive failures, a node is removed from the
+/// rotation until it recovers.
+///
+/// # Example
+///
+/// ```bash
+/// madrpc orchestrator -b 0.0.0.0:8080 \
+///   -n 127.0.0.1:9001 \
+///   -n 127.0.0.1:9002 \
+///   --health-check-interval 10 \
+///   --health-check-timeout 3000
+/// ```
 #[derive(FromArgs)]
 #[argh(subcommand, name = "orchestrator")]
 /// start a MaDRPC orchestrator
 struct OrchestratorArgs {
-    /// address to bind to
+    /// Address to bind the orchestrator's TCP server to.
+    ///
+    /// Clients connect to this address to make RPC calls. Defaults to
+    /// "0.0.0.0:8080" for accessibility from other machines.
     #[argh(option, short = 'b', default = "\"0.0.0.0:8080\".into()")]
     bind: String,
 
-    /// node addresses (can be specified multiple times)
+    /// Addresses of nodes to forward requests to.
+    ///
+    /// Can be specified multiple times to add multiple nodes. Requests are
+    /// distributed using round-robin load balancing. At least one node is
+    /// recommended for useful operation.
     #[argh(option, short = 'n', long = "node")]
     nodes: Vec<String>,
 
-    /// health check interval in seconds (default: 5)
+    /// Interval between health checks in seconds.
+    ///
+    /// The orchestrator pings each node at this interval to verify liveness.
+    /// Defaults to 5 seconds. Lower values detect failures faster but increase
+    /// network load.
     #[argh(option, long = "health-check-interval", default = "5")]
     health_check_interval_secs: u64,
 
-    /// health check timeout in milliseconds (default: 2000)
+    /// Timeout for each health check in milliseconds.
+    ///
+    /// If a node doesn't respond within this time, the health check is
+    /// considered a failure. Defaults to 2000ms (2 seconds).
     #[argh(option, long = "health-check-timeout", default = "2000")]
     health_check_timeout_ms: u64,
 
-    /// consecutive health check failures before disabling node (default: 3)
+    /// Consecutive health check failures before disabling a node.
+    ///
+    /// After this many failures in a row, the node is removed from the
+    /// rotation until it recovers (circuit breaker pattern). Defaults to 3.
     #[argh(option, long = "health-check-failure-threshold", default = "3")]
     health_check_failure_threshold: u32,
 
-    /// disable health checking entirely
+    /// Disable health checking entirely.
+    ///
+    /// When set, the orchestrator will not ping nodes and will continue
+    /// forwarding to all configured nodes regardless of their health.
+    /// Useful for testing or environments with unreliable networks.
     #[argh(switch, long = "disable-health-check")]
     disable_health_check: bool,
 }
 
+/// Arguments for the real-time metrics monitoring TUI.
+///
+/// The `top` command displays a live dashboard showing request metrics,
+/// latency percentiles, active connections, and uptime. For orchestrators,
+/// it also shows per-node request distribution.
+///
+/// # Controls
+///
+/// Press `q` or `Q` to quit the TUI.
+///
+/// # Example
+///
+/// ```bash
+/// # Monitor orchestrator (shows node distribution)
+/// madrpc top 127.0.0.1:8080
+///
+/// # Monitor node with slower refresh
+/// madrpc top --interval 1000 127.0.0.1:9001
+/// ```
 #[derive(FromArgs)]
 #[argh(subcommand, name = "top")]
 /// monitor a MaDRPC server with real-time metrics
 struct TopArgs {
-    /// address of the server to monitor
+    /// Address of the server to monitor.
+    ///
+    /// Can be an orchestrator or a standalone node. The TUI automatically
+    /// detects the server type and adjusts the display accordingly.
     #[argh(positional)]
     server_address: String,
 
-    /// refresh interval in milliseconds
+    /// Refresh interval in milliseconds.
+    ///
+    /// Controls how frequently the TUI fetches updated metrics from the
+    /// server. Lower values provide more responsive updates but increase
+    /// network and CPU usage. Defaults to 250ms.
     #[argh(option, short = 'i', long = "interval", default = "250")]
     interval_ms: u64,
 }
 
+/// Arguments for making a single RPC call.
+///
+/// The `call` command makes one RPC call and outputs the result as raw JSON
+/// to stdout. This makes it suitable for scripting and integration with
+/// other tools (e.g., `jq`, `awk`, etc.).
+///
+/// # Output Format
+///
+/// Outputs raw JSON (no pretty-printing) to stdout. Errors are reported
+/// to stderr with non-zero exit code.
+///
+/// # Examples
+///
+/// ```bash
+/// # Call a method with no arguments
+/// madrpc call 127.0.0.1:8080 get_status
+///
+/// # Call with arguments
+/// madrpc call 127.0.0.1:8080 monte_carlo '{"samples": 1000000}'
+///
+/// # Pipe output to jq for processing
+/// madrpc call 127.0.0.1:8080 get_stats | jq '.pi_estimate'
+/// ```
 #[derive(FromArgs)]
 #[argh(subcommand, name = "call")]
 /// call an RPC method on a server
 struct CallArgs {
-    /// address of the server to call
+    /// Address of the server to call.
+    ///
+    /// Can be an orchestrator (which load balances) or a specific node.
     #[argh(positional)]
     server_address: String,
 
-    /// name of the method to call
+    /// Name of the RPC method to call.
+    ///
+    /// Must match a name registered via `madrpc.register()` in the node's
+    /// JavaScript script.
     #[argh(positional)]
     method: String,
 
-    /// JSON string containing arguments for the method
+    /// JSON string containing arguments for the method.
+    ///
+    /// Must be valid JSON. Use empty object `{}` for methods with no arguments.
+    /// Defaults to `{}`.
     #[argh(option, short = 'a', long = "args", default = "\"{}\".into()")]
     args: String,
 }
@@ -192,7 +344,23 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Run the call command - outputs raw JSON to stdout
+/// Executes the `call` subcommand.
+///
+/// This function:
+/// 1. Parses the JSON arguments string
+/// 2. Creates a client connection to the server
+/// 3. Makes the RPC call
+/// 4. Outputs the raw JSON result to stdout
+///
+/// No tracing/logging is initialized for this command to keep output clean
+/// for unix tool usage (piping to jq, etc.).
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The args string is not valid JSON
+/// - The connection to the server fails
+/// - The RPC call itself fails
 async fn run_call(args: CallArgs) -> Result<()> {
     // Parse args JSON string
     let args_value: serde_json::Value = serde_json::from_str(&args.args)
@@ -208,6 +376,11 @@ async fn run_call(args: CallArgs) -> Result<()> {
     Ok(())
 }
 
+/// CLI argument parsing tests.
+///
+/// Tests verify that `argh` correctly parses all subcommands and their
+/// arguments. Each test simulates command-line invocation and validates
+/// the resulting structure.
 #[cfg(test)]
 mod tests {
     use super::*;

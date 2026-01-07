@@ -2,22 +2,61 @@ use crate::node::{CircuitBreakerConfig, CircuitBreakerState, DisableReason, Heal
 use std::collections::HashMap;
 
 /// Round-robin load balancer for nodes with circuit breaker.
+///
+/// The load balancer distributes incoming requests across compute nodes using
+/// round-robin selection while respecting node state (enabled/disabled) and
+/// circuit breaker status.
+///
+/// # Data Structures
+///
+/// Uses two complementary data structures for optimal performance:
+/// - **HashMap**: O(1) lookups by address for state updates
+/// - **Vec**: Maintains order for round-robin iteration over enabled nodes
+///
+/// # Circuit Breaker Integration
+///
+/// Nodes with Open circuits are automatically skipped during round-robin selection
+/// without attempting connection, enabling fast fail behavior. This prevents
+/// wasting time on nodes that are likely to fail.
+///
+/// # Thread Safety
+///
+/// This struct is not thread-safe by itself. It should be wrapped in
+/// `Arc<RwLock<LoadBalancer>>` for concurrent access (as done by `Orchestrator`).
 pub struct LoadBalancer {
     /// All nodes indexed by address for O(1) lookups
     nodes: HashMap<String, Node>,
     /// Enabled node addresses for O(1) round-robin iteration
     enabled_nodes: Vec<String>,
     /// Current index in round-robin iteration
+    ///
+    /// Wraps around using modulo arithmetic to prevent overflow.
     round_robin_index: usize,
     /// Circuit breaker configuration
     circuit_config: CircuitBreakerConfig,
 }
 
 impl LoadBalancer {
-    /// Creates a new load balancer with a static node list.
+    /// Creates a new load balancer with a static node list and default circuit breaker config.
+    ///
+    /// All nodes start enabled with closed circuit breakers. The round-robin index
+    /// starts at 0 and wraps around using modulo arithmetic.
     ///
     /// # Arguments
-    /// * `node_addrs` - List of node addresses
+    /// * `node_addrs` - List of node addresses (e.g., "127.0.0.1:9001")
+    ///
+    /// # Returns
+    /// A new LoadBalancer instance
+    ///
+    /// # Example
+    /// ```rust
+    /// use madrpc_orchestrator::LoadBalancer;
+    ///
+    /// let lb = LoadBalancer::new(vec![
+    ///     "127.0.0.1:9001".to_string(),
+    ///     "127.0.0.1:9002".to_string(),
+    /// ]);
+    /// ```
     pub fn new(node_addrs: Vec<String>) -> Self {
         let enabled_nodes = node_addrs.clone();
         let nodes = node_addrs.into_iter().map(|addr| (addr.clone(), Node::new(addr))).collect();
@@ -31,9 +70,15 @@ impl LoadBalancer {
 
     /// Creates a new load balancer with custom circuit breaker config.
     ///
+    /// Use this when you need non-default circuit breaker behavior (e.g., different
+    /// failure thresholds or backoff multipliers).
+    ///
     /// # Arguments
     /// * `node_addrs` - List of node addresses
     /// * `circuit_config` - Circuit breaker configuration
+    ///
+    /// # Returns
+    /// A new LoadBalancer instance with custom circuit breaker config
     pub fn with_config(node_addrs: Vec<String>, circuit_config: CircuitBreakerConfig) -> Self {
         let enabled_nodes = node_addrs.clone();
         let nodes = node_addrs.into_iter().map(|addr| (addr.clone(), Node::new(addr))).collect();
@@ -46,6 +91,25 @@ impl LoadBalancer {
     }
 
     /// Gets the next ENABLED node using round-robin, skipping nodes with open circuits.
+    ///
+    /// This is the main method used by the orchestrator to select a node for each
+    /// incoming request. It implements both round-robin load balancing and circuit
+    /// breaker fast-fail behavior.
+    ///
+    /// # Algorithm
+    /// 1. Return None if no enabled nodes exist
+    /// 2. Iterate through enabled nodes starting at current index
+    /// 3. Skip nodes with Open circuits (fail fast)
+    /// 4. Return first node with Closed or HalfOpen circuit
+    /// 5. Return None if all nodes have Open circuits
+    ///
+    /// # Returns
+    /// - `Some(addr)` - Address of next available node
+    /// - `None` - No enabled nodes or all circuits are open
+    ///
+    /// # Note
+    /// The round-robin index always advances, even when skipping nodes with open circuits.
+    /// This ensures even distribution when nodes recover.
     pub fn next_node(&mut self) -> Option<String> {
         if self.enabled_nodes.is_empty() {
             return None;
@@ -70,11 +134,16 @@ impl LoadBalancer {
 
     /// Manually disables a node (indefinite).
     ///
+    /// Manually disabled nodes are marked with `DisableReason::Manual` and will
+    /// never be auto-re-enabled by the health checker. They must be manually
+    /// re-enabled via `enable_node()`.
+    ///
     /// # Arguments
     /// * `addr` - The node address to disable
     ///
     /// # Returns
-    /// true if the node was disabled, false if not found
+    /// - `true` - Node was found and disabled
+    /// - `false` - Node was not found
     pub fn disable_node(&mut self, addr: &str) -> bool {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -90,11 +159,15 @@ impl LoadBalancer {
 
     /// Manually enables a node.
     ///
+    /// This resets the node's disable reason, consecutive failures, and adds it
+    /// back to the enabled nodes list if not already present.
+    ///
     /// # Arguments
     /// * `addr` - The node address to enable
     ///
     /// # Returns
-    /// true if the node was enabled, false if not found
+    /// - `true` - Node was found and enabled
+    /// - `false` - Node was not found
     pub fn enable_node(&mut self, addr: &str) -> bool {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -113,11 +186,20 @@ impl LoadBalancer {
 
     /// Auto-disables a node due to health check failure.
     ///
+    /// This method is called by the health checker when consecutive failures
+    /// exceed the threshold. It only disables nodes that are not already manually
+    /// disabled, preserving user intent.
+    ///
     /// # Arguments
     /// * `addr` - The node address to disable
     ///
     /// # Returns
-    /// true if the node was disabled, false if it was manually disabled or not found
+    /// - `true` - Node was auto-disabled
+    /// - `false` - Node was manually disabled or not found
+    ///
+    /// # Note
+    /// Auto-disabled nodes can be re-enabled by the health checker on recovery
+    /// (via `auto_enable_node`), while manually disabled nodes cannot.
     pub fn auto_disable_node(&mut self, addr: &str) -> bool {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -138,11 +220,16 @@ impl LoadBalancer {
 
     /// Auto-enables a node that recovered (only if it was auto-disabled).
     ///
+    /// This method is called by the health checker when a previously unhealthy
+    /// node passes a health check. It only works on nodes that were auto-disabled,
+    /// preserving manual disable intent.
+    ///
     /// # Arguments
     /// * `addr` - The node address to enable
     ///
     /// # Returns
-    /// true if the node was enabled, false if it was manually disabled or not found
+    /// - `true` - Node was auto-enabled
+    /// - `false` - Node was manually disabled or not found
     pub fn auto_enable_node(&mut self, addr: &str) -> bool {
         // O(1) HashMap lookup
         if let Some(node) = self.nodes.get_mut(addr) {
@@ -164,6 +251,19 @@ impl LoadBalancer {
     }
 
     /// Updates health check status for a node with circuit breaker logic.
+    ///
+    /// This is the main integration point between health checking and circuit breaking.
+    /// It handles state transitions based on health check results:
+    ///
+    /// **Healthy**:
+    /// - Resets consecutive failures to 0
+    /// - Transitions HalfOpen → Closed (circuit recovered)
+    ///
+    /// **Unhealthy**:
+    /// - Increments consecutive failures
+    /// - Closed → Open (trip circuit if threshold reached)
+    /// - HalfOpen → Open (failed recovery attempt)
+    /// - Open → Open (already tripped, no change)
     ///
     /// # Arguments
     /// * `addr` - The node address
@@ -210,8 +310,13 @@ impl LoadBalancer {
 
     /// Checks and updates circuit breaker state for timeout transitions.
     ///
+    /// This method is called by the health checker before each round of health
+    /// checks to determine if any nodes in Open state should transition to
+    /// HalfOpen based on exponential backoff timeout.
+    ///
     /// # Returns
-    /// true if any node transitioned from Open to HalfOpen
+    /// - `true` - At least one node transitioned from Open to HalfOpen
+    /// - `false` - No transitions occurred
     pub fn check_circuit_timeouts(&mut self) -> bool {
         let mut any_transitioned = false;
 
@@ -229,11 +334,21 @@ impl LoadBalancer {
     ///
     /// # Arguments
     /// * `addr` - The node address
+    ///
+    /// # Returns
+    /// - `Some(state)` - Circuit breaker state if node exists
+    /// - `None` - Node not found
     pub fn circuit_state(&self, addr: &str) -> Option<CircuitBreakerState> {
         self.nodes.get(addr).map(|n| n.circuit_state)
     }
 
     /// Gets all nodes with open circuits.
+    ///
+    /// This is useful for monitoring and debugging to see which nodes are
+    /// currently being skipped by the load balancer.
+    ///
+    /// # Returns
+    /// Vector of node addresses with Open circuit state
     pub fn open_circuit_nodes(&self) -> Vec<String> {
         self.nodes
             .iter()
@@ -243,6 +358,12 @@ impl LoadBalancer {
     }
 
     /// Gets all nodes with half-open circuits.
+    ///
+    /// Nodes in HalfOpen state are testing recovery and will transition to
+    /// Closed on success or Open on failure.
+    ///
+    /// # Returns
+    /// Vector of node addresses with HalfOpen circuit state
     pub fn half_open_circuit_nodes(&self) -> Vec<String> {
         self.nodes
             .iter()
@@ -255,6 +376,9 @@ impl LoadBalancer {
     ///
     /// # Arguments
     /// * `addr` - The node address
+    ///
+    /// # Returns
+    /// Number of consecutive health check failures (0 if node not found)
     pub fn consecutive_failures(&self, addr: &str) -> u32 {
         // O(1) HashMap lookup
         self.nodes
@@ -264,17 +388,33 @@ impl LoadBalancer {
     }
 
     /// Gets all nodes (including disabled ones).
+    ///
+    /// This returns cloned Node instances, which include all state information
+    /// (health status, circuit state, etc.).
+    ///
+    /// # Returns
+    /// Vector of all nodes with their current state
     pub fn all_nodes(&self) -> Vec<Node> {
         self.nodes.values().cloned().collect()
     }
 
     /// Gets enabled nodes only.
+    ///
+    /// This is an O(1) operation since it clones the pre-populated enabled_nodes vec.
+    ///
+    /// # Returns
+    /// Vector of enabled node addresses
     pub fn enabled_nodes(&self) -> Vec<String> {
         // O(1) - just clone the enabled_nodes vec
         self.enabled_nodes.clone()
     }
 
     /// Gets disabled nodes only.
+    ///
+    /// This is an O(N) operation used for display purposes (e.g., monitoring UI).
+    ///
+    /// # Returns
+    /// Vector of disabled node addresses
     pub fn disabled_nodes(&self) -> Vec<String> {
         // O(N) but this is only used for display purposes
         self.nodes
@@ -285,6 +425,9 @@ impl LoadBalancer {
     }
 
     /// Adds a node to the pool.
+    ///
+    /// New nodes are enabled by default with closed circuit breakers. Duplicate
+    /// nodes are ignored (no-op).
     ///
     /// # Arguments
     /// * `node_addr` - The node address to add
@@ -299,6 +442,9 @@ impl LoadBalancer {
 
     /// Removes a node from the pool.
     ///
+    /// This removes the node from both the HashMap and the enabled_nodes vec.
+    /// If the node is already disabled, this is a no-op for the enabled_nodes vec.
+    ///
     /// # Arguments
     /// * `node_addr` - The node address to remove
     pub fn remove_node(&mut self, node_addr: &str) {
@@ -308,24 +454,35 @@ impl LoadBalancer {
         self.enabled_nodes.retain(|a| a != node_addr);
     }
 
-    /// Gets the number of nodes.
+    /// Gets the number of nodes (including disabled ones).
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
     /// Gets the number of enabled nodes.
+    ///
+    /// This is an O(1) operation.
     pub fn enabled_count(&self) -> usize {
         // O(1) - just return the length of enabled_nodes
         self.enabled_nodes.len()
     }
 
     /// Gets list of all node addresses (backward compatibility).
+    ///
+    /// Returns addresses of all nodes, including disabled ones. This is an O(N)
+    /// operation used primarily for display purposes.
+    ///
+    /// # Returns
+    /// Vector of all node addresses
     pub fn nodes(&self) -> Vec<String> {
         // O(N) but this is only used for display
         self.nodes.keys().cloned().collect()
     }
 
-    /// Test helper to get mutable access to a node's circuit state
+    /// Test helper to get mutable access to a node's circuit state.
+    ///
+    /// This allows tests to manipulate node state directly for testing circuit
+    /// breaker behavior without exposing internal mutability in the public API.
     #[cfg(test)]
     pub fn with_node_state<F>(&mut self, addr: &str, f: F)
     where

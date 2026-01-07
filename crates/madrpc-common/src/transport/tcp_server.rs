@@ -12,8 +12,36 @@ const MAX_MESSAGE_SIZE: usize = 100 * 1024 * 1024;
 
 /// Async TCP server for MaDRPC (for Orchestrator).
 ///
-/// This server uses tokio for async I/O and is suitable for the orchestrator
-/// which handles many concurrent connections efficiently.
+/// This server uses tokio for async I/O and is designed for high concurrency,
+/// making it suitable for the orchestrator which handles many connections
+/// efficiently without JavaScript execution (just forwarding requests).
+///
+/// # Architecture
+///
+/// - **Async I/O**: Uses tokio for efficient connection handling
+/// - **Spawn per connection**: Each connection gets its own async task
+/// - **Keep-alive**: Connections process multiple requests until closed
+///
+/// # Example
+///
+/// ```no_run
+/// use madrpc_common::transport::TcpServer;
+/// use madrpc_common::protocol::{Request, Response};
+/// use serde_json::json;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create server
+/// let server = TcpServer::new("0.0.0.0:8080").await?;
+///
+/// // Run with handler
+/// server.run_with_handler(|request| async move {
+///     // Process request
+///     Ok(Response::success(request.id, json!({"result": "ok"})))
+/// }).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct TcpServer {
     listener: TcpListener,
 }
@@ -22,7 +50,16 @@ impl TcpServer {
     /// Creates a new TCP server bound to the specified address.
     ///
     /// # Arguments
+    ///
     /// * `bind_addr` - The address to bind to (e.g., "0.0.0.0:8080")
+    ///
+    /// # Returns
+    ///
+    /// A new `TcpServer` instance
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if binding to the address fails
     pub async fn new(bind_addr: &str) -> Result<Self> {
         let listener = TcpListener::bind(bind_addr).await
             .map_err(|e| MadrpcError::Connection(format!("Failed to bind to {}: {}", bind_addr, e)))?;
@@ -31,6 +68,10 @@ impl TcpServer {
     }
 
     /// Gets the actual bound address.
+    ///
+    /// # Returns
+    ///
+    /// The socket address the server is bound to
     pub fn local_addr(&self) -> Result<std::net::SocketAddr> {
         self.listener.local_addr()
             .map_err(|e| MadrpcError::Connection(format!("Failed to get local addr: {}", e)))
@@ -41,8 +82,34 @@ impl TcpServer {
     /// This accepts connections in a loop and spawns an async task for each connection.
     /// Each connection processes multiple requests (keep-alive) until closed.
     ///
+    /// # Handler Type
+    ///
+    /// The handler is an async function that takes a `Request` and returns a
+    /// `Result<Response>`. Errors from the handler are converted to error responses.
+    ///
     /// # Arguments
-    /// * `handler` - Function to handle each request
+    ///
+    /// * `handler` - Function to handle each request (must be Send + Sync + 'static)
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use madrpc_common::transport::TcpServer;
+    /// use madrpc_common::protocol::{Request, Response};
+    /// use serde_json::json;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let server = TcpServer::new("0.0.0.0:8080").await?;
+    ///
+    /// server.run_with_handler(|request| async move {
+    ///     // Handle the request
+    ///     let result = json!({"status": "ok", "data": request.args});
+    ///     Ok(Response::success(request.id, result))
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn run_with_handler<F, Fut>(&self, handler: F) -> Result<()>
     where
         F: Fn(Request) -> Fut + Send + Sync + 'static,
@@ -70,6 +137,9 @@ impl TcpServer {
 /// Handle a single TCP connection (async)
 ///
 /// Processes multiple requests until the connection is closed.
+/// Each request is decoded, handled by the handler function, and the response
+/// is sent back. Invalid requests receive an error response but the connection
+/// remains open for subsequent requests.
 async fn handle_connection<F, Fut>(
     mut stream: TcpStream,
     handler: Arc<F>,
@@ -143,6 +213,8 @@ where
 }
 
 /// Send a response with length prefix
+///
+/// Encodes the response as JSON and sends it with a 4-byte length prefix.
 async fn send_response(stream: &mut TcpStream, response: &Response) -> Result<()> {
     let encoded = JsonCodec::encode_response(response)?;
 
