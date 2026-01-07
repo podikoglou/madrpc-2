@@ -26,13 +26,13 @@ MaDRPC allows you to write JavaScript functions that can be called remotely via 
 ```mermaid
 graph LR
     Client[Client] -->|TCP+JSON| Orch[Orchestrator]
-    Orch --> N1[Node 1]
-    Orch --> N2[Node 2]
-    Orch --> N3[Node 3]
+    Orch -->|round-robin| N1[Node 1]
+    Orch -->|round-robin| N2[Node 2]
+    Orch -->|round-robin| N3[Node 3]
 
-    N1 -.->|madrpc.call| N2
-    N1 -.->|madrpc.call| N3
-    N1 -.->|madrpc.call| N1
+    N1 -.->|madrpc.call| Orch
+    N2 -.->|madrpc.call| Orch
+    N3 -.->|madrpc.call| Orch
 ```
 
 ## Quick Start
