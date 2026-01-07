@@ -77,28 +77,47 @@ cargo build --release
 
 ### Running the System
 
+The CLI provides four subcommands:
+
+```bash
+madrpc <command>
+
+Commands:
+  node          Start a MaDRPC node (JavaScript execution server)
+  orchestrator  Start a MaDRPC orchestrator (load balancer)
+  top           Monitor a server with real-time metrics TUI
+  call          Call an RPC method on a server
+```
+
 You'll need three components:
 
 **1. Start the orchestrator** (load balancer):
 
 ```bash
-cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002
+cargo run --bin madrpc -- orchestrator \
+  -b 0.0.0.0:8080 \
+  -n 127.0.0.1:9001 \
+  -n 127.0.0.1:9002
 ```
 
 **2. Start compute nodes** (in separate terminals):
 
 ```bash
 # Terminal 2
-cargo run --bin madrpc -- node -s examples/monte-carlo-pi/scripts/pi.js -b 0.0.0.0:9001 --pool-size 4
+cargo run --bin madrpc -- node \
+  -s examples/monte-carlo-pi/scripts/pi.js \
+  -b 0.0.0.0:9001
 
 # Terminal 3
-cargo run --bin madrpc -- node -s examples/monte-carlo-pi/scripts/pi.js -b 0.0.0.0:9002 --pool-size 4
+cargo run --bin madrpc -- node \
+  -s examples/monte-carlo-pi/scripts/pi.js \
+  -b 0.0.0.0:9002
 ```
 
-**3. Run a client** (make RPC calls):
+**3. Make RPC calls** via the CLI:
 
 ```bash
-cargo run -p monte-carlo-pi
+cargo run --bin madrpc -- call 127.0.0.1:8080 monte_carlo '{"samples": 1000000}'
 ```
 
 **4. Monitor with the TUI** (optional):
@@ -122,15 +141,11 @@ madrpc.register('add', (args) => {
 });
 ```
 
-Call it from Rust:
+Call it via the CLI:
 
-```rust
-use madrpc_client::MadrpcClient;
-use serde_json::json;
-
-let client = MadrpcClient::new("127.0.0.1:8080").await?;
-let result = client.call("add", json!({"a": 5, "b": 3})).await?;
-// result: {"result": 8}
+```bash
+cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
+# Output: {"result":8}
 ```
 
 ### Async RPC with Parallel Calls
@@ -165,23 +180,18 @@ madrpc.register('parallel_sum', async (args) => {
 });
 ```
 
-Now the Rust client makes a single call, and JavaScript handles the parallel orchestration:
+The client makes a single call, and JavaScript handles the parallel orchestration:
 
-```rust
-let result = client.call("parallel_sum", json!({
-    "numNodes": 50,
-    "value": 10
-})).await?;
-// JavaScript fans out to 50 parallel RPC calls
+```bash
+cargo run --bin madrpc -- call 127.0.0.1:8080 parallel_sum '{"numNodes": 50, "value": 10}'
+# JavaScript fans out to 50 parallel RPC calls
 ```
 
-### Complete Example: Monte Carlo Pi
+## Examples
 
-See `examples/monte-carlo-pi/scripts/pi.js` for a complete example that:
-- Implements a Monte Carlo sampling algorithm
-- Uses an LCG for reproducible random numbers
-- Orchestrates 50 parallel RPC calls
-- Aggregates results to estimate Pi
+See [examples/](examples/) for complete working examples including:
+- Monte Carlo Pi estimation
+- Basic RPC test
 
 ## JavaScript API
 
@@ -393,9 +403,7 @@ madrpc-2/
 │   ├── madrpc-client/       # RPC client with connection pooling
 │   ├── madrpc-metrics/      # Metrics collection infrastructure
 │   └── madrpc-cli/          # CLI entry point
-├── examples/
-│   ├── monte-carlo-pi/      # Monte Carlo Pi estimation
-│   └── simple-test/         # Basic RPC test
+├── examples/                # Example applications (see README.md)
 ├── tests/                   # Integration tests
 └── Cargo.toml               # Workspace configuration
 ```
