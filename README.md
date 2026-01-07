@@ -1,0 +1,447 @@
+# MaDRPC - Massively Distributed RPC
+
+MaDRPC is an experimental distributed RPC system that enables massively parallel computation by executing JavaScript functions across multiple nodes. It's a hobby project built to explore distributed systems, JavaScript engine integration, and concurrent programming patterns.
+
+## Overview
+
+MaDRPC allows you to write JavaScript functions that can be called remotely via RPC, with support for async/await and parallel execution across multiple compute nodes. The system uses:
+
+- **Boa** - A pure Rust JavaScript engine for executing user code
+- **TCP** - For transport with JSON serialization
+- **Tokio** - Async runtime for orchestrator and client
+- **Native threads** - For parallel compute node execution
+
+### What Makes It Interesting
+
+**JavaScript-Driven Parallelism**: Unlike traditional RPC systems where the client orchestrates parallel work, MaDRPC lets JavaScript functions make async RPC calls to other nodes. This means you can write distributed algorithms entirely in JavaScript using `async/await` and `Promise.all()`.
+
+**"Stupid" Orchestrator**: The orchestrator is a simple round-robin load balancer that just forwards requests. It doesn't execute JavaScript or maintain complex state - it's a thin, efficient proxy.
+
+**Thread-Per-Connection Nodes**: Each compute node spawns a dedicated OS thread per connection (limited by a semaphore), with each request getting a fresh Boa Context for true parallelism.
+
+**Built-in Metrics**: All components expose metrics via `_metrics` and `_info` endpoints, with a terminal UI (`top` command) for real-time monitoring.
+
+## Architecture
+
+```
+                    ┌─────────────────────────────────────┐
+                    │         Client Application          │
+                    │    (Rust, Python, Go, or anything)  │
+                    └─────────────────┬───────────────────┘
+                                        │ TCP + JSON
+                                        ▼
+                    ┌─────────────────────────────────────┐
+                    │          Orchestrator               │
+                    │  (Round-robin load balancer)        │
+                    │  - Circuit breaker                  │
+                    │  - Health checking                  │
+                    │  - No JavaScript execution          │
+                    └─────┬─────────────┬──────────────┬──┘
+                          │             │              │
+                          ▼             ▼              ▼
+                    ┌──────────┐  ┌──────────┐  ┌──────────┐
+                    │  Node 1  │  │  Node 2  │  │  Node 3  │
+                    │  :9001   │  │  :9002   │  │  :9003   │
+                    │          │  │          │  │          │
+                    │  Boa JS  │  │  Boa JS  │  │  Boa JS  │
+                    │  Engine  │  │  Engine  │  │  Engine  │
+                    │          │  │          │  │          │
+                    │ Thread-  │  │ Thread-  │  │ Thread-  │
+                    │ per-Conn │  │ per-Conn │  │ per-Conn │
+                    └──────────┘  └──────────┘  └──────────┘
+
+                        JavaScript can call other nodes via madrpc.call():
+                        ┌──────────────────────────────────────────┐
+                        │  Node 1 executing 'aggregate' function  │
+                        │                                          │
+                        │  madrpc.call('compute', {data: ...}) ───┼──► Node 2
+                        │  madrpc.call('compute', {data: ...}) ───┼──► Node 3
+                        │  madrpc.call('compute', {data: ...}) ───┼──► Node 1
+                        │                                          │
+                        │  await Promise.all([ ... ])              │
+                        └──────────────────────────────────────────┘
+```
+
+## Quick Start
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/podikoglou/madrpc-2.git
+cd madrpc-2
+
+# Build the project
+cargo build --release
+```
+
+### Running the System
+
+You'll need three components:
+
+**1. Start the orchestrator** (load balancer):
+
+```bash
+cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002
+```
+
+**2. Start compute nodes** (in separate terminals):
+
+```bash
+# Terminal 2
+cargo run --bin madrpc -- node -s examples/monte-carlo-pi/scripts/pi.js -b 0.0.0.0:9001 --pool-size 4
+
+# Terminal 3
+cargo run --bin madrpc -- node -s examples/monte-carlo-pi/scripts/pi.js -b 0.0.0.0:9002 --pool-size 4
+```
+
+**3. Run a client** (make RPC calls):
+
+```bash
+cargo run -p monte-carlo-pi
+```
+
+**4. Monitor with the TUI** (optional):
+
+```bash
+cargo run --bin madrpc -- top 127.0.0.1:8080
+```
+
+## Writing RPCs
+
+RPC functions are written in JavaScript and registered using the `madrpc` global object.
+
+### Basic RPC Function
+
+```javascript
+// Register a simple function
+madrpc.register('add', (args) => {
+    const a = args.a || 0;
+    const b = args.b || 0;
+    return { result: a + b };
+});
+```
+
+Call it from Rust:
+
+```rust
+use madrpc_client::MadrpcClient;
+use serde_json::json;
+
+let client = MadrpcClient::new("127.0.0.1:8080").await?;
+let result = client.call("add", json!({"a": 5, "b": 3})).await?;
+// result: {"result": 8}
+```
+
+### Async RPC with Parallel Calls
+
+The real power of MaDRPC is JavaScript making async RPC calls:
+
+```javascript
+// Register a function that orchestrates parallel work
+madrpc.register('parallel_sum', async (args) => {
+    const numNodes = args.numNodes || 10;
+    const value = args.value || 1;
+
+    // Create promises for parallel RPC calls
+    const promises = [];
+    for (let i = 0; i < numNodes; i++) {
+        promises.push(madrpc.call('add', {
+            a: value,
+            b: i
+        }));
+    }
+
+    // Wait for all calls to complete
+    const results = await Promise.all(promises);
+
+    // Aggregate results
+    let sum = 0;
+    for (const r of results) {
+        sum += r.result;
+    }
+
+    return { total: sum };
+});
+```
+
+Now the Rust client makes a single call, and JavaScript handles the parallel orchestration:
+
+```rust
+let result = client.call("parallel_sum", json!({
+    "numNodes": 50,
+    "value": 10
+})).await?;
+// JavaScript fans out to 50 parallel RPC calls
+```
+
+### Complete Example: Monte Carlo Pi
+
+See `examples/monte-carlo-pi/scripts/pi.js` for a complete example that:
+- Implements a Monte Carlo sampling algorithm
+- Uses an LCG for reproducible random numbers
+- Orchestrates 50 parallel RPC calls
+- Aggregates results to estimate Pi
+
+## JavaScript API
+
+### Global Object: `madrpc`
+
+#### `madrpc.register(name, function)`
+
+Register a function that can be called via RPC.
+
+```javascript
+madrpc.register('myMethod', (args) => {
+    // args is a JavaScript object (converted from JSON)
+    // Return a value that can be serialized to JSON
+    return { result: 42 };
+});
+```
+
+**Parameters:**
+- `name` (string): The RPC method name
+- `function` (function): The function to execute. Receives `args` object.
+
+**Returns:** Nothing
+
+**Async Functions:** You can register async functions:
+
+```javascript
+madrpc.register('myAsyncMethod', async (args) => {
+    // Can use await here
+    const data = await someAsyncOperation();
+    return { result: data };
+});
+```
+
+#### `madrpc.call(method, args)` (Async)
+
+Make an async RPC call to another method (possibly on another node).
+
+```javascript
+const result = await madrpc.call('otherMethod', {
+    param1: 'value1',
+    param2: 42
+});
+```
+
+**Parameters:**
+- `method` (string): The RPC method name to call
+- `args` (object): Arguments to pass (must be JSON-serializable)
+
+**Returns:** A Promise that resolves to the result (or rejects on error)
+
+**Use with Promise.all for parallelization:**
+
+```javascript
+const promises = [
+    madrpc.call('method1', {data: 1}),
+    madrpc.call('method2', {data: 2}),
+    madrpc.call('method3', {data: 3})
+];
+const results = await Promise.all(promises);
+```
+
+#### `madrpc.callSync(method, args)` (Synchronous)
+
+Make a synchronous blocking RPC call. Generally not recommended - use `madrpc.call()` with `await` instead.
+
+```javascript
+const result = madrpc.callSync('otherMethod', {param: 'value'});
+```
+
+## CLI Reference
+
+### `madrpc orchestrator`
+
+Start the orchestrator (load balancer).
+
+```bash
+cargo run --bin madrpc -- orchestrator [OPTIONS]
+```
+
+**Options:**
+- `-b, --bind <ADDR>`: Bind address (default: `0.0.0.0:8080`)
+- `-n, --node <ADDR>`: Add a node address (can be specified multiple times)
+- `--failure-threshold <N>`: Circuit breaker failure threshold (default: 5)
+- `--circuit-timeout <MS>`: Circuit breaker timeout in ms (default: 30000)
+- `--backoff-multiplier <N>`: Exponential backoff multiplier (default: 2)
+
+### `madrpc node`
+
+Start a compute node.
+
+```bash
+cargo run --bin madrpc -- node [OPTIONS]
+```
+
+**Options:**
+- `-s, --script <PATH>`: JavaScript script to load (required)
+- `-b, --bind <ADDR>`: Bind address (default: `0.0.0.0:9001`)
+- `--orchestrator <ADDR>`: Orchestrator address for distributed calls
+- `--pool-size <N>`: Max concurrent connections (default: `num_cpus * 2`)
+
+### `madrpc top`
+
+Start the metrics TUI (terminal user interface).
+
+```bash
+cargo run --bin madrpc -- top <ORCHESTRATOR_ADDR>
+```
+
+**Features:**
+- Real-time metrics from all nodes
+- Request/response counts
+- Error rates
+- Resource usage
+
+### `madrpc call`
+
+Make a single RPC call from the command line.
+
+```bash
+cargo run --bin madrpc -- call <ORCHESTRATOR_ADDR> <METHOD> <ARGS_JSON>
+```
+
+**Example:**
+
+```bash
+cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
+```
+
+## Wire Protocol
+
+MaDRPC uses a simple TCP-based protocol:
+
+1. **Transport:** TCP with keep-alive connections
+2. **Serialization:** JSON
+3. **Message Format:** `[4-byte length prefix (u32 big-endian)] + [JSON data]`
+4. **Max Message Size:** 100 MB
+
+### Request Format
+
+```json
+{
+  "id": 12345,
+  "method": "myMethod",
+  "args": {"param1": "value1"},
+  "timeout_ms": 5000,
+  "idempotency_key": "optional-uuid"
+}
+```
+
+### Response Format
+
+```json
+{
+  "id": 12345,
+  "result": {"field": "value"},
+  "error": null,
+  "success": true
+}
+```
+
+## Built-in Metrics
+
+All components expose metrics via HTTP endpoints:
+
+- `GET /_metrics` - Metrics in JSON format
+- `GET /_info` - Component information
+
+**Metrics include:**
+- Total requests/responses
+- Error rates
+- Active connections
+- Request latency (min/max/avg)
+- Circuit breaker state (orchestrator)
+
+## Error Handling
+
+### Retryable Errors
+
+The client automatically retries transient errors with exponential backoff:
+- Network issues
+- Timeouts
+- Connection failures
+- Node unavailable
+- Pool exhaustion
+
+### Circuit Breaker
+
+The orchestrator implements a circuit breaker pattern:
+1. **Closed:** Normal operation, requests forwarded
+2. **Open:** Fail fast after consecutive failures
+3. **Half-Open:** Test recovery with exponential backoff
+
+### Non-Retryable Errors
+
+These fail immediately without retries:
+- Invalid requests
+- JavaScript execution errors
+- Invalid responses
+- All nodes failed
+
+## Project Structure
+
+```
+madrpc-2/
+├── crates/
+│   ├── madrpc-common/       # Shared protocol and transport
+│   ├── madrpc-server/       # Node implementation (JavaScript execution)
+│   ├── madrpc-orchestrator/ # Load balancer and request forwarder
+│   ├── madrpc-client/       # RPC client with connection pooling
+│   ├── madrpc-metrics/      # Metrics collection infrastructure
+│   └── madrpc-cli/          # CLI entry point
+├── examples/
+│   ├── monte-carlo-pi/      # Monte Carlo Pi estimation
+│   └── simple-test/         # Basic RPC test
+├── tests/                   # Integration tests
+└── Cargo.toml               # Workspace configuration
+```
+
+## Development
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run tests for specific crate
+cargo test -p madrpc-server
+
+# Run tests with output
+cargo test -- --nocapture
+
+# Run integration tests
+cargo test --test integration_test
+```
+
+### Building for Release
+
+```bash
+cargo build --release
+```
+
+## Why This Project Exists
+
+MaDRPC is an experimental toy project built to explore:
+
+- **Distributed systems patterns:** Load balancing, circuit breakers, health checking
+- **JavaScript engine integration:** Embedding Boa in a Rust application
+- **Concurrent programming:** Thread-per-connection vs async, shared state management
+- **RPC protocols:** Wire format design, error handling, retry logic
+- **Developer experience:** CLI design, metrics, observability
+
+It's not intended for production use, but it's a fun way to learn about these concepts and experiment with different approaches.
+
+## License
+
+MIT
+
+## Acknowledgments
+
+- [Boa](https://github.com/boa-dev/boa) - The JavaScript engine powering MaDRPC
+- [Tokio](https://tokio.rs/) - Async runtime
+- [serde](https://serde.rs/) - Serialization framework
