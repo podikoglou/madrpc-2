@@ -7,6 +7,10 @@ edition.workspace = true
 name = "integration"
 path = "integration_test.rs"
 
+[[test]]
+name = "dangerous_code_paths"
+path = "dangerous_code_paths.rs"
+
 [dev-dependencies]
 madrpc-common = { path = "../crates/madrpc-common" }
 madrpc-server = { path = "../crates/madrpc-server" }
