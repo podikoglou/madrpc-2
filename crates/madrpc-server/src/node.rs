@@ -27,6 +27,8 @@ pub struct Node {
     script_source: Arc<String>,
     /// Metrics collector for this node
     metrics_collector: Arc<NodeMetricsCollector>,
+    /// Optional orchestrator client for distributed RPC calls
+    orchestrator_client: Option<Arc<madrpc_client::MadrpcClient>>,
 }
 
 
@@ -59,6 +61,52 @@ impl Node {
             script_path,
             script_source: Arc::new(script_source),
             metrics_collector,
+            orchestrator_client: None,
+        })
+    }
+
+    /// Creates a new node with orchestrator support.
+    ///
+    /// This constructor creates a node that can make distributed RPC calls to other nodes
+    /// through the orchestrator. The client is stored and passed to each context created
+    /// during request handling.
+    ///
+    /// # Arguments
+    /// * `script_path` - Path to the JavaScript script file
+    /// * `orchestrator_addr` - Address of the orchestrator (e.g., "127.0.0.1:8080")
+    pub fn with_orchestrator(script_path: PathBuf, orchestrator_addr: String) -> Result<Self> {
+        if !script_path.exists() {
+            return Err(MadrpcError::InvalidRequest(format!(
+                "Script path does not exist: {}",
+                script_path.display()
+            )));
+        }
+
+        // Read and cache the script source to avoid file I/O on every request
+        let script_source = std::fs::read_to_string(&script_path)
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to load script: {}", e)))?;
+
+        tracing::info!("Script source loaded and cached");
+
+        let metrics_collector = Arc::new(NodeMetricsCollector::new());
+
+        // Create a tokio runtime for the async client creation
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create tokio runtime: {}", e)))?;
+
+        // Create the orchestrator client (this is async, so we block on it)
+        let orchestrator_client = rt.block_on(async {
+            madrpc_client::MadrpcClient::new(orchestrator_addr).await
+        })
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create orchestrator client: {}", e)))?;
+
+        tracing::info!("Orchestrator client created");
+
+        Ok(Self {
+            script_path,
+            script_source: Arc::new(script_source),
+            metrics_collector,
+            orchestrator_client: Some(Arc::new(orchestrator_client)),
         })
     }
 
@@ -83,7 +131,15 @@ impl Node {
         // Create a fresh Boa context for this request from the cached script source
         // This enables true parallelism as each request has its own context
         tracing::debug!("Creating fresh Boa context for request");
-        let ctx = MadrpcContext::from_source(&self.script_source)?;
+
+        // If we have an orchestrator client, pass it to the context for distributed RPC calls
+        let ctx = if let Some(client) = &self.orchestrator_client {
+            // Clone the inner MadrpcClient (MadrpcClient implements Clone)
+            let client_clone = (**client).clone();
+            MadrpcContext::with_client_from_source(&self.script_source, Some(client_clone))?
+        } else {
+            MadrpcContext::from_source(&self.script_source)?
+        };
 
         // Call the RPC function
         tracing::debug!("Calling RPC method: {}", method);
@@ -192,5 +248,27 @@ mod tests {
 
         assert!(response.success);
         assert_eq!(response.result, Some(json!({"result": 42})));
+    }
+
+    #[test]
+    fn test_node_creation_with_orchestrator() {
+        let script = create_test_script("// empty");
+        // Note: This test will fail if there's no orchestrator running at the address
+        // In a real integration test, you'd start a test orchestrator first
+        let result = Node::with_orchestrator(script, "127.0.0.1:9999".to_string());
+        // We expect this to fail with a connection error since no orchestrator is running
+        // But it validates that the constructor logic works (script loading, etc.)
+        match result {
+            Ok(_) => {
+                // If it succeeds, an orchestrator was running - that's fine too
+            }
+            Err(e) => {
+                // Expected error: "Failed to create orchestrator client: ..."
+                // This confirms the constructor reached the client creation stage
+                let error_msg = e.to_string();
+                assert!(error_msg.contains("Failed to create orchestrator client"),
+                    "Expected client creation error, got: {}", error_msg);
+            }
+        }
     }
 }
