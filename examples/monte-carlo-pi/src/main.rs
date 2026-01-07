@@ -8,7 +8,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     // Connect to orchestrator
-    let client = MadrpcClient::new("0.0.0.0:8080").await?;
+    let client = MadrpcClient::new("127.0.0.1:8080").await?;
 
     // Total samples to compute
     let total_samples = 10_000_000;
