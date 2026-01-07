@@ -1,4 +1,5 @@
 pub mod context;
+pub mod job_executor;
 
 mod bindings;
 mod conversions;
@@ -7,3 +8,4 @@ mod conversions;
 mod tests;
 
 pub use context::MadrpcContext;
+pub use job_executor::TokioJobExecutor;

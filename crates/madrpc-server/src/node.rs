@@ -74,7 +74,7 @@ impl Node {
     /// # Arguments
     /// * `script_path` - Path to the JavaScript script file
     /// * `orchestrator_addr` - Address of the orchestrator (e.g., "127.0.0.1:8080")
-    pub fn with_orchestrator(script_path: PathBuf, orchestrator_addr: String) -> Result<Self> {
+    pub async fn with_orchestrator(script_path: PathBuf, orchestrator_addr: String) -> Result<Self> {
         if !script_path.exists() {
             return Err(MadrpcError::InvalidRequest(format!(
                 "Script path does not exist: {}",
@@ -90,14 +90,8 @@ impl Node {
 
         let metrics_collector = Arc::new(NodeMetricsCollector::new());
 
-        // Create a tokio runtime for the async client creation
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create tokio runtime: {}", e)))?;
-
-        // Create the orchestrator client (this is async, so we block on it)
-        let orchestrator_client = rt.block_on(async {
-            madrpc_client::MadrpcClient::new(orchestrator_addr).await
-        })
+        // Create the orchestrator client (async)
+        let orchestrator_client = madrpc_client::MadrpcClient::new(orchestrator_addr).await
             .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create orchestrator client: {}", e)))?;
 
         tracing::info!("Orchestrator client created");
@@ -250,12 +244,12 @@ mod tests {
         assert_eq!(response.result, Some(json!({"result": 42})));
     }
 
-    #[test]
-    fn test_node_creation_with_orchestrator() {
+    #[tokio::test]
+    async fn test_node_creation_with_orchestrator() {
         let script = create_test_script("// empty");
         // Note: This test will fail if there's no orchestrator running at the address
         // In a real integration test, you'd start a test orchestrator first
-        let result = Node::with_orchestrator(script, "127.0.0.1:9999".to_string());
+        let result = Node::with_orchestrator(script, "127.0.0.1:9999".to_string()).await;
         // We expect this to fail with a connection error since no orchestrator is running
         // But it validates that the constructor logic works (script loading, etc.)
         match result {

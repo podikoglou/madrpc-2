@@ -27,6 +27,10 @@ struct NodeArgs {
     /// address to bind to
     #[argh(option, short = 'b', default = "\"0.0.0.0:0\".into()")]
     bind: String,
+
+    /// orchestrator address to register with
+    #[argh(option, long = "orchestrator")]
+    orchestrator: Option<String>,
 }
 
 #[derive(FromArgs)]
@@ -85,7 +89,15 @@ async fn main() -> Result<()> {
             tracing::info!("Starting MaDRPC node (single-threaded) with script: {}", args.script);
             tracing::info!("Binding to: {}", args.bind);
 
-            let node = madrpc_server::Node::new(std::path::PathBuf::from(&args.script))?;
+            let node = if let Some(orch_addr) = &args.orchestrator {
+                tracing::info!("Configured with orchestrator: {}", orch_addr);
+                madrpc_server::Node::with_orchestrator(
+                    std::path::PathBuf::from(&args.script),
+                    orch_addr.clone(),
+                ).await?
+            } else {
+                madrpc_server::Node::new(std::path::PathBuf::from(&args.script))?
+            };
             tracing::info!("Node created successfully from script");
 
             let server = madrpc_common::transport::tcp_server::TcpServer::new(&args.bind).await?;
@@ -165,9 +177,28 @@ mod tests {
     fn test_cli_parse_node() {
         let args: Cli = Cli::from_args(&["madrpc"], &["node", "-s", "test.js", "-b", "0.0.0.0:9001"]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
+                assert!(orchestrator.is_none());
+            }
+            _ => panic!("Expected Node command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_node_with_orchestrator() {
+        let args: Cli = Cli::from_args(&["madrpc"], &[
+            "node",
+            "-s", "test.js",
+            "-b", "0.0.0.0:9001",
+            "--orchestrator", "127.0.0.1:8080",
+        ]).unwrap();
+        match args.command {
+            Commands::Node(NodeArgs { script, bind, orchestrator }) => {
+                assert_eq!(script, "test.js");
+                assert_eq!(bind, "0.0.0.0:9001");
+                assert_eq!(orchestrator, Some("127.0.0.1:8080".to_string()));
             }
             _ => panic!("Expected Node command"),
         }
