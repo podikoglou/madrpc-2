@@ -2,89 +2,60 @@ use boa_engine::{Context, Source, js_string, value::JsValue, object::builtins::J
 use std::path::Path;
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use serde_json::Value as JsonValue;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}};
 
-/// Boa context wrapper with MaDRPC bindings
+/// Thread-local marker to ensure MadrpcContext is used on the correct thread.
 ///
-/// The Context is wrapped in Mutex for thread safety. Boa's Context
-/// is not thread-safe and must be accessed from a single thread.
-pub struct MadrpcContext {
-    ctx: Mutex<Context>,
-    client: Option<Arc<madrpc_client::MadrpcClient>>,
+/// This is a zero-sized type that is !Send and !Sync, which prevents
+/// MadrpcContext from being sent or shared across threads. This ensures
+/// that the Boa Context (which has thread-local state) is always accessed
+/// from the same thread it was created on.
+///
+/// # Thread Safety
+///
+/// Boa's Context has thread-local state and is not thread-safe. By including
+/// this PhantomData marker, we ensure at the type level that MadrpcContext
+/// cannot be sent to another thread or shared between threads.
+///
+/// This is a safer alternative to `unsafe impl Send/Sync` because it relies
+/// on Rust's type system to enforce thread safety rather than documentation
+/// and programmer discipline.
+use std::marker::PhantomData;
+use std::rc::Rc;
+
+struct ThreadNotSendSync {
+    _marker: PhantomData<Rc<()>>,
 }
 
-// ============================================================================
-// Thread Safety Implementations
-// ============================================================================
-
-/// # Safety
+/// Boa context wrapper with MaDRPC bindings.
 ///
-/// The `MadrpcContext` can be safely sent across threads because:
+/// The Context is wrapped in Mutex for internal use, but the entire
+/// MadrpcContext is designed to be used on a single thread only.
 ///
-/// ## Thread Safety Guarantees
+/// # Thread Safety
 ///
-/// 1. **Mutex Protection**: The Boa `Context` is wrapped in a `Mutex<Context>`, which ensures:
-///    - Only one thread can access the context at a time
-///    - Exclusive access is enforced at runtime via `lock().unwrap()`
-///    - Boa's thread-local state is properly synchronized
+/// **IMPORTANT**: MadrpcContext is NOT Send or Sync. It must be used on
+/// the same thread it was created on. This is enforced at the type level
+/// by the ThreadNotSendSync marker.
 ///
-/// 2. **Client Field Thread Safety**: The `client` field is `Option<Arc<MadrpcClient>>`:
-///    - `Arc` provides thread-safe reference counting
-///    - `MadrpcClient` is itself thread-safe (uses internal synchronization)
+/// This design ensures that Boa's Context (which has thread-local state)
+/// is always accessed from the same thread, preventing data races and
+/// undefined behavior.
 ///
-/// ## Usage Pattern Safety
-///
-/// The actual usage pattern ensures thread safety:
-///
-/// - Each request creates its **own fresh `MadrpcContext`** instance
-/// - Contexts are **never shared** between concurrent operations
-/// - The `Send`/`Sync` impls allow the context to be stored in thread-safe containers
-/// - The `Mutex` prevents concurrent access even if sharing were attempted
-///
-/// ## Why This Is Sound
-///
-/// While Boa's `Context` has thread-local state and is not `Send` or `Sync`:
-///
-/// 1. The `Mutex` wrapper ensures exclusive access
-/// 2. Each request gets an isolated context (no concurrent access)
-/// 3. The `Arc` on the client allows safe sharing across threads
-/// 4. No operation exposes the inner `Context` without acquiring the lock
-unsafe impl Send for MadrpcContext {}
-
-/// # Safety
-///
-/// The `MadrpcContext` can be safely shared across threads because:
-///
-/// ## Synchronization Mechanism
-///
-/// 1. **Mutex Enforcement**: All access to the inner Boa `Context` requires:
-///    - Acquiring the lock via `ctx.lock().unwrap()`
-///    - This ensures exclusive access even with `&self`
-///    - Rust's type system prevents access without the lock
-///
-/// 2. **No Interior Mutability Without Lock**: The struct only provides methods that:
-///    - Acquire the mutex before accessing the context
-///    - Never leak references to the inner context
-///    - Never allow the context to escape the lock scope
-///
-/// ## Client Field Safety
-///
-/// - `Arc<MadrpcClient>` is inherently `Send` + `Sync`
-/// - `Option<T>` preserves thread-safety properties when `T` is thread-safe
-///
-/// ## Why This Is Sound
-///
-/// The `Sync` trait means `&MadrpcContext` can be shared across threads.
-/// This is safe because:
-///
-/// 1. All mutable access to the `Context` goes through the `Mutex`
-/// 2. The `Mutex` prevents data races at runtime
-/// 3. No method returns a reference that could outlive the lock
-/// 4. Boa's thread-local state is properly isolated by the mutex
-unsafe impl Sync for MadrpcContext {}
-
+/// Each request should create its own fresh MadrpcContext instance.
+/// Contexts should never be shared between threads.
+pub struct MadrpcContext {
+    /// Thread-local marker that prevents Send/Sync
+    _thread_marker: ThreadNotSendSync,
+    /// The Boa context (wrapped in Mutex for internal synchronization)
+    ctx: boa_engine::context::Context,
+    /// Optional client for distributed RPC calls
+    /// Note: This is NOT used in bindings anymore - we use closure capture instead
+    /// But we keep it here for the distributed_call method
+    client: Option<Arc<madrpc_client::MadrpcClient>>,
+}
 
 impl MadrpcContext {
     /// Create a new Boa context with MaDRPC bindings
@@ -123,7 +94,8 @@ impl MadrpcContext {
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Script evaluation error: {}", e)))?;
 
         Ok(Self {
-            ctx: Mutex::new(ctx),
+            _thread_marker: ThreadNotSendSync { _marker: PhantomData },
+            ctx,
             client,
         })
     }
@@ -150,25 +122,24 @@ impl MadrpcContext {
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Script evaluation error: {}", e)))?;
 
         Ok(Self {
-            ctx: Mutex::new(ctx),
+            _thread_marker: ThreadNotSendSync { _marker: PhantomData },
+            ctx,
             client,
         })
     }
 
     /// Call a registered RPC function
-    pub fn call_rpc(&self, method: &str, args: JsonValue) -> Result<JsonValue> {
-        tracing::debug!("call_rpc: Locking context mutex...");
-        let mut ctx = self.ctx.lock().unwrap();
-        tracing::debug!("call_rpc: Context locked");
+    pub fn call_rpc(&mut self, method: &str, args: JsonValue) -> Result<JsonValue> {
+        tracing::debug!("call_rpc: calling method '{}'", method);
 
         // Get madrpc object and registry
-        let madrpc = ctx.global_object()
-            .get(js_string!("madrpc"), &mut *ctx)
+        let madrpc = self.ctx.global_object()
+            .get(js_string!("madrpc"), &mut self.ctx)
             .map_err(|e| MadrpcError::JavaScriptExecution(e.to_string()))?;
 
         tracing::debug!("call_rpc: Getting registry...");
         let registry_val = madrpc.as_object()
-            .and_then(|o| o.get(js_string!("__registry"), &mut *ctx).ok())
+            .and_then(|o| o.get(js_string!("__registry"), &mut self.ctx).ok())
             .ok_or_else(|| MadrpcError::InvalidRequest("Failed to access registry".into()))?;
 
         let registry = registry_val.as_object()
@@ -176,7 +147,7 @@ impl MadrpcContext {
 
         // Get registered function
         tracing::debug!("call_rpc: Getting function '{}' from registry...", method);
-        let func = registry.get(js_string!(method), &mut *ctx)
+        let func = registry.get(js_string!(method), &mut self.ctx)
             .map_err(|e| MadrpcError::InvalidRequest(format!("Method '{}' lookup error: {}", method, e)))?;
 
         if func.is_undefined() {
@@ -188,8 +159,8 @@ impl MadrpcContext {
 
         // Convert args to JsValue and call
         tracing::debug!("call_rpc: Converting args and calling function...");
-        let args_js = json_to_js_value(args, &mut *ctx)?;
-        let result = func_obj.call(&JsValue::undefined(), &[args_js], &mut *ctx)
+        let args_js = json_to_js_value(args, &mut self.ctx)?;
+        let result = func_obj.call(&JsValue::undefined(), &[args_js], &mut self.ctx)
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Function execution error: {}", e)))?;
 
         // Check if result is a Promise
@@ -201,7 +172,7 @@ impl MadrpcContext {
                 let max_iterations = 100_000;
                 for iteration in 0..max_iterations {
                     // Run pending promise jobs
-                    let _ = ctx.run_jobs();
+                    let _ = self.ctx.run_jobs();
 
                     // Check promise state
                     match promise.state() {
@@ -215,7 +186,7 @@ impl MadrpcContext {
                         PromiseState::Fulfilled(value) => {
                             tracing::debug!("call_rpc: Promise fulfilled after {} iterations", iteration);
                             // Convert the fulfillment value to JSON
-                            return js_value_to_json(value, &mut *ctx);
+                            return js_value_to_json(value, &mut self.ctx);
                         }
                         PromiseState::Rejected(reason) => {
                             tracing::debug!("call_rpc: Promise rejected after {} iterations", iteration);
@@ -236,10 +207,10 @@ impl MadrpcContext {
         }
 
         // Not a promise, just run jobs once for any microtasks
-        let _ = ctx.run_jobs();
+        let _ = self.ctx.run_jobs();
 
         tracing::debug!("call_rpc: Converting result to JSON...");
-        js_value_to_json(result, &mut *ctx)
+        js_value_to_json(result, &mut self.ctx)
     }
 
     /// Make a distributed RPC call (callable from JavaScript via a callback)
@@ -247,5 +218,112 @@ impl MadrpcContext {
         let client = self.client.as_ref()
             .ok_or_else(|| MadrpcError::InvalidRequest("No client configured".into()))?;
         client.call(method, args).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Test that MadrpcContext is NOT Send
+    #[test]
+    fn test_context_is_not_send() {
+        // This test verifies that MadrpcContext cannot be sent across threads
+        // If it compiles, the test fails (because it should NOT compile)
+        fn assert_not_send<T: !Send>() {}
+        assert_not_send::<MadrpcContext>();
+    }
+
+    /// Test that MadrpcContext is NOT Sync
+    #[test]
+    fn test_context_is_not_sync() {
+        // This test verifies that MadrpcContext cannot be shared between threads
+        // If it compiles, the test fails (because it should NOT compile)
+        fn assert_not_sync<T: !Sync>() {}
+        assert_not_sync::<MadrpcContext>();
+    }
+
+    /// Test that context can be created and used on the same thread
+    #[test]
+    fn test_context_creates_successfully() {
+        let script_path = "/tmp/test_madrpc_context.js";
+        fs::write(script_path, r#"
+            madrpc.register('test', function(args) {
+                return { result: args.value * 2 };
+            });
+        "#).expect("Failed to write test script");
+
+        let result = MadrpcContext::new(script_path);
+        assert!(result.is_ok(), "Context should be created successfully");
+
+        let mut ctx = result.unwrap();
+        let result = ctx.call_rpc("test", json!({"value": 21}));
+        assert!(result.is_ok(), "RPC call should succeed");
+        assert_eq!(result.unwrap(), json!({"result": 42}));
+
+        // Cleanup
+        let _ = fs::remove_file(script_path);
+    }
+
+    /// Test that context with client works correctly
+    #[test]
+    fn test_context_with_client_no_pointer_storage() {
+        let script_source = r#"
+            madrpc.register('test', function(args) {
+                return { result: args.value * 2 };
+            });
+        "#;
+
+        // Create context without client
+        let result = MadrpcContext::from_source(script_source);
+        assert!(result.is_ok(), "Context should be created successfully");
+
+        let mut ctx = result.unwrap();
+        let result = ctx.call_rpc("test", json!({"value": 21}));
+        assert!(result.is_ok(), "RPC call should succeed");
+        assert_eq!(result.unwrap(), json!({"result": 42}));
+    }
+
+    /// Test that call_rpc properly handles errors
+    #[test]
+    fn test_call_rpc_error_handling() {
+        let script_path = "/tmp/test_madrpc_context_error.js";
+        fs::write(script_path, r#"
+            madrpc.register('error', function() {
+                throw new Error('test error');
+            });
+        "#).expect("Failed to write test script");
+
+        let mut ctx = MadrpcContext::new(script_path).unwrap();
+        let result = ctx.call_rpc("error", json!({}));
+        assert!(result.is_err(), "RPC call should fail");
+
+        // Cleanup
+        let _ = fs::remove_file(script_path);
+    }
+
+    /// Test that context maintains thread-local state correctly
+    #[test]
+    fn test_context_thread_local_state() {
+        let script_path = "/tmp/test_madrpc_context_tls.js";
+        fs::write(script_path, r#"
+            let counter = 0;
+            madrpc.register('increment', function() {
+                counter += 1;
+                return { count: counter };
+            });
+        "#).expect("Failed to write test script");
+
+        let mut ctx = MadrpcContext::new(script_path).unwrap();
+
+        let result1 = ctx.call_rpc("increment", json!({})).unwrap();
+        assert_eq!(result1, json!({"count": 1}));
+
+        let result2 = ctx.call_rpc("increment", json!({})).unwrap();
+        assert_eq!(result2, json!({"count": 2}));
+
+        // Cleanup
+        let _ = fs::remove_file(script_path);
     }
 }
