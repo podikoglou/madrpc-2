@@ -1,39 +1,23 @@
 'use strict';
 
-// ============================================================================
-// Basic RPC Operations Example
-// ============================================================================
-// This example demonstrates fundamental RPC operations including:
-// - Number operations (add, subtract, multiply, divide)
-// - String operations (concatenate, reverse, uppercase, lowercase)
-// - JSON operations (merge, deep clone, pick fields)
-//
-// These examples showcase the basic madrpc.register() API and simple
-// request/response patterns.
+// Basic RPC operations demonstrating the madrpc.register() API
 
-// ============================================================================
-// Number Operations
-// ============================================================================
-
-// Add two numbers
+// Number operations
 madrpc.register('add', (args) => {
     const { a, b } = args;
     return { result: a + b };
 });
 
-// Subtract two numbers
 madrpc.register('subtract', (args) => {
     const { a, b } = args;
     return { result: a - b };
 });
 
-// Multiply two numbers
 madrpc.register('multiply', (args) => {
     const { a, b } = args;
     return { result: a * b };
 });
 
-// Divide two numbers with error handling for division by zero
 madrpc.register('divide', (args) => {
     const { a, b } = args;
 
@@ -48,39 +32,28 @@ madrpc.register('divide', (args) => {
     };
 });
 
-// ============================================================================
-// String Operations
-// ============================================================================
-
-// Concatenate two strings
+// String operations
 madrpc.register('concatenate', (args) => {
     const { str1, str2, separator = '' } = args;
     return { result: str1 + separator + str2 };
 });
 
-// Reverse a string
 madrpc.register('reverse', (args) => {
     const { str } = args;
     return { result: str.split('').reverse().join('') };
 });
 
-// Convert string to uppercase
 madrpc.register('uppercase', (args) => {
     const { str } = args;
     return { result: str.toUpperCase() };
 });
 
-// Convert string to lowercase
 madrpc.register('lowercase', (args) => {
     const { str } = args;
     return { result: str.toLowerCase() };
 });
 
-// ============================================================================
-// JSON Operations
-// ============================================================================
-
-// Merge two JSON objects
+// JSON operations
 madrpc.register('merge', (args) => {
     const { obj1, obj2 } = args;
     return {
@@ -91,7 +64,6 @@ madrpc.register('merge', (args) => {
     };
 });
 
-// Deep clone a JSON object
 madrpc.register('deep_clone', (args) => {
     const { obj } = args;
     return {
@@ -99,7 +71,6 @@ madrpc.register('deep_clone', (args) => {
     };
 });
 
-// Pick specific fields from a JSON object
 madrpc.register('pick', (args) => {
     const { obj, fields } = args;
     const result = {};
@@ -113,11 +84,7 @@ madrpc.register('pick', (args) => {
     return { result };
 });
 
-// ============================================================================
-// Aggregation Example (combining multiple operations)
-// ============================================================================
-
-// Apply multiple operations in sequence
+// Aggregation example: combine multiple operations
 madrpc.register('math_pipeline', (args) => {
     const { initial, operations } = args;
     let result = initial;
@@ -147,7 +114,7 @@ madrpc.register('math_pipeline', (args) => {
     return { result };
 });
 
-// Count word occurrences in a text
+// Count word occurrences, return top 10
 madrpc.register('word_count', (args) => {
     const { text } = args;
     const words = text.toLowerCase().split(/\s+/);
