@@ -14,6 +14,7 @@ enum Commands {
     Node(NodeArgs),
     Orchestrator(OrchestratorArgs),
     Top(TopArgs),
+    Call(CallArgs),
 }
 
 #[derive(FromArgs)]
@@ -75,14 +76,33 @@ struct TopArgs {
     interval_ms: u64,
 }
 
+#[derive(FromArgs)]
+#[argh(subcommand, name = "call")]
+/// call an RPC method on a server
+struct CallArgs {
+    /// address of the server to call
+    #[argh(positional)]
+    server_address: String,
+
+    /// name of the method to call
+    #[argh(positional)]
+    method: String,
+
+    /// JSON string containing arguments for the method
+    #[argh(option, short = 'a', long = "args", default = "\"{}\".into()")]
+    args: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let cli: Cli = argh::from_env();
+
+    // Initialize tracing only for non-call commands (to keep output clean for unix tool usage)
+    if !matches!(cli.command, Commands::Call(_)) {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .init();
+    }
 
     match cli.command {
         Commands::Node(args) => {
@@ -166,7 +186,26 @@ async fn main() -> Result<()> {
         Commands::Top(args) => {
             madrpc_cli::top::run_top(args.server_address, args.interval_ms).await
         }
+        Commands::Call(args) => {
+            run_call(args).await
+        }
     }
+}
+
+/// Run the call command - outputs raw JSON to stdout
+async fn run_call(args: CallArgs) -> Result<()> {
+    // Parse args JSON string
+    let args_value: serde_json::Value = serde_json::from_str(&args.args)
+        .map_err(|e| anyhow::anyhow!("Invalid JSON in args: {}", e))?;
+
+    // Create client and call method
+    let client = madrpc_client::MadrpcClient::new(&args.server_address).await?;
+    let result = client.call(&args.method, args_value).await?;
+
+    // Output raw JSON to stdout
+    println!("{}", serde_json::to_string(&result)?);
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -286,6 +325,59 @@ mod tests {
                 assert_eq!(interval_ms, 500);
             }
             _ => panic!("Expected Top command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_call() {
+        let args: Cli = Cli::from_args(&["madrpc"], &[
+            "call",
+            "127.0.0.1:8080",
+            "test_method",
+        ]).unwrap();
+        match args.command {
+            Commands::Call(CallArgs { server_address, method, args }) => {
+                assert_eq!(server_address, "127.0.0.1:8080");
+                assert_eq!(method, "test_method");
+                assert_eq!(args, "{}"); // default
+            }
+            _ => panic!("Expected Call command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_call_with_args() {
+        let args: Cli = Cli::from_args(&["madrpc"], &[
+            "call",
+            "127.0.0.1:8080",
+            "test_method",
+            "--args", "{\"key\":\"value\"}",
+        ]).unwrap();
+        match args.command {
+            Commands::Call(CallArgs { server_address, method, args }) => {
+                assert_eq!(server_address, "127.0.0.1:8080");
+                assert_eq!(method, "test_method");
+                assert_eq!(args, "{\"key\":\"value\"}");
+            }
+            _ => panic!("Expected Call command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_call_with_short_args() {
+        let args: Cli = Cli::from_args(&["madrpc"], &[
+            "call",
+            "127.0.0.1:8080",
+            "test_method",
+            "-a", "{\"samples\":1000}",
+        ]).unwrap();
+        match args.command {
+            Commands::Call(CallArgs { server_address, method, args }) => {
+                assert_eq!(server_address, "127.0.0.1:8080");
+                assert_eq!(method, "test_method");
+                assert_eq!(args, "{\"samples\":1000}");
+            }
+            _ => panic!("Expected Call command"),
         }
     }
 }
