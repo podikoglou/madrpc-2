@@ -69,6 +69,12 @@ impl From<std::net::AddrParseError> for MadrpcError {
     }
 }
 
+impl From<tokio::task::JoinError> for MadrpcError {
+    fn from(err: tokio::task::JoinError) -> Self {
+        MadrpcError::Transport(format!("Task join error: {}", err))
+    }
+}
+
 pub type Result<T> = std::result::Result<T, MadrpcError>;
 
 #[cfg(test)]
