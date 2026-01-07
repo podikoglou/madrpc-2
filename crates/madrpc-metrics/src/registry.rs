@@ -69,12 +69,22 @@ impl LatencyBuffer {
     }
 
     fn record(&self, latency_us: u64) {
+        // Relaxed ordering is safe here because:
+        // - We only need the final count/percentiles, not intermediate states
+        // - Each sample is independent (no ordering requirements between samples)
+        // - The ring buffer index wraparound is handled by modulo operation
         let idx = self.index.fetch_add(1, Ordering::Relaxed) % LATENCY_BUFFER_SIZE as u64;
         self.samples[idx as usize].store(latency_us, Ordering::Relaxed);
+        // fetch_min ensures count doesn't exceed buffer size
+        // Relaxed is safe: we only care about the final value, not synchronization
         self.count.fetch_min(LATENCY_BUFFER_SIZE as u64, Ordering::Relaxed);
     }
 
     fn calculate_percentiles(&self) -> (u64, u64, u64, u64) {
+        // Relaxed ordering is safe for reading samples because:
+        // - We're calculating percentiles on a best-effort snapshot
+        // - Missing or slightly stale samples don't affect correctness
+        // - The metrics are eventually consistent by design
         let mut samples: Vec<u64> = self
             .samples
             .iter()
@@ -134,20 +144,30 @@ impl MethodStats {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
+        // Relaxed ordering is safe for timestamp because:
+        // - Timestamps are used for approximate TTL checking, not precise ordering
+        // - Small timing variations don't affect correctness
+        // - The RwLock provides synchronization for entry access
         self.last_access_ms.store(now, Ordering::Relaxed);
     }
 
     fn increment_call(&self) {
+        // Relaxed ordering is safe for counters because:
+        // - Each counter is independent and doesn't need synchronization with others
+        // - Metrics snapshots are eventually consistent by design
+        // - No operations depend on the order of counter updates
         self.call_count.fetch_add(1, Ordering::Relaxed);
         self.update_last_access();
     }
 
     fn increment_success(&self) {
+        // Relaxed ordering is safe (see increment_call comment)
         self.success_count.fetch_add(1, Ordering::Relaxed);
         self.update_last_access();
     }
 
     fn increment_failure(&self) {
+        // Relaxed ordering is safe (see increment_call comment)
         self.failure_count.fetch_add(1, Ordering::Relaxed);
         self.update_last_access();
     }
@@ -158,6 +178,10 @@ impl MethodStats {
     }
 
     fn snapshot(&self) -> MethodMetrics {
+        // Relaxed ordering is safe for snapshot because:
+        // - We're taking a best-effort point-in-time snapshot
+        // - Small inconsistencies between counters are acceptable
+        // - Metrics are eventually consistent by design
         let call_count = self.call_count.load(Ordering::Relaxed);
         let success_count = self.success_count.load(Ordering::Relaxed);
         let failure_count = self.failure_count.load(Ordering::Relaxed);
@@ -198,15 +222,18 @@ impl NodeStats {
     }
 
     fn record_request(&self) {
+        // Relaxed ordering is safe for counters (see MethodStats::increment_call comment)
         self.request_count.fetch_add(1, Ordering::Relaxed);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
+        // Relaxed ordering is safe for timestamp (see MethodStats::update_last_access comment)
         self.last_request_ms.store(now, Ordering::Relaxed);
     }
 
     fn snapshot(&self, node_addr: String) -> NodeMetrics {
+        // Relaxed ordering is safe for snapshot (see MethodStats::snapshot comment)
         let request_count = self.request_count.load(Ordering::Relaxed);
         let last_request_ms = self.last_request_ms.load(Ordering::Relaxed);
 
@@ -224,7 +251,29 @@ impl Default for NodeStats {
     }
 }
 
-/// Thread-safe metrics registry with lock-free operations.
+/// Thread-safe metrics registry with hybrid concurrency model.
+///
+/// # Concurrency Model
+///
+/// This registry uses a hybrid approach combining lock-free and lock-based synchronization:
+///
+/// - **Global counters** (`total_requests`, `successful_requests`, etc.): Lock-free `AtomicU64`
+///   operations using relaxed ordering for maximum performance
+/// - **Per-method stats** (`call_count`, `success_count`, etc.): Lock-free `AtomicU64` operations
+///   once the entry is created
+/// - **Method registry** (`methods`): Protected by `RwLock` for safe concurrent access
+/// - **Node registry** (`nodes`): Protected by `RwLock` for safe concurrent access
+///
+/// The design prioritizes performance for the hot path (incrementing counters) while using
+/// locks only for metadata management (adding/removing entries).
+///
+/// # Atomic Ordering
+///
+/// All atomic operations use `Ordering::Relaxed` which is safe because:
+/// - Counters are independent and don't need synchronization with each other
+/// - Metrics snapshots are eventually consistent by design
+/// - No operations depend on the order of counter updates
+/// - The RwLock provides synchronization for entry access
 #[derive(Debug)]
 pub struct MetricsRegistry {
     total_requests: AtomicU64,
@@ -264,26 +313,31 @@ impl MetricsRegistry {
 
     /// Increments the total request counter.
     pub fn increment_total(&self) {
+        // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.total_requests.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increments the success counter.
     pub fn increment_success(&self) {
+        // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.successful_requests.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increments the failure counter.
     pub fn increment_failure(&self) {
+        // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.failed_requests.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increments the active connections counter.
     pub fn increment_active_connections(&self) {
+        // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.active_connections.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Decrements the active connections counter.
     pub fn decrement_active_connections(&self) {
+        // Relaxed ordering is safe for counters (see MetricsRegistry docs)
         self.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
@@ -349,6 +403,10 @@ impl MetricsRegistry {
     /// Check if cleanup is needed and run it periodically
     fn maybe_cleanup(&self) {
         const CLEANUP_INTERVAL: u64 = 1000;
+        // Relaxed ordering is safe for cleanup counter because:
+        // - We only care about the count reaching a multiple of CLEANUP_INTERVAL
+        // - No synchronization with other operations is required
+        // - Occasional missed cleanups (due to relaxed ordering) are acceptable
         let count = self.cleanup_counter.fetch_add(1, Ordering::Relaxed);
         if count % CLEANUP_INTERVAL == 0 {
             self.cleanup_stale_entries();
@@ -369,6 +427,7 @@ impl MetricsRegistry {
 
             // Remove stale entries
             methods.retain(|_name, stats| {
+                // Relaxed ordering is safe for timestamp comparison (see MetricsRegistry docs)
                 let last_access = stats.last_access_ms.load(Ordering::Relaxed);
                 now.saturating_sub(last_access) < method_ttl_ms
             });
@@ -378,6 +437,7 @@ impl MetricsRegistry {
                 let mut entries: Vec<_> = methods
                     .iter()
                     .map(|(name, stats)| {
+                        // Relaxed ordering is safe for LRU sorting (approximate ordering is acceptable)
                         (name.clone(), stats.last_access_ms.load(Ordering::Relaxed))
                     })
                     .collect();
@@ -398,6 +458,7 @@ impl MetricsRegistry {
 
             // Remove stale entries
             nodes.retain(|_name, stats| {
+                // Relaxed ordering is safe for timestamp comparison (see MetricsRegistry docs)
                 let last_access = stats.last_request_ms.load(Ordering::Relaxed);
                 now.saturating_sub(last_access) < node_ttl_ms
             });
@@ -407,6 +468,7 @@ impl MetricsRegistry {
                 let mut entries: Vec<_> = nodes
                     .iter()
                     .map(|(name, stats)| {
+                        // Relaxed ordering is safe for LRU sorting (approximate ordering is acceptable)
                         (name.clone(), stats.last_request_ms.load(Ordering::Relaxed))
                     })
                     .collect();
@@ -432,6 +494,7 @@ impl MetricsRegistry {
     /// * `include_nodes` - Whether to include node metrics
     pub fn snapshot(&self, include_nodes: bool) -> MetricsSnapshot {
         let uptime_ms = self.uptime_ms();
+        // Relaxed ordering is safe for snapshot (see MetricsRegistry docs)
         let total_requests = self.total_requests.load(Ordering::Relaxed);
         let successful_requests = self.successful_requests.load(Ordering::Relaxed);
         let failed_requests = self.failed_requests.load(Ordering::Relaxed);
