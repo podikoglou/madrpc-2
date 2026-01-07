@@ -11,15 +11,30 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 /// Configuration for retry logic with exponential backoff.
+///
+/// When a request fails due to transient errors (connection issues, timeouts),
+/// the orchestrator will retry with exponential backoff up to `max_retries` times.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
-    /// Maximum number of retry attempts
+    /// Maximum number of retry attempts (excluding initial attempt)
+    ///
+    /// Total attempts = max_retries + 1
+    /// Default: 3
     pub max_retries: usize,
     /// Initial backoff in milliseconds
+    ///
+    /// First retry waits this long, subsequent retries use exponential backoff.
+    /// Default: 50ms
     pub initial_backoff_ms: u64,
     /// Maximum backoff in milliseconds
+    ///
+    /// Exponential backoff is capped at this value.
+    /// Default: 5000ms (5 seconds)
     pub max_backoff_ms: u64,
     /// Exponential backoff multiplier
+    ///
+    /// Each retry waits: previous_backoff * multiplier
+    /// Default: 2.0 (doubles each time)
     pub backoff_multiplier: f64,
 }
 
@@ -34,30 +49,80 @@ impl Default for RetryConfig {
     }
 }
 
-/// MaDRPC Orchestrator - "stupid" forwarder.
+/// MaDRPC Orchestrator - "stupid" forwarder with load balancing.
 ///
-/// The orchestrator receives requests from clients, uses the load balancer
-/// to pick a node, forwards the request to that node, and returns the
-/// node's response to the client.
+/// The orchestrator is the central component that sits between clients and
+/// compute nodes. It receives requests from clients, uses round-robin load
+/// balancing with circuit breaking to select a node, forwards the request,
+/// and returns the response.
 ///
-/// IMPORTANT: The orchestrator does NOT have a Boa engine. It only forwards.
+/// # Design Philosophy
 ///
-/// Connection strategy: Creates a new connection for each request to avoid
-/// serialization through shared Arc<Mutex<TcpStream>>. This enables true
-/// parallelism when multiple requests target the same node.
+/// The orchestrator is intentionally "stupid" - it does NOT execute JavaScript
+/// code or have a Boa engine. Its only responsibilities are:
+///
+/// 1. **Load Balancing**: Distribute requests across nodes via round-robin
+/// 2. **Circuit Breaking**: Skip unhealthy nodes to prevent cascading failures
+/// 3. **Health Checking**: Periodically verify node availability
+/// 4. **Request Forwarding**: Forward requests and return responses
+/// 5. **Retry Logic**: Retry failed requests with exponential backoff
+///
+/// # Connection-per-Request Strategy
+///
+/// The orchestrator creates a new TCP connection for each request rather than
+/// maintaining a connection pool. This design choice enables:
+///
+/// - **True Parallelism**: Multiple requests to the same node execute concurrently
+/// - **Simplified State Management**: No need to manage shared connection lifecycles
+/// - **Fault Isolation**: Connection failures don't affect other requests
+///
+/// The overhead of connection creation is acceptable because the orchestrator
+/// typically runs in the same network as nodes (low latency).
+///
+/// # Metrics and Monitoring
+///
+/// The orchestrator collects metrics for:
+/// - Requests per node
+/// - Method call latency and success rate
+/// - Built-in `_metrics` and `_info` endpoints
 pub struct Orchestrator {
+    /// Thread-safe load balancer with circuit breaker
     load_balancer: Arc<RwLock<LoadBalancer>>,
+    /// Async TCP transport for connections to nodes
     transport: TcpTransportAsync,
+    /// Metrics collector for monitoring
     metrics_collector: Arc<OrchestratorMetricsCollector>,
+    /// Retry configuration for failed requests
     retry_config: RetryConfig,
+    /// Background health checker task handle (kept to prevent task from being dropped)
     _health_checker_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Orchestrator {
     /// Creates a new orchestrator with static node list and default configs.
     ///
+    /// This is the simplest way to create an orchestrator. It uses default
+    /// health check (5s interval, 2s timeout, 3 failures threshold) and
+    /// retry (3 attempts, 50ms initial backoff, 2x multiplier) configs.
+    ///
     /// # Arguments
-    /// * `node_addrs` - List of node addresses
+    /// * `node_addrs` - List of node addresses (e.g., "127.0.0.1:9001")
+    ///
+    /// # Returns
+    /// A new Orchestrator instance with health checker running in background
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use madrpc_orchestrator::Orchestrator;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let orchestrator = Orchestrator::new(vec![
+    ///     "127.0.0.1:9001".to_string(),
+    ///     "127.0.0.1:9002".to_string(),
+    /// ]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn new(node_addrs: Vec<String>) -> Result<Self> {
         Self::with_retry_config(
             node_addrs,
@@ -67,6 +132,9 @@ impl Orchestrator {
     }
 
     /// Creates a new orchestrator with static node list and custom health check config.
+    ///
+    /// Use this when you need non-default health check behavior. Uses default
+    /// retry config.
     ///
     /// # Arguments
     /// * `node_addrs` - List of node addresses
@@ -84,10 +152,21 @@ impl Orchestrator {
 
     /// Creates a new orchestrator with static node list and custom configs.
     ///
+    /// This is the most flexible constructor, allowing customization of both
+    /// health checking and retry behavior.
+    ///
     /// # Arguments
     /// * `node_addrs` - List of node addresses
     /// * `health_config` - Health check configuration
     /// * `retry_config` - Retry configuration
+    ///
+    /// # Returns
+    /// A new Orchestrator instance with health checker running in background
+    ///
+    /// # Behavior
+    /// - Spawns background health checker task
+    /// - Initializes metrics collector
+    /// - All nodes start enabled with closed circuit breakers
     pub async fn with_retry_config(
         node_addrs: Vec<String>,
         health_config: HealthCheckConfig,
@@ -114,23 +193,56 @@ impl Orchestrator {
         })
     }
 
-    /// Forwards a request to the next available node.
+    /// Forwards a request to the next available node with retry logic.
     ///
-    /// This method:
-    /// 1. Gets the next node via round-robin from the load balancer
-    /// 2. Creates a fresh connection to that node (no caching for true parallelism)
-    /// 3. Forwards the request to the node
-    /// 4. Returns the node's response
+    /// This is the main entry point for handling client requests. It implements:
     ///
-    /// Each request creates its own connection to avoid serialization through
-    /// shared Arc<Mutex<TcpStream>>. This allows multiple requests to the same
-    /// node to execute in parallel.
+    /// 1. **Built-in methods**: Handles `_metrics` and `_info` requests directly
+    /// 2. **Load balancing**: Selects next node via round-robin
+    /// 3. **Circuit breaking**: Skips nodes with Open circuits
+    /// 4. **Retry logic**: Retries failed requests with exponential backoff
+    /// 5. **Connection-per-request**: Creates fresh connection for each request
+    /// 6. **Metrics collection**: Records request latency and success rate
     ///
-    /// Retry logic: If a request fails due to connection issues or node unavailability,
-    /// the orchestrator will retry with exponential backoff up to max_retries times.
+    /// # Connection-per-Request Strategy
+    ///
+    /// Each request creates its own TCP connection to avoid serialization through
+    /// shared Arc<Mutex<TcpStream>>. This enables true parallelism when multiple
+    /// requests target the same node.
+    ///
+    /// # Retry Logic
+    ///
+    /// Retryable errors (connection failures, timeouts, node unavailable) trigger
+    /// retry with exponential backoff:
+    ///
+    /// - Attempt 0: Initial request
+    /// - Attempt 1: Wait `initial_backoff_ms` (default: 50ms)
+    /// - Attempt 2: Wait `initial_backoff_ms * multiplier` (default: 100ms)
+    /// - Attempt 3: Wait `previous * multiplier` (default: 200ms)
+    /// - Capped at `max_backoff_ms` (default: 5000ms)
     ///
     /// # Arguments
     /// * `request` - The request to forward
+    ///
+    /// # Returns
+    /// - `Ok(response)` - Successful response from node
+    /// - `Err(MadrpcError::AllNodesFailed)` - All retry attempts exhausted
+    /// - `Err(...)` - Non-retryable error (e.g., invalid request)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use madrpc_orchestrator::Orchestrator;
+    /// # use madrpc_common::protocol::Request;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let orchestrator = Orchestrator::new(vec![]).await?;
+    /// use serde_json::json;
+    ///
+    /// let request = Request::new("my_method", json!({"arg": 42}));
+    /// let response = orchestrator.forward_request(&request).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn forward_request(&self, request: &Request) -> Result<Response> {
         // Check for metrics/info requests (do NOT forward these)
         if self
@@ -217,19 +329,45 @@ impl Orchestrator {
     }
 
     /// Checks if an error is retryable.
+    ///
+    /// Retryable errors are transient failures that may succeed on retry:
+    /// - `AllNodesFailed`: All nodes unavailable
+    /// - `NodeUnavailable`: Specific node unavailable
+    ///
+    /// Non-retryable errors are permanent failures:
+    /// - `InvalidRequest`: Malformed request
+    /// - `JavaScriptExecution`: Script execution failed
+    /// - `Transport`: Other transport errors
+    ///
+    /// # Arguments
+    /// * `error` - The error to check
+    ///
+    /// # Returns
+    /// `true` if the error is retryable
     fn is_retryable(&self, error: &MadrpcError) -> bool {
         Self::is_retryable_static(error)
     }
 
     /// Static method to check if an error is retryable (for testing).
+    ///
+    /// This is a public static version of `is_retryable` for use in tests.
+    ///
+    /// # Arguments
+    /// * `error` - The error to check
+    ///
+    /// # Returns
+    /// `true` if the error is retryable
     pub fn is_retryable_static(error: &MadrpcError) -> bool {
         matches!(error, MadrpcError::AllNodesFailed | MadrpcError::NodeUnavailable(_))
     }
 
     /// Adds a node to the load balancer.
     ///
+    /// New nodes are enabled by default with closed circuit breakers.
+    /// Duplicate nodes are ignored (no-op).
+    ///
     /// # Arguments
-    /// * `node_addr` - The node address to add
+    /// * `node_addr` - The node address to add (e.g., "127.0.0.1:9003")
     pub async fn add_node(&self, node_addr: String) {
         let mut lb = self.load_balancer.write().await;
         lb.add_node(node_addr);
@@ -249,11 +387,16 @@ impl Orchestrator {
 
     /// Manually disables a node.
     ///
+    /// Manually disabled nodes are marked with `DisableReason::Manual` and will
+    /// never be auto-re-enabled by the health checker. They must be manually
+    /// re-enabled via `enable_node()`.
+    ///
     /// # Arguments
     /// * `node_addr` - The node address to disable
     ///
     /// # Returns
-    /// true if the node was disabled, false if it wasn't found
+    /// - `true` - Node was found and disabled
+    /// - `false` - Node was not found
     pub async fn disable_node(&self, node_addr: &str) -> bool {
         let mut lb = self.load_balancer.write().await;
         let disabled = lb.disable_node(node_addr);
@@ -265,11 +408,15 @@ impl Orchestrator {
 
     /// Manually enables a node.
     ///
+    /// This resets the node's disable reason, consecutive failures, and adds it
+    /// back to the enabled nodes list.
+    ///
     /// # Arguments
     /// * `node_addr` - The node address to enable
     ///
     /// # Returns
-    /// true if the node was enabled, false if it wasn't found
+    /// - `true` - Node was found and enabled
+    /// - `false` - Node was not found
     pub async fn enable_node(&self, node_addr: &str) -> bool {
         let mut lb = self.load_balancer.write().await;
         let enabled = lb.enable_node(node_addr);
@@ -280,18 +427,32 @@ impl Orchestrator {
     }
 
     /// Gets all nodes with their status.
+    ///
+    /// This returns cloned Node instances, which include all state information
+    /// (health status, circuit state, consecutive failures, etc.).
+    ///
+    /// # Returns
+    /// Vector of all nodes with their current state
     pub async fn nodes_with_status(&self) -> Vec<Node> {
         let lb = self.load_balancer.read().await;
         lb.all_nodes()
     }
 
-    /// Gets the number of nodes.
+    /// Gets the number of nodes (including disabled ones).
+    ///
+    /// # Returns
+    /// Total number of nodes in the load balancer
     pub async fn node_count(&self) -> usize {
         let lb = self.load_balancer.read().await;
         lb.node_count()
     }
 
-    /// Gets list of all nodes.
+    /// Gets list of all node addresses (including disabled ones).
+    ///
+    /// This is useful for display and debugging purposes.
+    ///
+    /// # Returns
+    /// Vector of all node addresses
     pub async fn nodes(&self) -> Vec<String> {
         let lb = self.load_balancer.read().await;
         lb.nodes()
