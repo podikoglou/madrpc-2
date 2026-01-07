@@ -1,11 +1,10 @@
-use boa_engine::{Context, Source, js_string, value::JsValue, object::builtins::JsPromise, builtins::promise::PromiseState, job::JobExecutor, context::ContextBuilder};
+use boa_engine::{Context, Source, js_string, value::JsValue, object::builtins::JsPromise, builtins::promise::PromiseState};
 use std::path::Path;
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use serde_json::Value as JsonValue;
 use std::sync::{Arc, Mutex};
-use std::rc::Rc;
 
-use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}, job_executor::TokioJobExecutor};
+use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}};
 
 /// Boa context wrapper with MaDRPC bindings
 ///
@@ -14,8 +13,6 @@ use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}
 pub struct MadrpcContext {
     ctx: Mutex<Context>,
     client: Option<Arc<madrpc_client::MadrpcClient>>,
-    /// Custom job executor for handling async operations
-    job_executor: Option<Rc<TokioJobExecutor>>,
 }
 
 // ============================================================================
@@ -109,20 +106,7 @@ impl MadrpcContext {
         client: Option<madrpc_client::MadrpcClient>,
     ) -> Result<Self> {
         let client = client.map(Arc::new);
-
-        // Create custom job executor if client is present
-        let (ctx, job_executor) = if client.is_some() {
-            let executor = Rc::new(TokioJobExecutor::new());
-            let ctx = ContextBuilder::new()
-                .job_executor(executor.clone())
-                .build()
-                .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create context: {}", e)))?;
-            (ctx, Some(executor))
-        } else {
-            (Context::default(), None)
-        };
-
-        let mut ctx = ctx;
+        let mut ctx = Context::default();
 
         // Install madrpc bindings (native Rust functions)
         bindings::install_madrpc_bindings(&mut ctx, client.clone())?;
@@ -137,7 +121,6 @@ impl MadrpcContext {
         Ok(Self {
             ctx: Mutex::new(ctx),
             client,
-            job_executor,
         })
     }
 
@@ -149,20 +132,7 @@ impl MadrpcContext {
         client: Option<madrpc_client::MadrpcClient>,
     ) -> Result<Self> {
         let client = client.map(Arc::new);
-
-        // Create custom job executor if client is present
-        let (ctx, job_executor) = if client.is_some() {
-            let executor = Rc::new(TokioJobExecutor::new());
-            let ctx = ContextBuilder::new()
-                .job_executor(executor.clone())
-                .build()
-                .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create context: {}", e)))?;
-            (ctx, Some(executor))
-        } else {
-            (Context::default(), None)
-        };
-
-        let mut ctx = ctx;
+        let mut ctx = Context::default();
 
         // Install madrpc bindings (native Rust functions)
         bindings::install_madrpc_bindings(&mut ctx, client.clone())?;
@@ -174,7 +144,6 @@ impl MadrpcContext {
         Ok(Self {
             ctx: Mutex::new(ctx),
             client,
-            job_executor,
         })
     }
 
@@ -223,13 +192,8 @@ impl MadrpcContext {
                 // Poll the promise by running jobs in a loop
                 let max_iterations = 100_000;
                 for iteration in 0..max_iterations {
-                    // Run pending jobs using our custom executor if available,
-                    // otherwise fall back to the default one
-                    if let Some(executor) = &self.job_executor {
-                        let _ = JobExecutor::run_jobs(executor.clone(), &mut *ctx);
-                    } else {
-                        let _ = ctx.run_jobs();
-                    }
+                    // Run pending promise jobs
+                    let _ = ctx.run_jobs();
 
                     // Check promise state
                     match promise.state() {
@@ -264,11 +228,7 @@ impl MadrpcContext {
         }
 
         // Not a promise, just run jobs once for any microtasks
-        if let Some(executor) = &self.job_executor {
-            let _ = JobExecutor::run_jobs(executor.clone(), &mut *ctx);
-        } else {
-            let _ = ctx.run_jobs();
-        }
+        let _ = ctx.run_jobs();
 
         tracing::debug!("call_rpc: Converting result to JSON...");
         js_value_to_json(result, &mut *ctx)
