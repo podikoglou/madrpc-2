@@ -224,10 +224,11 @@ async fn test_client_no_retry_on_permanent_error() {
     let base_url = format!("http://{}", addr);
 
     let call_count = Arc::new(AtomicUsize::new(0));
+    let call_count_clone = call_count.clone();
 
     tokio::spawn(async move {
         let handler = Arc::new({
-            let call_count = call_count.clone();
+            let call_count = call_count_clone.clone();
             move |req: Request<Incoming>| {
                 let call_count = call_count.clone();
                 async move {
@@ -288,10 +289,11 @@ async fn test_client_retry_on_transient_error() {
     let base_url = format!("http://{}", addr);
 
     let call_count = Arc::new(AtomicUsize::new(0));
+    let call_count_clone = call_count.clone();
 
     tokio::spawn(async move {
         let handler = Arc::new({
-            let call_count = call_count.clone();
+            let call_count = call_count_clone.clone();
             move |req: Request<Incoming>| {
                 let call_count = call_count.clone();
                 async move {
