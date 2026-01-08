@@ -30,8 +30,12 @@
 //! - [`Node`] - Main node struct that handles RPC requests
 //! - [`MadrpcContext`] - Boa context wrapper with MaDRPC bindings
 
-pub mod runtime;
+pub mod http_router;
+pub mod http_server;
 pub mod node;
+pub mod runtime;
 
-pub use runtime::MadrpcContext;
+pub use http_router::NodeRouter;
+pub use http_server::HttpServer;
 pub use node::Node;
+pub use runtime::MadrpcContext;

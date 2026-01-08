@@ -3,7 +3,7 @@
 //! This module defines the comprehensive error type for the MaDRPC system,
 //! with classification for retryable vs non-retryable errors.
 
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 /// MaDRPC error type representing all possible errors in the system.
 ///
@@ -19,7 +19,7 @@ use thiserror::Error;
 /// - **Retryable**: Transport, Timeout, NodeUnavailable, Io, Connection, PoolTimeout
 /// - **Non-retryable**: JavaScriptExecution, InvalidResponse, AllNodesFailed,
 ///   InvalidRequest, PoolExhausted
-#[derive(Error, Debug)]
+#[derive(ThisError, Debug)]
 pub enum MadrpcError {
     /// Low-level transport error (e.g., socket read/write failures)
     #[error("Transport error: {0}")]
