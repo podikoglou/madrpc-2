@@ -12,6 +12,7 @@ use madrpc_common::protocol::JsonRpcRequest;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use std::fs;
+use std::net::SocketAddr;
 
 use reqwest::Client;
 use serde_json::json;
@@ -53,7 +54,7 @@ fn create_test_script_empty() -> tempfile::NamedTempFile {
 }
 
 /// Helper to start a test server on a random port
-async fn start_test_server(node: std::sync::Arc<Node>) -> tokio::net::SocketAddr {
+async fn start_test_server(node: std::sync::Arc<Node>) -> SocketAddr {
     let server = HttpServer::new(node);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -68,7 +69,7 @@ async fn start_test_server(node: std::sync::Arc<Node>) -> tokio::net::SocketAddr
 }
 
 /// Helper to make a JSON-RPC request
-async fn jsonrpc_request(addr: &tokio::net::SocketAddr, method: &str, params: serde_json::Value) -> serde_json::Value {
+async fn jsonrpc_request(addr: &SocketAddr, method: &str, params: serde_json::Value) -> serde_json::Value {
     let client = Client::new();
     let body = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -101,7 +102,7 @@ async fn test_single_node_builtin_info() {
 
     assert_eq!(response["result"]["server_type"], "node");
     assert!(response["result"]["uptime_ms"].is_number());
-    assert!(response["error"].is_null() || response["error"].is_absent());
+    assert!(response["error"].is_null() || response["error"] == json!(null));
 }
 
 #[tokio::test]
@@ -113,7 +114,7 @@ async fn test_single_node_builtin_metrics() {
     let response = jsonrpc_request(&addr, "_metrics", json!({})).await;
 
     assert!(response["result"]["total_requests"].is_number());
-    assert!(response["error"].is_null() || response["error"].is_absent());
+    assert!(response["error"].is_null() || response["error"] == json!(null));
 }
 
 // ============================================================================
@@ -129,7 +130,7 @@ async fn test_single_node_javascript_method() {
     let response = jsonrpc_request(&addr, "echo", json!({"msg": "hello"})).await;
 
     assert_eq!(response["result"]["msg"], "hello");
-    assert!(response["error"].is_null() || response["error"].is_absent());
+    assert!(response["error"].is_null() || response["error"] == json!(null));
 }
 
 #[tokio::test]
@@ -141,7 +142,7 @@ async fn test_single_node_compute_method() {
     let response = jsonrpc_request(&addr, "compute", json!({"x": 7, "y": 6})).await;
 
     assert_eq!(response["result"]["result"], 42);
-    assert!(response["error"].is_null() || response["error"].is_absent());
+    assert!(response["error"].is_null() || response["error"] == json!(null));
 }
 
 #[tokio::test]
@@ -153,7 +154,7 @@ async fn test_single_node_async_method() {
     let response = jsonrpc_request(&addr, "async_func", json!({"value": 21})).await;
 
     assert_eq!(response["result"]["result"], 42);
-    assert!(response["error"].is_null() || response["error"].is_absent());
+    assert!(response["error"].is_null() || response["error"] == json!(null));
 }
 
 // ============================================================================
