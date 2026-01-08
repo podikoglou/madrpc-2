@@ -1,16 +1,15 @@
-//! HTTP Router with ajj Integration
+//! HTTP Router for MaDRPC Node
 //!
-//! This module provides the HTTP router for the MaDRPC node using the ajj
-//! (async JSON-RPC) router library. The router handles built-in methods
-//! (`_metrics`, `_info`) via explicit handlers and falls back to JavaScript
-//! execution for all other methods.
+//! This module provides the HTTP router for the MaDRPC node.
+//! The router handles built-in methods (`_metrics`, `_info`) and forwards
+//! all other methods to JavaScript execution.
 //!
 //! # Architecture
 //!
-//! The router uses a two-tier approach:
+//! The router uses a simple approach:
 //! - **Built-in methods**: `_metrics` and `_info` are handled directly
 //! - **JavaScript methods**: All other methods are forwarded to the Node for
-//!   JavaScript execution via the fallback handler
+//!   JavaScript execution
 //!
 //! # Example
 //!
@@ -23,22 +22,19 @@
 //! let router = NodeRouter::new(node);
 //! ```
 
-use ajj::{Router, ResponsePayload};
 use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
 use madrpc_common::protocol::error::MadrpcError;
 use crate::node::Node;
 use std::sync::Arc;
 use serde_json::Value;
 
-/// HTTP router for MaDRPC node with ajj integration.
+/// HTTP router for MaDRPC node.
 ///
 /// The router handles built-in methods (`_metrics`, `_info`) and forwards
 /// all other methods to JavaScript execution.
 pub struct NodeRouter {
     /// The node instance for JavaScript execution
     node: Arc<Node>,
-    /// The ajj router for handling JSON-RPC requests
-    router: Router<Arc<Node>>,
 }
 
 impl NodeRouter {
@@ -63,91 +59,15 @@ impl NodeRouter {
     /// let router = NodeRouter::new(node);
     /// ```
     pub fn new(node: Arc<Node>) -> Self {
-        let router = Router::<Arc<Node>>::new()
-            .route("_metrics", Self::metrics_handler)
-            .route("_info", Self::info_handler)
-            .fallback(|req: JsonRpcRequest, state: Arc<Node>| async move {
-                Self::handle_javascript_method(state, req).await
-            });
-
-        Self { node, router }
+        Self { node }
     }
 
-    /// Handles a JavaScript method call via the fallback handler.
+    /// Handles a JSON-RPC request.
     ///
-    /// This method is called for all methods that are not built-in methods.
-    /// It forwards the request to the Node for JavaScript execution.
-    ///
-    /// # Arguments
-    ///
-    /// * `node` - The node instance to execute JavaScript on
-    /// * `req` - The JSON-RPC request
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the result value or an ajj error
-    async fn handle_javascript_method(
-        node: Arc<Node>,
-        req: JsonRpcRequest,
-    ) -> Result<Value, ajj::Error> {
-        match node.call_rpc(&req.method, req.params).await {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                // Convert MadrpcError to appropriate JSON-RPC error
-                match e {
-                    MadrpcError::InvalidRequest(msg) => {
-                        Err(ajj::Error::from(JsonRpcError::invalid_params(&msg)))
-                    }
-                    _ => Err(ajj::Error::from(JsonRpcError::method_not_found())),
-                }
-            }
-        }
-    }
-
-    /// Handles the `_metrics` built-in method.
-    ///
-    /// Returns a snapshot of current metrics including request counts,
-    /// latency percentiles, and other statistics.
-    ///
-    /// # Arguments
-    ///
-    /// * `node` - The node instance to get metrics from
-    /// * `_params` - The request parameters (ignored)
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the metrics snapshot or an ajj error
-    async fn metrics_handler(
-        node: Arc<Node>,
-        _params: Value,
-    ) -> Result<Value, ajj::Error> {
-        node.get_metrics()
-            .await
-            .map_err(|e| ajj::Error::server_error(&e.to_string()))
-    }
-
-    /// Handles the `_info` built-in method.
-    ///
-    /// Returns server information including server type, version, and uptime.
-    ///
-    /// # Arguments
-    ///
-    /// * `node` - The node instance to get info from
-    /// * `_params` - The request parameters (ignored)
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the server info or an ajj error
-    async fn info_handler(
-        node: Arc<Node>,
-        _params: Value,
-    ) -> Result<Value, ajj::Error> {
-        node.get_info()
-            .await
-            .map_err(|e| ajj::Error::server_error(&e.to_string()))
-    }
-
-    /// Handles a JSON-RPC request through the router.
+    /// This method routes the request to the appropriate handler:
+    /// - `_metrics`: Returns metrics snapshot
+    /// - `_info`: Returns server info
+    /// - Other methods: Forwards to JavaScript execution
     ///
     /// # Arguments
     ///
@@ -155,11 +75,43 @@ impl NodeRouter {
     ///
     /// # Returns
     ///
-    /// A `JsonRpcResponse` with the result or error
+    /// A `Result` containing the JSON-RPC response or a JsonRpcError
     pub async fn handle_request(&self, req: JsonRpcRequest) -> Result<JsonRpcResponse, JsonRpcError> {
-        self.router
-            .handle_request_with_state(req, self.node.clone())
-            .await
+        let id = req.id.clone();
+
+        // Handle built-in methods
+        match req.method.as_str() {
+            "_metrics" => {
+                match self.node.get_metrics().await {
+                    Ok(metrics) => Ok(JsonRpcResponse::success(id, metrics)),
+                    Err(e) => Ok(JsonRpcResponse::error(id, JsonRpcError::internal_error(&e.to_string()))),
+                }
+            }
+            "_info" => {
+                match self.node.get_info().await {
+                    Ok(info) => Ok(JsonRpcResponse::success(id, info)),
+                    Err(e) => Ok(JsonRpcResponse::error(id, JsonRpcError::internal_error(&e.to_string()))),
+                }
+            }
+            _ => {
+                // Forward to JavaScript execution
+                match self.node.call_rpc(&req.method, req.params).await {
+                    Ok(result) => Ok(JsonRpcResponse::success(id, result)),
+                    Err(e) => {
+                        // Convert MadrpcError to appropriate JSON-RPC error
+                        match e {
+                            MadrpcError::InvalidRequest(msg) => {
+                                Ok(JsonRpcResponse::error(id, JsonRpcError::invalid_params(&msg)))
+                            }
+                            MadrpcError::JavaScriptExecution(msg) => {
+                                Ok(JsonRpcResponse::error(id, JsonRpcError::server_error(&msg)))
+                            }
+                            _ => Ok(JsonRpcResponse::error(id, JsonRpcError::method_not_found())),
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -190,19 +142,78 @@ mod tests {
     async fn test_router_metrics_handler() {
         let script = create_test_script("// empty");
         let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-        let result = NodeRouter::metrics_handler(node, json!({})).await;
-        assert!(result.is_ok());
-        let metrics = result.unwrap();
-        assert!(metrics.is_object());
+        let router = NodeRouter::new(node.clone());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "_metrics".into(),
+            params: json!({}),
+            id: json!(1),
+        };
+
+        let response = router.handle_request(req).await.unwrap();
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
     }
 
     #[tokio::test]
     async fn test_router_info_handler() {
         let script = create_test_script("// empty");
         let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-        let result = NodeRouter::info_handler(node, json!({})).await;
-        assert!(result.is_ok());
-        let info = result.unwrap();
-        assert!(info.is_object());
+        let router = NodeRouter::new(node.clone());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "_info".into(),
+            params: json!({}),
+            id: json!(1),
+        };
+
+        let response = router.handle_request(req).await.unwrap();
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
+        assert_eq!(response.result.unwrap()["server_type"], "node");
+    }
+
+    #[tokio::test]
+    async fn test_router_javascript_handler() {
+        let script = create_test_script(r#"
+            madrpc.register('echo', function(args) {
+                return args;
+            });
+        "#);
+        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+        let router = NodeRouter::new(node.clone());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "echo".into(),
+            params: json!({"msg": "hello"}),
+            id: json!(1),
+        };
+
+        let response = router.handle_request(req).await.unwrap();
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
+        assert_eq!(response.result.unwrap()["msg"], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_router_method_not_found() {
+        let script = create_test_script("// empty");
+        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+        let router = NodeRouter::new(node.clone());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "nonexistent".into(),
+            params: json!({}),
+            id: json!(1),
+        };
+
+        let response = router.handle_request(req).await.unwrap();
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap().code, -32601);
     }
 }

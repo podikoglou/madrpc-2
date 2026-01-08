@@ -127,7 +127,7 @@ impl Node {
         tracing::debug!("Creating fresh Boa context for request");
 
         // If we have an orchestrator client, pass it to the context for distributed RPC calls
-        let ctx = if let Some(client) = &self.orchestrator_client {
+        let mut ctx = if let Some(client) = &self.orchestrator_client {
             // Clone the inner MadrpcClient (MadrpcClient implements Clone)
             let client_clone = (**client).clone();
             MadrpcContext::with_client_from_source(&self.script_source, Some(client_clone))?

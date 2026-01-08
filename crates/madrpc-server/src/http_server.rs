@@ -28,7 +28,7 @@
 //! }
 //! ```
 
-use hyper::{Request, Response, StatusCode};
+use hyper::{Request, Response};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
@@ -156,9 +156,17 @@ impl HttpServer {
         }
 
         // Read the request body
-        let body = req.into_body().collect().await
-            .map_err(|e| MadrpcError::Transport(format!("Failed to read request body: {}", e)))?
-            .to_bytes();
+        let whole_body = req.into_body();
+        let body = match whole_body.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) => {
+                tracing::error!("Failed to read request body: {}", e);
+                return Ok(HttpTransport::to_http_error(
+                    json!(null),
+                    JsonRpcError::internal_error("Failed to read request body")
+                ));
+            }
+        };
 
         // Parse the JSON-RPC request
         let jsonrpc_req = match HttpTransport::parse_jsonrpc(body) {
@@ -172,7 +180,7 @@ impl HttpServer {
             }
         };
 
-        // Handle via ajj router
+        // Handle via router
         let jsonrpc_res = match router.handle_request(jsonrpc_req).await {
             Ok(res) => res,
             Err(e) => {
@@ -191,43 +199,11 @@ impl HttpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
-
-    static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn create_test_script(content: &str) -> tempfile::NamedTempFile {
-        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let file = tempfile::NamedTempFile::new().unwrap();
-        fs::write(file.path(), content).unwrap();
+        std::fs::write(file.path(), content).unwrap();
         file
-    }
-
-    async fn start_test_server(node: Arc<Node>) -> SocketAddr {
-        let server = HttpServer::new(node);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            // Transfer the listener to the server
-            let (stream, _) = listener.accept().await.unwrap();
-            let io = TokioIo::new(stream);
-            let router = server.router.clone();
-
-            let service = service_fn(move |req| {
-                let router = router.clone();
-                async move { HttpServer::handle_request(router, req).await }
-            });
-
-            let _ = http1::Builder::new()
-                .serve_connection(io, service)
-                .await;
-        });
-
-        // Wait for server to start
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        addr
     }
 
     #[tokio::test]
