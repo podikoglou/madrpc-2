@@ -252,8 +252,11 @@ async fn main() -> Result<()> {
 
     // Initialize tracing only for non-call commands (to keep output clean for unix tool usage)
     if !matches!(cli.command, Commands::Call(_)) {
+        // Set default log level to INFO, but allow RUST_LOG env var to override
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
         tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(env_filter)
             .init();
     }
 
