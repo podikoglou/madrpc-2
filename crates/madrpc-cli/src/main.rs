@@ -66,21 +66,21 @@ enum Commands {
 #[argh(subcommand, name = "node")]
 /// start a MaDRPC node
 struct NodeArgs {
-    /// Path to the JavaScript file to load and execute.
+    /// path to the JavaScript file to load and execute
     ///
     /// The script should use `madrpc.register(name, function)` to expose
     /// RPC methods. The file is read once at startup and cached.
     #[argh(option, short = 's')]
     script: String,
 
-    /// Address to bind the node's HTTP server to.
+    /// address to bind the node's HTTP server to
     ///
     /// Defaults to "0.0.0.0:0" which assigns a random available port.
     /// The actual bound address is logged at startup.
     #[argh(option, short = 'b', default = "\"0.0.0.0:0\".into()")]
     bind: String,
 
-    /// Optional orchestrator address to register with.
+    /// optional orchestrator address to register with
     ///
     /// If provided, the node will register itself with the orchestrator
     /// for automatic discovery. Otherwise, the node operates standalone.
@@ -113,14 +113,14 @@ struct NodeArgs {
 #[argh(subcommand, name = "orchestrator")]
 /// start a MaDRPC orchestrator
 struct OrchestratorArgs {
-    /// Address to bind the orchestrator's HTTP server to.
+    /// address to bind the orchestrator's HTTP server to
     ///
     /// Clients connect to this address to make RPC calls. Defaults to
     /// "0.0.0.0:8080" for accessibility from other machines.
     #[argh(option, short = 'b', default = "\"0.0.0.0:8080\".into()")]
     bind: String,
 
-    /// Addresses of nodes to forward requests to.
+    /// addresses of nodes to forward requests to
     ///
     /// Can be specified multiple times to add multiple nodes. Requests are
     /// distributed using round-robin load balancing. At least one node is
@@ -128,7 +128,7 @@ struct OrchestratorArgs {
     #[argh(option, short = 'n', long = "node")]
     nodes: Vec<String>,
 
-    /// Interval between health checks in seconds.
+    /// interval between health checks in seconds
     ///
     /// The orchestrator pings each node at this interval to verify liveness.
     /// Defaults to 5 seconds. Lower values detect failures faster but increase
@@ -136,21 +136,21 @@ struct OrchestratorArgs {
     #[argh(option, long = "health-check-interval", default = "5")]
     health_check_interval_secs: u64,
 
-    /// Timeout for each health check in milliseconds.
+    /// timeout for each health check in milliseconds
     ///
     /// If a node doesn't respond within this time, the health check is
     /// considered a failure. Defaults to 2000ms (2 seconds).
     #[argh(option, long = "health-check-timeout", default = "2000")]
     health_check_timeout_ms: u64,
 
-    /// Consecutive health check failures before disabling a node.
+    /// consecutive health check failures before disabling a node
     ///
     /// After this many failures in a row, the node is removed from the
     /// rotation until it recovers (circuit breaker pattern). Defaults to 3.
     #[argh(option, long = "health-check-failure-threshold", default = "3")]
     health_check_failure_threshold: u32,
 
-    /// Disable health checking entirely.
+    /// disable health checking entirely
     ///
     /// When set, the orchestrator will not ping nodes and will continue
     /// forwarding to all configured nodes regardless of their health.
@@ -182,14 +182,14 @@ struct OrchestratorArgs {
 #[argh(subcommand, name = "top")]
 /// monitor a MaDRPC server with real-time metrics
 struct TopArgs {
-    /// Address of the server to monitor.
+    /// address of the server to monitor
     ///
     /// Can be an orchestrator or a standalone node. The TUI automatically
     /// detects the server type and adjusts the display accordingly.
     #[argh(positional)]
     server_address: String,
 
-    /// Refresh interval in milliseconds.
+    /// refresh interval in milliseconds
     ///
     /// Controls how frequently the TUI fetches updated metrics from the
     /// server. Lower values provide more responsive updates but increase
@@ -225,20 +225,20 @@ struct TopArgs {
 #[argh(subcommand, name = "call")]
 /// call an RPC method on a server
 struct CallArgs {
-    /// Address of the server to call.
+    /// address of the server to call
     ///
     /// Can be an orchestrator (which load balances) or a specific node.
     #[argh(positional)]
     server_address: String,
 
-    /// Name of the RPC method to call.
+    /// name of the RPC method to call
     ///
     /// Must match a name registered via `madrpc.register()` in the node's
     /// JavaScript script.
     #[argh(positional)]
     method: String,
 
-    /// JSON string containing arguments for the method.
+    /// JSON string containing arguments for the method
     ///
     /// Must be valid JSON. Use empty object `{}` for methods with no arguments.
     /// Defaults to `{}`.
