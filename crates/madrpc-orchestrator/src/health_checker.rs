@@ -1,6 +1,4 @@
-use madrpc_common::protocol::Request;
 use madrpc_common::protocol::error::{MadrpcError, Result as MadrpcResult};
-use madrpc_common::transport::TcpTransportAsync;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -63,16 +61,15 @@ impl Default for HealthCheckConfig {
 /// The health checker runs as a background tokio task that periodically:
 ///
 /// 1. Checks circuit breaker timeouts (Open → HalfOpen transitions)
-/// 2. Performs parallel TCP health checks on all nodes
+/// 2. Performs parallel HTTP health checks on all nodes
 /// 3. Updates node health status and circuit breaker state
 /// 4. Auto-disables/auto-enables nodes based on health and threshold
 ///
 /// # Health Check Method
 ///
 /// Each health check:
-/// 1. Opens TCP connection to node (with timeout)
-/// 2. Sends `_info` request (built-in Madrpc method)
-/// 3. Verifies response is successful
+/// 1. Sends HTTP GET request to `http://{addr}/__health`
+/// 2. Verifies response is successful (status code 200)
 ///
 /// # Thread Safety
 ///
@@ -82,8 +79,6 @@ impl Default for HealthCheckConfig {
 pub struct HealthChecker {
     /// Load balancer to check nodes for and update
     load_balancer: Arc<RwLock<LoadBalancer>>,
-    /// Transport for TCP connections to nodes
-    transport: TcpTransportAsync,
     /// Health check configuration
     config: HealthCheckConfig,
 }
@@ -100,17 +95,12 @@ impl HealthChecker {
     ///
     /// # Returns
     /// A new HealthChecker instance (not yet running)
-    ///
-    /// # Errors
-    /// Returns error if TCP transport initialization fails
     pub fn new(
         load_balancer: Arc<RwLock<LoadBalancer>>,
         config: HealthCheckConfig,
     ) -> MadrpcResult<Self> {
-        let transport = TcpTransportAsync::new()?;
         Ok(Self {
             load_balancer,
-            transport,
             config,
         })
     }
@@ -167,11 +157,9 @@ impl HealthChecker {
         let checks: Vec<_> = nodes
             .into_iter()
             .map(|node| {
-                let transport = &self.transport;
                 let timeout = self.config.timeout;
                 async move {
-                    let result =
-                        Self::check_node_health(transport, &node.addr, timeout).await;
+                    let result = Self::check_node_health(&node.addr, timeout).await;
                     (node, result)
                 }
             })
@@ -193,7 +181,6 @@ impl HealthChecker {
     /// 2. Verifying response is successful (status code 200)
     ///
     /// # Arguments
-    /// * `transport` - TCP transport to use (kept for compatibility, not used in HTTP mode)
     /// * `addr` - Node address to connect to
     /// * `timeout` - Maximum time to wait for connection and response
     ///
@@ -201,7 +188,6 @@ impl HealthChecker {
     /// - `Ok(())` - Node is healthy
     /// - `Err(...)` - Node is unhealthy or unreachable
     async fn check_node_health(
-        _transport: &TcpTransportAsync,
         addr: &str,
         timeout: Duration,
     ) -> MadrpcResult<()> {
