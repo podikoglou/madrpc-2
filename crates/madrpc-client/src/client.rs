@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use hyper::{Request as HttpRequest, Method};
 use hyper::body::Bytes;
-use hyper_util::client::legacy::{Client, connect::HttpConnector};
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use http_body_util::{Full, BodyExt};
 use std::sync::Arc;
 
@@ -183,7 +183,7 @@ impl MadrpcClient {
     /// ```
     pub async fn new(base_url: impl Into<String>) -> Result<Self> {
         let base_url = base_url.into();
-        let http_client = Client::builder()
+        let http_client = Client::builder(tokio::net::TcpSocket::new_v4().unwrap())
             .pool_idle_timeout(Duration::from_secs(90))
             .build_http();
 
@@ -225,7 +225,7 @@ impl MadrpcClient {
         retry_config: RetryConfig,
     ) -> Result<Self> {
         let base_url = base_url.into();
-        let http_client = Client::builder()
+        let http_client = Client::builder(tokio::net::TcpSocket::new_v4().unwrap())
             .pool_idle_timeout(Duration::from_secs(90))
             .build_http();
 
@@ -603,7 +603,7 @@ mod tests {
 
         // We can't test the full client without a server, but we can test the builder
         let base_url = "http://localhost:8080";
-        let http_client = Client::builder().build_http();
+        let http_client = Client::builder(tokio::net::TcpSocket::new_v4().unwrap()).build_http();
         let _ = MadrpcClient {
             base_url: base_url.to_string(),
             http_client: Arc::new(http_client),
