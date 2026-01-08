@@ -302,10 +302,6 @@ async fn main() -> Result<()> {
                 };
                 madrpc_orchestrator::Orchestrator::with_config(args.nodes, config).await?
             } else {
-                tracing::info!("Health check interval: {}s", args.health_check_interval_secs);
-                tracing::info!("Health check timeout: {}ms", args.health_check_timeout_ms);
-                tracing::info!("Health check failure threshold: {}", args.health_check_failure_threshold);
-
                 let config = madrpc_orchestrator::HealthCheckConfig {
                     interval: std::time::Duration::from_secs(args.health_check_interval_secs),
                     timeout: std::time::Duration::from_millis(args.health_check_timeout_ms),
