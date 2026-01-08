@@ -176,18 +176,22 @@ impl JobExecutor for TokioJobExecutor {
     /// It should only be called when async execution is not possible.
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> boa_engine::JsResult<()> {
         // Try to use the current runtime if we're in one
-        if tokio::runtime::Handle::try_current().is_ok() {
-            // We're inside a tokio runtime, use block_in_place to run synchronously
-            return tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    // Create a LocalSet for this scope
-                    let local_set = tokio::task::LocalSet::new();
-                    local_set.run_until(self.run_jobs_async(&RefCell::new(context))).await
-                })
-            });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            // Check if we're in a multi-threaded runtime
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+                // We're in a multi-threaded runtime, use block_in_place
+                return tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        // Create a LocalSet for this scope
+                        let local_set = tokio::task::LocalSet::new();
+                        local_set.run_until(self.run_jobs_async(&RefCell::new(context))).await
+                    })
+                });
+            }
+            // Current thread runtime - always create a new runtime to avoid conflicts
         }
 
-        // No current runtime, create a new one
+        // No current runtime (or current-thread runtime), create a new one
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()

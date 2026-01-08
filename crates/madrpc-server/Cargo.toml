@@ -9,14 +9,19 @@ madrpc-common = { path = "../madrpc-common" }
 madrpc-metrics = { path = "../madrpc-metrics" }
 num_cpus = "1.16"
 boa_engine = { path = "/tmp/boa/core/engine" }
+boa_gc = { path = "/tmp/boa/core/gc", features = ["thin-vec"] }
 serde_json = "1.0"
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 futures-concurrency = "7.6"
 futures-lite = "2.5"
+hyper = { version = "1.5", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
 
 [dev-dependencies]
 tempfile = "3.0"
 futures = "0.3"
 madrpc-orchestrator = { path = "../madrpc-orchestrator" }
+reqwest = "0.12"

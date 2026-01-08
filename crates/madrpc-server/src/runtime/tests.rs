@@ -81,7 +81,7 @@ mod tests {
                 return args;
             });
         "#);
-        let ctx = MadrpcContext::new(&script).unwrap();
+        let mut ctx = MadrpcContext::new(&script).unwrap();
 
         let result = ctx.call_rpc("echo", json!({"msg": "test"})).unwrap();
         assert_eq!(result, json!({"msg": "test"}));
@@ -98,7 +98,7 @@ mod tests {
                 return { sum: args.a + args.b };
             });
         "#);
-        let ctx = MadrpcContext::new(&script).unwrap();
+        let mut ctx = MadrpcContext::new(&script).unwrap();
 
         let result = ctx.call_rpc("add", json!({"a": 5, "b": 3})).unwrap();
         assert_eq!(result, json!({"sum": 8}));
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn test_call_unregistered_function_returns_error() {
         let script = create_test_script("void 0;");
-        let ctx = MadrpcContext::new(&script).unwrap();
+        let mut ctx = MadrpcContext::new(&script).unwrap();
 
         let result = ctx.call_rpc("nonexistent", json!({}));
         assert!(result.is_err());
@@ -137,7 +137,7 @@ mod tests {
         let script = create_test_script(r#"
             madrpc.register('nullReturn', function() { return null; });
         "#);
-        let ctx = MadrpcContext::new(&script).unwrap();
+        let mut ctx = MadrpcContext::new(&script).unwrap();
 
         let result = ctx.call_rpc("nullReturn", json!(null)).unwrap();
         assert_eq!(result, json!(null));
@@ -160,7 +160,7 @@ mod tests {
                 };
             });
         "#);
-        let ctx = MadrpcContext::new(&script).unwrap();
+        let mut ctx = MadrpcContext::new(&script).unwrap();
 
         let result = ctx.call_rpc("nested", json!({"x": 21})).unwrap();
         assert_eq!(result, json!({"deep": {"nested": {"value": 42}}}));

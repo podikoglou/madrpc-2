@@ -1,10 +1,17 @@
-use madrpc_common::protocol::Request;
+use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse};
 use madrpc_common::protocol::error::{Result, MadrpcError};
-use madrpc_common::transport::TcpTransportAsync;
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use crate::pool::{ConnectionPool, PoolConfig};
+use hyper::{Request as HttpRequest, Method};
+use hyper::body::Bytes;
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_util::rt::TokioExecutor;
+use http_body_util::{Full, BodyExt};
+use std::sync::Arc;
+
+/// Global counter for generating unique JSON-RPC request IDs
+static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Retry configuration for RPC calls.
 ///
@@ -110,27 +117,27 @@ impl RetryConfig {
     }
 }
 
-/// MaDRPC client for making RPC calls.
+/// MaDRPC client for making RPC calls over HTTP.
 ///
-/// The client provides a high-level interface for making RPC calls to MaDRPC orchestrators.
-/// It handles connection pooling, automatic retries with exponential backoff, and error
+/// The client provides a high-level interface for making JSON-RPC 2.0 calls to MaDRPC
+/// orchestrators via HTTP. It handles automatic retries with exponential backoff and error
 /// classification.
 ///
 /// # Architecture
 ///
-/// The client maintains a connection pool to each orchestrator address, allowing multiple
-/// concurrent requests to reuse existing TCP connections. When making a request:
+/// The client uses hyper's HTTP client with HTTP/1.1 keep-alive for efficient connection
+/// reuse. When making a request:
 ///
-/// 1. A connection is acquired from the pool (or created if needed)
-/// 2. The request is sent to the orchestrator
-/// 3. The response is received and decoded
-/// 4. The connection is returned to the pool
+/// 1. A JSON-RPC 2.0 request is created with the method and parameters
+/// 2. An HTTP POST request is sent to the orchestrator
+/// 3. The JSON-RPC response is received and parsed
+/// 4. The result is returned or an error is raised
 ///
 /// # Retries
 ///
-/// Transient errors (network issues, timeouts, node unavailability) are automatically
-/// retried with exponential backoff and jitter. Permanent errors (invalid requests,
-/// JavaScript execution errors) fail immediately.
+/// Transient errors (network issues, timeouts) are automatically retried with exponential
+/// backoff and jitter. Permanent errors (invalid requests, JavaScript execution errors) fail
+/// immediately.
 ///
 /// # Example
 ///
@@ -140,29 +147,29 @@ impl RetryConfig {
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let client = MadrpcClient::new("127.0.0.1:8080").await?;
+/// let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
 /// let result = client.call("compute", json!({"n": 42})).await?;
 /// # Ok(())
 /// # }
 /// ```
 pub struct MadrpcClient {
-    orchestrator_addr: String,
-    pool: Arc<ConnectionPool>,
+    base_url: String,
+    http_client: Arc<Client<HttpConnector, Full<Bytes>>>,
     retry_config: RetryConfig,
 }
 
 impl MadrpcClient {
     /// Creates a new client connected to an orchestrator.
     ///
-    /// This uses default configuration for both the connection pool and retry logic.
+    /// This uses default configuration for retry logic.
     ///
     /// # Arguments
     ///
-    /// * `orchestrator_addr` - The orchestrator address (e.g., "127.0.0.1:8080")
+    /// * `base_url` - The base URL of the orchestrator (e.g., "http://127.0.0.1:8080")
     ///
     /// # Returns
     ///
-    /// Returns a `Result` containing the client or an error if pool initialization fails.
+    /// Returns a `Result` containing the client or an error if HTTP client creation fails.
     ///
     /// # Example
     ///
@@ -171,100 +178,61 @@ impl MadrpcClient {
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let client = MadrpcClient::new("127.0.0.1:8080").await?;
+    /// let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn new(orchestrator_addr: impl Into<String>) -> Result<Self> {
-        let orchestrator_addr = orchestrator_addr.into();
-        let pool = Arc::new(ConnectionPool::new(PoolConfig::default())?);
+    pub async fn new(base_url: impl Into<String>) -> Result<Self> {
+        let base_url = base_url.into();
+        let http_client = Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build_http();
+
         let retry_config = RetryConfig::default();
 
         Ok(Self {
-            orchestrator_addr,
-            pool,
+            base_url,
+            http_client: Arc::new(http_client),
             retry_config,
         })
     }
 
-    /// Creates a new client with custom pool configuration.
+    /// Creates a new client with custom retry configuration.
     ///
-    /// Use this when you need to control connection pool parameters such as maximum
-    /// connections per address or acquisition timeout.
-    ///
-    /// # Arguments
-    ///
-    /// * `orchestrator_addr` - The orchestrator address (e.g., "127.0.0.1:8080")
-    /// * `config` - The pool configuration
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use madrpc_client::{MadrpcClient, PoolConfig};
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let config = PoolConfig {
-    ///     max_connections: 20,
-    ///     acquire_timeout_ms: 60000,
-    /// };
-    /// let client = MadrpcClient::with_config("127.0.0.1:8080", config).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn with_config(orchestrator_addr: impl Into<String>, config: PoolConfig) -> Result<Self> {
-        let orchestrator_addr = orchestrator_addr.into();
-        let pool = Arc::new(ConnectionPool::new(config)?);
-        let retry_config = RetryConfig::default();
-
-        Ok(Self {
-            orchestrator_addr,
-            pool,
-            retry_config,
-        })
-    }
-
-    /// Creates a new client with custom pool and retry configuration.
-    ///
-    /// Use this when you need full control over both connection pool and retry behavior.
+    /// Use this when you need full control over retry behavior.
     ///
     /// # Arguments
     ///
-    /// * `orchestrator_addr` - The orchestrator address (e.g., "127.0.0.1:8080")
-    /// * `pool_config` - The pool configuration
+    /// * `base_url` - The base URL of the orchestrator (e.g., "http://127.0.0.1:8080")
     /// * `retry_config` - The retry configuration
     ///
     /// # Example
     ///
     /// ```rust,no_run
-    /// use madrpc_client::{MadrpcClient, PoolConfig, RetryConfig};
+    /// use madrpc_client::{MadrpcClient, RetryConfig};
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let pool_config = PoolConfig {
-    ///     max_connections: 20,
-    ///     acquire_timeout_ms: 60000,
-    /// };
     /// let retry_config = RetryConfig::new(5, 200, 10000, 2.0);
     /// let client = MadrpcClient::with_retry_config(
-    ///     "127.0.0.1:8080",
-    ///     pool_config,
+    ///     "http://127.0.0.1:8080",
     ///     retry_config
     /// ).await?;
     /// # Ok(())
     /// # }
     /// ```
     pub async fn with_retry_config(
-        orchestrator_addr: impl Into<String>,
-        pool_config: PoolConfig,
+        base_url: impl Into<String>,
         retry_config: RetryConfig,
     ) -> Result<Self> {
-        let orchestrator_addr = orchestrator_addr.into();
-        let pool = Arc::new(ConnectionPool::new(pool_config)?);
+        let base_url = base_url.into();
+        let http_client = Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build_http();
 
         Ok(Self {
-            orchestrator_addr,
-            pool,
+            base_url,
+            http_client: Arc::new(http_client),
             retry_config,
         })
     }
@@ -285,7 +253,7 @@ impl MadrpcClient {
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let client = MadrpcClient::new("127.0.0.1:8080")
+    /// let client = MadrpcClient::new("http://127.0.0.1:8080")
     ///     .await?
     ///     .with_retry(RetryConfig::new(5, 200, 10000, 2.0));
     /// # Ok(())
@@ -298,28 +266,27 @@ impl MadrpcClient {
 
     /// Calls an RPC method.
     ///
-    /// This method acquires a connection from the pool, sends the request, and returns
-    /// the connection to the pool. It implements automatic retry logic with exponential
-    /// backoff for transient failures.
+    /// This method sends a JSON-RPC 2.0 request via HTTP POST and implements automatic
+    /// retry logic with exponential backoff for transient failures.
     ///
     /// # Retry Behavior
     ///
-    /// - Transient errors (network issues, timeouts, node unavailability) are automatically
-    ///   retried up to `max_attempts` times
-    /// - Non-retryable errors (invalid requests, JavaScript execution errors) fail immediately
+    /// - Transient errors (network issues, timeouts) are automatically retried up to
+    ///   `max_attempts` times
+    /// - Non-retryable errors (invalid requests, JSON-RPC errors) fail immediately
     /// - Retries use exponential backoff with jitter to avoid thundering herd problems
     ///
     /// # Arguments
     ///
     /// * `method` - The method name to call (must be registered on the compute nodes)
-    /// * `args` - The method arguments as a JSON value
+    /// * `params` - The method parameters as a JSON value
     ///
     /// # Returns
     ///
     /// Returns a `Result` containing the JSON response from the RPC call, or an error if:
     /// - All retry attempts are exhausted
     /// - A non-retryable error occurs
-    /// - The connection pool times out
+    /// - The HTTP request fails
     ///
     /// # Errors
     ///
@@ -327,7 +294,7 @@ impl MadrpcClient {
     /// - The method is not found on any compute node
     /// - JavaScript execution fails on the node
     /// - Network connectivity is lost after all retries
-    /// - The connection pool times out acquiring a connection
+    /// - The request parameters are invalid
     ///
     /// # Example
     ///
@@ -337,14 +304,14 @@ impl MadrpcClient {
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let client = MadrpcClient::new("127.0.0.1:8080").await?;
+    /// let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
     ///
-    /// // Call a method with arguments
+    /// // Call a method with parameters
     /// let result = client.call("compute", json!({"n": 42})).await?;
     /// println!("Result: {}", result);
     ///
-    /// // Call a method with no arguments
-    /// let status = client.call("status", json!({})).await?;
+    /// // Call a method with no parameters
+    /// let status = client.call("status", json!(null)).await?;
     /// println!("Status: {}", status);
     /// # Ok(())
     /// # }
@@ -352,9 +319,20 @@ impl MadrpcClient {
     pub async fn call(
         &self,
         method: impl Into<String>,
-        args: Value,
+        params: Value,
     ) -> Result<Value> {
-        let request = Request::new(method, args);
+        let method = method.into();
+
+        // Generate unique request ID
+        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+        // Create JSON-RPC 2.0 request
+        let jsonrpc_req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: method.clone(),
+            params,
+            id: Value::Number(request_id.into()),
+        };
 
         let mut last_error = None;
 
@@ -364,17 +342,19 @@ impl MadrpcClient {
                 tracing::info!(
                     attempt = attempt,
                     max_attempts = self.retry_config.max_attempts,
+                    method = %method,
                     "Retrying RPC call"
                 );
             }
 
             // Try to execute the request
-            match self.try_call(&request).await {
+            match self.try_call(&jsonrpc_req).await {
                 Ok(result) => {
                     // Success - return the result
                     if attempt > 1 {
                         tracing::info!(
                             attempt = attempt,
+                            method = %method,
                             "RPC call succeeded after retry"
                         );
                     }
@@ -396,6 +376,7 @@ impl MadrpcClient {
                         tracing::debug!(
                             attempt = attempt,
                             delay_ms = delay.as_millis(),
+                            method = %method,
                             "Waiting before retry"
                         );
                         tokio::time::sleep(delay).await;
@@ -413,50 +394,98 @@ impl MadrpcClient {
     /// Internal method to execute a single RPC call attempt.
     ///
     /// This method:
-    /// 1. Acquires a connection from the pool
-    /// 2. Locks the stream for exclusive access
-    /// 3. Sends the request via TCP transport
-    /// 4. Receives and decodes the response
-    /// 5. Returns the connection to the pool
+    /// 1. Creates an HTTP POST request with the JSON-RPC payload
+    /// 2. Sends the request via hyper
+    /// 3. Receives and parses the JSON-RPC response
+    /// 4. Returns the result or an appropriate error
     ///
     /// # Arguments
     ///
-    /// * `request` - The RPC request to execute
-    async fn try_call(&self, request: &Request) -> Result<Value> {
-        // Acquire connection from pool
-        let conn = self.pool.acquire(&self.orchestrator_addr).await?;
+    /// * `request` - The JSON-RPC request to execute
+    async fn try_call(&self, request: &JsonRpcRequest) -> Result<Value> {
+        // Serialize the JSON-RPC request
+        let body = serde_json::to_vec(request)
+            .map_err(|e| MadrpcError::JsonSerialization(e))?;
 
-        // Lock the stream for this request
-        let mut stream = conn.stream.lock().await;
+        // Build HTTP request
+        let http_req = HttpRequest::builder()
+            .method(Method::POST)
+            .uri(&self.base_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Invalid HTTP request: {}", e)))?;
 
-        // Create transport for sending request
-        let transport = TcpTransportAsync::new()?;
+        // Send the HTTP request
+        let http_response = self.http_client
+            .request(http_req)
+            .await
+            .map_err(|e| {
+                // Hyper errors are typically network-related and retryable
+                MadrpcError::Transport(format!("HTTP request failed: {}", e))
+            })?;
 
-        // Send request and get response
-        let response = transport.send_request(&mut stream, request).await?;
-
-        // Release the stream lock
-        drop(stream);
-
-        // Return connection to pool
-        self.pool.release(conn).await;
-
-        // Handle response
-        if response.success {
-            response.result.ok_or_else(|| {
-                MadrpcError::InvalidResponse("Missing result in success response".to_string())
-            })
-        } else {
-            Err(MadrpcError::JavaScriptExecution(
-                response.error.unwrap_or_else(|| "Unknown error".to_string())
-            ))
+        // Check HTTP status code
+        let status = http_response.status();
+        if !status.is_success() {
+            // HTTP errors are retryable for server errors (5xx)
+            if status.is_server_error() {
+                return Err(MadrpcError::Transport(format!("HTTP error: {}", status)));
+            } else {
+                return Err(MadrpcError::InvalidResponse(format!(
+                    "HTTP error: {}",
+                    status
+                )));
+            }
         }
+
+        // Collect the response body
+        let whole_body = http_response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| {
+                MadrpcError::Transport(format!("Failed to read response body: {}", e))
+            })?
+            .to_bytes();
+
+        // Parse the JSON-RPC response
+        let jsonrpc_res: JsonRpcResponse = serde_json::from_slice(&whole_body)
+            .map_err(|e| {
+                // JSON parsing errors indicate an invalid response
+                MadrpcError::InvalidResponse(format!("Failed to parse JSON-RPC response: {}", e))
+            })?;
+
+        // Check if the response is an error
+        if let Some(jsonrpc_error) = jsonrpc_res.error {
+            // Convert JSON-RPC error to MadrpcError
+            let err = match jsonrpc_error.code {
+                code if code <= -32000 => {
+                    // Server error - these are typically retryable if they're internal errors
+                    if jsonrpc_error.message.contains("timeout") ||
+                       jsonrpc_error.message.contains("unavailable") {
+                        MadrpcError::NodeUnavailable(jsonrpc_error.message)
+                    } else {
+                        MadrpcError::JavaScriptExecution(jsonrpc_error.message)
+                    }
+                }
+                -32601 => MadrpcError::InvalidRequest(format!("Method not found: {}", jsonrpc_error.message)),
+                -32602 => MadrpcError::InvalidRequest(format!("Invalid params: {}", jsonrpc_error.message)),
+                -32600 => MadrpcError::InvalidResponse(jsonrpc_error.message),
+                -32700 => MadrpcError::InvalidResponse(jsonrpc_error.message),
+                _ => MadrpcError::JavaScriptExecution(jsonrpc_error.message),
+            };
+            return Err(err);
+        }
+
+        // Return the result (null results are valid in JSON-RPC)
+        Ok(jsonrpc_res.result.unwrap_or(Value::Null))
     }
 }
 
 /// Clone implementation for `MadrpcClient`.
 ///
-/// Cloning a client creates a new handle that shares the same underlying connection pool
+/// Cloning a client creates a new handle that shares the same underlying HTTP client
 /// and retry configuration. This is useful for making concurrent requests from multiple
 /// tasks or threads.
 ///
@@ -467,12 +496,12 @@ impl MadrpcClient {
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let client = MadrpcClient::new("127.0.0.1:8080").await?;
-/// let client2 = client.clone(); // Shares the same connection pool
+/// let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
+/// let client2 = client.clone(); // Shares the same HTTP client
 ///
 /// // Both clients can make concurrent requests
-/// let task1 = client.call("method1", serde_json::json!({}));
-/// let task2 = client2.call("method2", serde_json::json!({}));
+/// let task1 = client.call("method1", serde_json::json!(null));
+/// let task2 = client2.call("method2", serde_json::json!(null));
 ///
 /// let (result1, result2) = tokio::join!(task1, task2);
 /// # Ok(())
@@ -481,8 +510,8 @@ impl MadrpcClient {
 impl Clone for MadrpcClient {
     fn clone(&self) -> Self {
         Self {
-            orchestrator_addr: self.orchestrator_addr.clone(),
-            pool: Arc::clone(&self.pool),
+            base_url: self.base_url.clone(),
+            http_client: Arc::clone(&self.http_client),
             retry_config: self.retry_config.clone(),
         }
     }
@@ -491,23 +520,19 @@ impl Clone for MadrpcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use madrpc_common::protocol::error::MadrpcError;
-
-    // Note: Tests require a running server
-    // These are basic unit tests
 
     #[tokio::test]
     async fn test_client_creation() {
-        let client = MadrpcClient::new("localhost:8080").await;
+        let client = MadrpcClient::new("http://localhost:8080").await;
         // Will create successfully even if server doesn't exist
         assert!(client.is_ok());
     }
 
     #[tokio::test]
     async fn test_client_is_clonable() {
-        let client = MadrpcClient::new("localhost:8080").await.unwrap();
+        let client = MadrpcClient::new("http://localhost:8080").await.unwrap();
         let client2 = client.clone();
-        assert_eq!(client.orchestrator_addr, client2.orchestrator_addr);
+        assert_eq!(client.base_url, client2.base_url);
     }
 
     #[test]
@@ -579,9 +604,14 @@ mod tests {
     #[test]
     fn test_client_with_retry() {
         let retry_config = RetryConfig::new(5, 50, 1000, 1.5);
-        let config = PoolConfig::default();
 
         // We can't test the full client without a server, but we can test the builder
-        let _ = MadrpcClient::with_retry_config("localhost:8080", config, retry_config);
+        let base_url = "http://localhost:8080";
+        let http_client = Client::builder(TokioExecutor::new()).build_http();
+        let _ = MadrpcClient {
+            base_url: base_url.to_string(),
+            http_client: Arc::new(http_client),
+            retry_config,
+        };
     }
 }
