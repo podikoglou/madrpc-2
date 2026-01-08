@@ -10,17 +10,18 @@
 //! madrpc node -s script.js -b 0.0.0.0:9001
 //!
 //! # Start an orchestrator
-//! madrpc orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002
+//! madrpc orchestrator -b 0.0.0.0:8080 -n http://127.0.0.1:9001 -n http://127.0.0.1:9002
 //!
 //! # Monitor with real-time metrics
-//! madrpc top 127.0.0.1:8080
+//! madrpc top http://127.0.0.1:8080
 //!
 //! # Make an RPC call (outputs raw JSON)
-//! madrpc call 127.0.0.1:8080 method_name '{"arg": "value"}'
+//! madrpc call http://127.0.0.1:8080 method_name '{"arg": "value"}'
 //! ```
 
 use argh::FromArgs;
 use anyhow::Result;
+use std::net::SocketAddr;
 
 /// Main CLI structure parsed from command-line arguments.
 ///
@@ -53,7 +54,7 @@ enum Commands {
 /// Arguments for starting a MaDRPC node.
 ///
 /// Nodes are JavaScript execution servers that load a script file and expose
-/// registered functions via RPC. Each node maintains its own Boa JavaScript
+/// registered functions via JSON-RPC over HTTP. Each node maintains its own Boa JavaScript
 /// context and processes requests on the configured bind address.
 ///
 /// # Example
@@ -72,7 +73,7 @@ struct NodeArgs {
     #[argh(option, short = 's')]
     script: String,
 
-    /// Address to bind the node's TCP server to.
+    /// Address to bind the node's HTTP server to.
     ///
     /// Defaults to "0.0.0.0:0" which assigns a random available port.
     /// The actual bound address is logged at startup.
@@ -89,7 +90,7 @@ struct NodeArgs {
 
 /// Arguments for starting a MaDRPC orchestrator.
 ///
-/// Orchestrators are load balancers that forward RPC requests to registered
+/// Orchestrators are load balancers that forward JSON-RPC over HTTP requests to registered
 /// nodes using round-robin selection. They provide health checking and
 /// circuit breaker functionality for high availability.
 ///
@@ -103,8 +104,8 @@ struct NodeArgs {
 ///
 /// ```bash
 /// madrpc orchestrator -b 0.0.0.0:8080 \
-///   -n 127.0.0.1:9001 \
-///   -n 127.0.0.1:9002 \
+///   -n http://127.0.0.1:9001 \
+///   -n http://127.0.0.1:9002 \
 ///   --health-check-interval 10 \
 ///   --health-check-timeout 3000
 /// ```
@@ -112,7 +113,7 @@ struct NodeArgs {
 #[argh(subcommand, name = "orchestrator")]
 /// start a MaDRPC orchestrator
 struct OrchestratorArgs {
-    /// Address to bind the orchestrator's TCP server to.
+    /// Address to bind the orchestrator's HTTP server to.
     ///
     /// Clients connect to this address to make RPC calls. Defaults to
     /// "0.0.0.0:8080" for accessibility from other machines.
@@ -258,7 +259,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Node(args) => {
-            tracing::info!("Starting MaDRPC node (single-threaded) with script: {}", args.script);
+            tracing::info!("Starting MaDRPC node with script: {}", args.script);
             tracing::info!("Binding to: {}", args.bind);
 
             let node = if let Some(orch_addr) = &args.orchestrator {
@@ -272,17 +273,10 @@ async fn main() -> Result<()> {
             };
             tracing::info!("Node created successfully from script");
 
-            let server = madrpc_common::transport::tcp_server::TcpServer::new(&args.bind).await?;
-            let actual_addr = server.local_addr()?;
-            tracing::info!("TCP server listening on {} (single-threaded)", actual_addr);
-
-            let node = std::sync::Arc::new(node);
-            server.run_with_handler(move |request| {
-                let node = node.clone();
-                async move {
-                    node.handle_request(&request)
-                }
-            }).await?;
+            let server = madrpc_server::HttpServer::new(std::sync::Arc::new(node));
+            let addr: SocketAddr = args.bind.parse()
+                .map_err(|e| anyhow::anyhow!("Invalid bind address {}: {}", args.bind, e))?;
+            server.run(addr).await?;
 
             Ok(())
         }
@@ -319,19 +313,10 @@ async fn main() -> Result<()> {
 
             tracing::info!("Orchestrator created with {} nodes", orch.node_count().await);
 
-            // Create TCP async server
-            let server = madrpc_common::transport::tcp_server::TcpServer::new(&args.bind).await?;
-            let actual_addr = server.local_addr()?;
-            tracing::info!("TCP server listening on {}", actual_addr);
-
-            // Run server with orchestrator handler (async)
-            let orch_ref = std::sync::Arc::new(orch);
-            server.run_with_handler(move |request| {
-                let orch = orch_ref.clone();
-                async move {
-                    orch.forward_request(&request).await
-                }
-            }).await?;
+            let server = madrpc_orchestrator::HttpServer::new(std::sync::Arc::new(orch));
+            let addr: SocketAddr = args.bind.parse()
+                .map_err(|e| anyhow::anyhow!("Invalid bind address {}: {}", args.bind, e))?;
+            server.run(addr).await?;
 
             Ok(())
         }
