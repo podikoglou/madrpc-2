@@ -123,73 +123,22 @@ cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
 
 ### Calling from JavaScript (Node.js)
 
-You can also call MaDRPC methods from any HTTP client. Here's an example using Node.js:
+You can also call MaDRPC methods from any HTTP client:
 
 ```javascript
-const http = require('http');
-
-// JSON-RPC 2.0 request
-const request = {
-  jsonrpc: "2.0",
-  method: "add",
-  params: { a: 5, b: 3 },
-  id: 1
-};
-
-const data = JSON.stringify(request);
-
-const options = {
-  hostname: '127.0.0.1',
-  port: 8080,
-  path: '/',
+const response = await fetch('http://127.0.0.1:8080', {
   method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Content-Length': data.length
-  }
-};
-
-const req = http.request(options, (res) => {
-  let body = '';
-  res.on('data', (chunk) => { body += chunk; });
-  res.on('end', () => {
-    const response = JSON.parse(body);
-    console.log('Result:', response.result);
-  });
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'add',
+    params: { a: 5, b: 3 },
+    id: 1
+  })
 });
 
-req.on('error', (e) => {
-  console.error(`Problem with request: ${e.message}`);
-});
-
-req.write(data);
-req.end();
-```
-
-Or using the modern `fetch` API (Node.js 18+):
-
-```javascript
-async function callRpc(method, params) {
-  const response = await fetch('http://127.0.0.1:8080', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      method: method,
-      params: params,
-      id: 1
-    })
-  });
-
-  const data = await response.json();
-  return data.result;
-}
-
-// Usage
-const result = await callRpc('add', { a: 5, b: 3 });
-console.log('Result:', result); // { result: 8 }
+const { result } = await response.json();
+console.log(result); // { result: 8 }
 ```
 
 ### Async RPC with Parallel Calls

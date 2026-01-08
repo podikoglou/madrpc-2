@@ -13,10 +13,15 @@ MaDRPC is a Rust-based distributed RPC system that enables massively parallel co
 cargo build --release
 
 # Start an orchestrator (load balancer)
-cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080 -n http://127.0.0.1:9001 -n http://127.0.0.1:9002
+cargo run --bin madrpc -- orchestrator \
+  -b 0.0.0.0:8080 \
+  -n http://127.0.0.1:9001 \
+  -n http://127.0.0.1:9002
 
 # Start a compute node
-cargo run --bin madrpc -- node -s examples/monte-carlo-pi/scripts/pi.js -b 0.0.0.0:9001
+cargo run --bin madrpc -- node \
+  -s examples/monte-carlo-pi/scripts/pi.js \
+  -b 0.0.0.0:9001
 
 # Monitor with real-time metrics TUI
 cargo run --bin madrpc -- top http://127.0.0.1:8080
