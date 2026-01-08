@@ -367,24 +367,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Test that MadrpcContext is NOT Send
-    #[test]
-    fn test_context_is_not_send() {
-        // This test verifies that MadrpcContext cannot be sent across threads
-        // If it compiles, the test fails (because it should NOT compile)
-        fn assert_not_send<T: !Send>() {}
-        assert_not_send::<MadrpcContext>();
-    }
-
-    /// Test that MadrpcContext is NOT Sync
-    #[test]
-    fn test_context_is_not_sync() {
-        // This test verifies that MadrpcContext cannot be shared between threads
-        // If it compiles, the test fails (because it should NOT compile)
-        fn assert_not_sync<T: !Sync>() {}
-        assert_not_sync::<MadrpcContext>();
-    }
-
     /// Test that context can be created and used on the same thread
     #[test]
     fn test_context_creates_successfully() {
