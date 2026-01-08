@@ -17,7 +17,7 @@ Each example is a standalone JavaScript file that can be loaded into a MaDRPC no
 First, start the orchestrator (load balancer):
 
 ```bash
-cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002 -n 127.0.0.1:9003
+cargo run -- orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002 -n 127.0.0.1:9003
 ```
 
 ### 2. Start Compute Nodes
@@ -26,13 +26,13 @@ Start one or more compute nodes with the example script:
 
 ```bash
 # Terminal 1: Node with basic operations
-cargo run --bin madrpc -- node -s examples/basic-operations.js -b 0.0.0.0:9001 --pool-size 4
+cargo run -- node -s examples/basic-operations.js -b 0.0.0.0:9001 --pool-size 4
 
 # Terminal 2: Node with Monte Carlo example
-cargo run --bin madrpc -- node -s examples/monte-carlo-pi.js -b 0.0.0.0:9002 --pool-size 4
+cargo run -- node -s examples/monte-carlo-pi.js -b 0.0.0.0:9002 --pool-size 4
 
 # Terminal 3: Node with distributed wordcount
-cargo run --bin madrpc -- node -s examples/distributed-wordcount.js -b 0.0.0.0:9003 --pool-size 4
+cargo run -- node -s examples/distributed-wordcount.js -b 0.0.0.0:9003 --pool-size 4
 ```
 
 ### 3. Make RPC Calls
@@ -41,15 +41,15 @@ Use the CLI to make RPC calls:
 
 ```bash
 # Basic operations
-cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 10, "b": 5}'
-cargo run --bin madrpc -- call 127.0.0.1:8080 concatenate '{"str1": "Hello", "str2": "World", "separator": " "}'
+cargo run -- call 127.0.0.1:8080 add '{"a": 10, "b": 5}'
+cargo run -- call 127.0.0.1:8080 concatenate '{"str1": "Hello", "str2": "World", "separator": " "}'
 
 # Monte Carlo Pi estimation
-cargo run --bin madrpc -- call 127.0.0.1:8080 aggregate '{"numNodes": 10, "samplesPerNode": 100000}'
-cargo run --bin madrpc -- call 127.0.0.1:8080 estimate_single '{"totalSamples": 1000000}'
+cargo run -- call 127.0.0.1:8080 aggregate '{"numNodes": 10, "samplesPerNode": 100000}'
+cargo run -- call 127.0.0.1:8080 estimate_single '{"totalSamples": 1000000}'
 
 # Distributed wordcount (Map-Reduce)
-cargo run --bin madrpc -- call 127.0.0.1:8080 run_wordcount '{"numChunks": 20, "wordsPerChunk": 500}'
+cargo run -- call 127.0.0.1:8080 run_wordcount '{"numChunks": 20, "wordsPerChunk": 500}'
 ```
 
 ### 4. Monitor Performance (Optional)
@@ -57,7 +57,7 @@ cargo run --bin madrpc -- call 127.0.0.1:8080 run_wordcount '{"numChunks": 20, "
 Use the built-in TUI to monitor real-time metrics:
 
 ```bash
-cargo run --bin madrpc -- top 127.0.0.1:8080
+cargo run -- top 127.0.0.1:8080
 ```
 
 ## Examples
@@ -77,20 +77,20 @@ cargo run --bin madrpc -- top 127.0.0.1:8080
 
 ```bash
 # Number operations
-cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 10, "b": 5}'
-cargo run --bin madrpc -- call 127.0.0.1:8080 divide '{"a": 20, "b": 3}'
+cargo run -- call 127.0.0.1:8080 add '{"a": 10, "b": 5}'
+cargo run -- call 127.0.0.1:8080 divide '{"a": 20, "b": 3}'
 
 # String operations
-cargo run --bin madrpc -- call 127.0.0.1:8080 reverse '{"str": "hello"}'
-cargo run --bin madrpc -- call 127.0.0.1:8080 concatenate '{"str1": "Hello", "str2": "World", "separator": " "}'
+cargo run -- call 127.0.0.1:8080 reverse '{"str": "hello"}'
+cargo run -- call 127.0.0.1:8080 concatenate '{"str1": "Hello", "str2": "World", "separator": " "}'
 
 # JSON operations
-cargo run --bin madrpc -- call 127.0.0.1:8080 merge '{"obj1": {"a": 1}, "obj2": {"b": 2}}'
-cargo run --bin madrpc -- call 127.0.0.1:8080 pick '{"obj": {"name": "Alice", "age": 30, "city": "NYC"}, "fields": ["name", "age"]}'
+cargo run -- call 127.0.0.1:8080 merge '{"obj1": {"a": 1}, "obj2": {"b": 2}}'
+cargo run -- call 127.0.0.1:8080 pick '{"obj": {"name": "Alice", "age": 30, "city": "NYC"}, "fields": ["name", "age"]}'
 
 # Aggregation
-cargo run --bin madrpc -- call 127.0.0.1:8080 math_pipeline '{"initial": 10, "operations": [{"operation": "multiply", "value": 2}, {"operation": "add", "value": 5}]}'
-cargo run --bin madrpc -- call 127.0.0.1:8080 word_count '{"text": "hello world hello rust world"}'
+cargo run -- call 127.0.0.1:8080 math_pipeline '{"initial": 10, "operations": [{"operation": "multiply", "value": 2}, {"operation": "add", "value": 5}]}'
+cargo run -- call 127.0.0.1:8080 word_count '{"text": "hello world hello rust world"}'
 ```
 
 **Best for**: Beginners learning the basics of MaDRPC, understanding the `madrpc.register()` API, and simple request/response patterns.
@@ -118,13 +118,13 @@ cargo run --bin madrpc -- call 127.0.0.1:8080 word_count '{"text": "hello world 
 
 ```bash
 # Distributed estimation (50 parallel calls)
-cargo run --bin madrpc -- call 127.0.0.1:8080 aggregate '{"numNodes": 50, "samplesPerNode": 200000}'
+cargo run -- call 127.0.0.1:8080 aggregate '{"numNodes": 50, "samplesPerNode": 200000}'
 
 # Single-node estimation (for comparison)
-cargo run --bin madrpc -- call 127.0.0.1:8080 estimate_single '{"totalSamples": 10000000}'
+cargo run -- call 127.0.0.1:8080 estimate_single '{"totalSamples": 10000000}'
 
 # Small scale test
-cargo run --bin madrpc -- call 127.0.0.1:8080 aggregate '{"numNodes": 10, "samplesPerNode": 100000}'
+cargo run -- call 127.0.0.1:8080 aggregate '{"numNodes": 10, "samplesPerNode": 100000}'
 ```
 
 **Expected output**: The result will include:
@@ -159,16 +159,16 @@ cargo run --bin madrpc -- call 127.0.0.1:8080 aggregate '{"numNodes": 10, "sampl
 
 ```bash
 # Quick end-to-end run (generates data, processes, and shows results)
-cargo run --bin madrpc -- call 127.0.0.1:8080 run_wordcount '{"numChunks": 20, "wordsPerChunk": 500, "filtered": true}'
+cargo run -- call 127.0.0.1:8080 run_wordcount '{"numChunks": 20, "wordsPerChunk": 500, "filtered": true}'
 
 # Generate sample data
-cargo run --bin madrpc -- call 127.0.0.1:8080 generate_sample_data '{"numChunks": 10, "wordsPerChunk": 1000}'
+cargo run -- call 127.0.0.1:8080 generate_sample_data '{"numChunks": 10, "wordsPerChunk": 1000}'
 
 # Run map-reduce on existing chunks
-cargo run --bin madrpc -- call 127.0.0.1:8080 reduce_wordcount '{"chunks": ["hello world", "world hello"], "filtered": false}'
+cargo run -- call 127.0.0.1:8080 reduce_wordcount '{"chunks": ["hello world", "world hello"], "filtered": false}'
 
 # Benchmark parallel execution
-cargo run --bin madrpc -- call 127.0.0.1:8080 benchmark_wordcount '{"chunks": ["test data here"], "iterations": 3}'
+cargo run -- call 127.0.0.1:8080 benchmark_wordcount '{"chunks": ["test data here"], "iterations": 3}'
 ```
 
 **Expected output**: The result will include:
@@ -215,8 +215,8 @@ To create your own example:
 
 4. **Run your example**:
    ```bash
-   cargo run --bin madrpc -- node -s examples/my-example.js -b 0.0.0.0:9001
-   cargo run --bin madrpc -- call 127.0.0.1:8080 my_function '{"param1": "value1"}'
+   cargo run -- node -s examples/my-example.js -b 0.0.0.0:9001
+   cargo run -- call 127.0.0.1:8080 my_function '{"param1": "value1"}'
    ```
 
 ## Key Concepts

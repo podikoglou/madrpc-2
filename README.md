@@ -67,7 +67,7 @@ You'll need three components:
 **1. Start the orchestrator** (load balancer):
 
 ```bash
-cargo run --bin madrpc -- orchestrator \
+cargo run -- orchestrator \
   -b 0.0.0.0:8080 \
   -n http://127.0.0.1:9001 \
   -n http://127.0.0.1:9002
@@ -77,12 +77,12 @@ cargo run --bin madrpc -- orchestrator \
 
 ```bash
 # Terminal 2
-cargo run --bin madrpc -- node \
+cargo run -- node \
   -s examples/monte-carlo-pi/scripts/pi.js \
   -b 0.0.0.0:9001
 
 # Terminal 3
-cargo run --bin madrpc -- node \
+cargo run -- node \
   -s examples/monte-carlo-pi/scripts/pi.js \
   -b 0.0.0.0:9002
 ```
@@ -90,13 +90,13 @@ cargo run --bin madrpc -- node \
 **3. Make RPC calls** via the CLI:
 
 ```bash
-cargo run --bin madrpc -- call 127.0.0.1:8080 monte_carlo '{"samples": 1000000}'
+cargo run -- call 127.0.0.1:8080 monte_carlo '{"samples": 1000000}'
 ```
 
 **4. Monitor with the TUI** (optional):
 
 ```bash
-cargo run --bin madrpc -- top 127.0.0.1:8080
+cargo run -- top 127.0.0.1:8080
 ```
 
 ## Writing RPCs
@@ -117,7 +117,7 @@ madrpc.register('add', (args) => {
 Call it via the CLI:
 
 ```bash
-cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
+cargo run -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
 # Output: {"result":8}
 ```
 
@@ -176,7 +176,7 @@ madrpc.register('parallel_sum', async (args) => {
 The client makes a single call, and JavaScript handles the parallel orchestration:
 
 ```bash
-cargo run --bin madrpc -- call 127.0.0.1:8080 parallel_sum '{"numNodes": 50, "value": 10}'
+cargo run -- call 127.0.0.1:8080 parallel_sum '{"numNodes": 50, "value": 10}'
 # JavaScript fans out to 50 parallel RPC calls
 ```
 
@@ -261,7 +261,7 @@ const result = madrpc.callSync('otherMethod', {param: 'value'});
 Start the orchestrator (load balancer).
 
 ```bash
-cargo run --bin madrpc -- orchestrator [OPTIONS]
+cargo run -- orchestrator [OPTIONS]
 ```
 
 **Options:**
@@ -276,7 +276,7 @@ cargo run --bin madrpc -- orchestrator [OPTIONS]
 Start a compute node.
 
 ```bash
-cargo run --bin madrpc -- node [OPTIONS]
+cargo run -- node [OPTIONS]
 ```
 
 **Options:**
@@ -290,7 +290,7 @@ cargo run --bin madrpc -- node [OPTIONS]
 Start the metrics TUI (terminal user interface).
 
 ```bash
-cargo run --bin madrpc -- top <ORCHESTRATOR_ADDR>
+cargo run -- top <ORCHESTRATOR_ADDR>
 ```
 
 **Features:**
@@ -304,13 +304,13 @@ cargo run --bin madrpc -- top <ORCHESTRATOR_ADDR>
 Make a single RPC call from the command line.
 
 ```bash
-cargo run --bin madrpc -- call <ORCHESTRATOR_ADDR> <METHOD> <ARGS_JSON>
+cargo run -- call <ORCHESTRATOR_ADDR> <METHOD> <ARGS_JSON>
 ```
 
 **Example:**
 
 ```bash
-cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
+cargo run -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
 ```
 
 ## Wire Protocol
