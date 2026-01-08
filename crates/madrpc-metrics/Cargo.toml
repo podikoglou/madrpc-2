@@ -10,4 +10,4 @@ serde_json = "1.0"
 atomic = "0.6"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
