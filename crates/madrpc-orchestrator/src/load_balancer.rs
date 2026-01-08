@@ -494,6 +494,30 @@ impl LoadBalancer {
             f(node);
         }
     }
+
+    /// Gets per-node metrics for all nodes.
+    ///
+    /// Returns a HashMap of node address to NodeMetrics, including
+    /// request counts and last request times converted to Unix timestamps.
+    pub fn node_metrics(&self) -> std::collections::HashMap<String, madrpc_metrics::NodeMetrics> {
+        use std::time::UNIX_EPOCH;
+
+        self.nodes.values().map(|node| {
+            let last_request_ms = node.last_request_time
+                .and_then(|instant| {
+                    instant.checked_duration_since(UNIX_EPOCH.start)
+                })
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+
+            let metrics = madrpc_metrics::NodeMetrics {
+                node_addr: node.addr.clone(),
+                request_count: node.request_count,
+                last_request_ms,
+            };
+            (node.addr.clone(), metrics)
+        }).collect()
+    }
 }
 
 #[cfg(test)]
