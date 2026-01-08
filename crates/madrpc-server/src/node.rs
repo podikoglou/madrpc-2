@@ -177,7 +177,7 @@ impl Node {
     /// - The method is not registered
     /// - Method execution fails
     /// - Parameters are invalid
-    pub async fn call_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, MadrpcError> {
+    pub async fn call_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         // Create a fresh Boa context for this request
         let mut ctx = if let Some(client) = &self.orchestrator_client {
             let client_clone = (**client).clone();
@@ -208,7 +208,7 @@ impl Node {
     /// # Errors
     ///
     /// Returns an error if metrics collection fails
-    pub async fn get_metrics(&self) -> Result<serde_json::Value, MadrpcError> {
+    pub async fn get_metrics(&self) -> Result<serde_json::Value> {
         let snapshot = self.metrics_collector.snapshot();
         serde_json::to_value(snapshot)
             .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize metrics: {}", e)))
@@ -223,7 +223,7 @@ impl Node {
     /// # Errors
     ///
     /// Returns an error if info collection fails
-    pub async fn get_info(&self) -> Result<serde_json::Value, MadrpcError> {
+    pub async fn get_info(&self) -> Result<serde_json::Value> {
         let uptime_ms = self.metrics_collector.snapshot().uptime_ms;
         let info = madrpc_metrics::ServerInfo::new(madrpc_metrics::ServerType::Node, uptime_ms);
         serde_json::to_value(info)
