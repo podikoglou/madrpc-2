@@ -156,6 +156,79 @@ impl Node {
     pub fn script_path(&self) -> &PathBuf {
         &self.script_path
     }
+
+    /// Calls an RPC method asynchronously.
+    ///
+    /// This method creates a fresh Boa context and executes the requested method.
+    /// It's designed for use by the HTTP server which needs async execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - The name of the method to call
+    /// * `params` - The parameters to pass to the method (as JSON Value)
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the method's return value as a JSON Value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The method is not registered
+    /// - Method execution fails
+    /// - Parameters are invalid
+    pub async fn call_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, MadrpcError> {
+        // Create a fresh Boa context for this request
+        let ctx = if let Some(client) = &self.orchestrator_client {
+            let client_clone = (**client).clone();
+            MadrpcContext::with_client_from_source(&self.script_source, Some(client_clone))?
+        } else {
+            MadrpcContext::from_source(&self.script_source)?
+        };
+
+        // Call the method (this is synchronous but we're in an async context)
+        let start_time = std::time::Instant::now();
+        let result = ctx.call_rpc(method, params);
+
+        // Record metrics
+        match &result {
+            Ok(_) => self.metrics_collector.record_call(method, start_time, true),
+            Err(_) => self.metrics_collector.record_call(method, start_time, false),
+        }
+
+        result
+    }
+
+    /// Gets the current metrics snapshot.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the metrics snapshot as a JSON Value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metrics collection fails
+    pub async fn get_metrics(&self) -> Result<serde_json::Value, MadrpcError> {
+        let snapshot = self.metrics_collector.snapshot();
+        serde_json::to_value(snapshot)
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize metrics: {}", e)))
+    }
+
+    /// Gets server information.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the server info as a JSON Value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if info collection fails
+    pub async fn get_info(&self) -> Result<serde_json::Value, MadrpcError> {
+        let uptime_ms = self.metrics_collector.snapshot().uptime_ms;
+        let info = madrpc_metrics::ServerInfo::new(madrpc_metrics::ServerType::Node, uptime_ms);
+        serde_json::to_value(info)
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize info: {}", e)))
+    }
 }
 
 #[cfg(test)]
