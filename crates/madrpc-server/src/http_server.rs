@@ -37,6 +37,7 @@ use hyper::body::{Bytes, Incoming};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use serde_json::json;
 
 use crate::http_router::NodeRouter;
 use crate::node::Node;
@@ -184,10 +185,11 @@ impl HttpServer {
         let jsonrpc_res = match router.handle_request(jsonrpc_req).await {
             Ok(res) => res,
             Err(e) => {
-                tracing::error!("Error handling request: {}", e);
+                let error_msg = format!("{:?}", e);
+                tracing::error!("Error handling request: {}", error_msg);
                 return Ok(HttpTransport::to_http_error(
                     json!(null),
-                    JsonRpcError::internal_error(&e.to_string())
+                    JsonRpcError::internal_error(&error_msg)
                 ));
             }
         };
