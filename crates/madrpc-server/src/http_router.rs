@@ -26,7 +26,6 @@ use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
 use madrpc_common::protocol::error::MadrpcError;
 use crate::node::Node;
 use std::sync::Arc;
-use serde_json::Value;
 
 /// HTTP router for MaDRPC node.
 ///

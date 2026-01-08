@@ -19,9 +19,30 @@
 //! cloned Arc, ensuring proper reference counting and lifetime management.
 
 use boa_engine::{Context, js_string, native_function::NativeFunction, value::JsValue, object::{JsObject, FunctionObjectBuilder, builtins::JsPromise}, JsNativeError, job::Job};
+use boa_gc::{Finalize, Trace, custom_trace};
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use crate::runtime::conversions::{json_to_js_value, js_value_to_json};
 use std::sync::{Arc, Mutex, OnceLock};
+
+/// Wrapper for Arc<MadrpcClient> that implements Trace for use with Boa closures.
+///
+/// # Safety
+///
+/// This wrapper uses an empty Trace implementation because Arc<MadrpcClient>
+/// is reference-counted and doesn't participate in Boa's garbage collection.
+/// The Arc ensures the client lives as long as needed, and we don't need
+/// to trace through it for GC purposes.
+#[derive(Clone, Finalize)]
+struct ClientWrapper(Arc<madrpc_client::MadrpcClient>);
+
+// SAFETY: We implement an empty Trace because Arc<MadrpcClient> is reference-counted
+// and doesn't contain any garbage-collected objects that need to be traced.
+// The Arc ensures the client lives as long as needed.
+unsafe impl Trace for ClientWrapper {
+    custom_trace!(this, _mark, {
+        // Empty - we don't trace through the Arc since it's not garbage-collected
+    });
+}
 
 /// Global tokio runtime for blocking calls.
 ///
@@ -180,17 +201,18 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
     // Only register async call and setOrchestrator if we have a client
     if let Some(client_arc) = client {
-        // Clone the Arc to move into the closure
-        let client_clone_for_closure = client_arc.clone();
+        // Wrap the client for use with Boa closures
+        let client_wrapper = ClientWrapper(Arc::clone(&client_arc));
+        let client_wrapper_sync = client_wrapper.clone();
 
         // Register native `madrpc.call` function using NativeFunction::from_copy_closure_with_captures
         // This uses the existing tokio runtime and properly integrates with Boa's job queue
         let call_fn = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
-                move |_this, args: &[JsValue], client_captured: &Arc<madrpc_client::MadrpcClient>, context| {
+                move |_this, args: &[JsValue], client_wrapper: &ClientWrapper, context| {
                     // Clone the Arc for this async operation
-                    let client_clone = Arc::clone(&client_captured);
+                    let client_clone = client_wrapper.0.clone();
 
                     // Validate and extract arguments (synchronous part)
                     let method = match args.get(0).and_then(|v| v.as_string()) {
@@ -245,7 +267,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
                     Ok(promise.into())
                 },
-                client_clone_for_closure,
+                client_wrapper,
             ),
         ).build();
 
@@ -259,9 +281,9 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
         let call_sync_fn = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
-                move |_this, args: &[JsValue], client_captured: &Arc<madrpc_client::MadrpcClient>, context| {
+                move |_this, args: &[JsValue], client_wrapper: &ClientWrapper, context| {
                     // Clone the Arc for this call
-                    let client_clone = Arc::clone(&client_captured);
+                    let client_clone = client_wrapper.0.clone();
 
                     // Validate arguments
                     let method = args.get(0)
@@ -299,7 +321,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
                     Ok(result)
                 },
-                client_clone_for_closure,
+                client_wrapper_sync,
             ),
         ).build();
 

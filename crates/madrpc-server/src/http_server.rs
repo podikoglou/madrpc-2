@@ -28,12 +28,10 @@
 //! }
 //! ```
 
-use hyper::{Request, Response};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use http_body_util::Full;
-use hyper::body::{Bytes, Incoming};
+use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -41,7 +39,7 @@ use serde_json::json;
 
 use crate::http_router::NodeRouter;
 use crate::node::Node;
-use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use madrpc_common::protocol::{JsonRpcError};
 use madrpc_common::protocol::error::MadrpcError;
 use madrpc_common::transport::{HttpTransport, HyperRequest, HyperResponse};
 
