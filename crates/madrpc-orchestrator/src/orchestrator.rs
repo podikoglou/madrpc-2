@@ -1,6 +1,5 @@
 use madrpc_common::protocol::{Request, Response};
 use madrpc_common::protocol::error::{MadrpcError, Result};
-use madrpc_common::transport::TcpTransportAsync;
 use madrpc_metrics::{MetricsCollector, OrchestratorMetricsCollector};
 use crate::load_balancer::LoadBalancer;
 use crate::node::Node;
@@ -67,17 +66,15 @@ impl Default for RetryConfig {
 /// 4. **Request Forwarding**: Forward requests and return responses
 /// 5. **Retry Logic**: Retry failed requests with exponential backoff
 ///
-/// # Connection-per-Request Strategy
+/// # HTTP Request Strategy
 ///
-/// The orchestrator creates a new TCP connection for each request rather than
-/// maintaining a connection pool. This design choice enables:
+/// The orchestrator uses HTTP for all communication with nodes via JSON-RPC.
+/// This design choice enables:
 ///
 /// - **True Parallelism**: Multiple requests to the same node execute concurrently
 /// - **Simplified State Management**: No need to manage shared connection lifecycles
-/// - **Fault Isolation**: Connection failures don't affect other requests
-///
-/// The overhead of connection creation is acceptable because the orchestrator
-/// typically runs in the same network as nodes (low latency).
+/// - **Fault Isolation**: Request failures don't affect other requests
+/// - **Standard Protocol**: HTTP is well-understood and easy to debug
 ///
 /// # Metrics and Monitoring
 ///
@@ -88,8 +85,6 @@ impl Default for RetryConfig {
 pub struct Orchestrator {
     /// Thread-safe load balancer with circuit breaker
     load_balancer: Arc<RwLock<LoadBalancer>>,
-    /// Async TCP transport for connections to nodes
-    transport: TcpTransportAsync,
     /// Metrics collector for monitoring
     metrics_collector: Arc<OrchestratorMetricsCollector>,
     /// Retry configuration for failed requests
@@ -173,7 +168,6 @@ impl Orchestrator {
         retry_config: RetryConfig,
     ) -> Result<Self> {
         let load_balancer = Arc::new(RwLock::new(LoadBalancer::new(node_addrs)));
-        let transport = TcpTransportAsync::new()?;
 
         // Initialize metrics
         let metrics_collector = Arc::new(OrchestratorMetricsCollector::new());
@@ -186,7 +180,6 @@ impl Orchestrator {
 
         Ok(Self {
             load_balancer,
-            transport,
             metrics_collector,
             retry_config,
             _health_checker_handle: Some(health_checker_handle),
@@ -201,14 +194,13 @@ impl Orchestrator {
     /// 2. **Load balancing**: Selects next node via round-robin
     /// 3. **Circuit breaking**: Skips nodes with Open circuits
     /// 4. **Retry logic**: Retries failed requests with exponential backoff
-    /// 5. **Connection-per-request**: Creates fresh connection for each request
+    /// 5. **HTTP requests**: Creates fresh HTTP request for each node request
     /// 6. **Metrics collection**: Records request latency and success rate
     ///
-    /// # Connection-per-Request Strategy
+    /// # HTTP Request Strategy
     ///
-    /// Each request creates its own TCP connection to avoid serialization through
-    /// shared Arc<Mutex<TcpStream>>. This enables true parallelism when multiple
-    /// requests target the same node.
+    /// Each request creates its own HTTP connection via hyper client. This enables
+    /// true parallelism when multiple requests target the same node.
     ///
     /// # Retry Logic
     ///
@@ -254,78 +246,19 @@ impl Orchestrator {
                 .handle_metrics_request(&request.method, request.id);
         }
 
-        let start_time = Instant::now();
-        let method = request.method.clone();
-        let mut backoff_ms = self.retry_config.initial_backoff_ms;
+        // Convert old Request to JSON-RPC format
+        let jsonrpc_request = madrpc_common::protocol::JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: request.method.clone(),
+            params: request.args.clone(),
+            id: request.id.into(),
+        };
 
-        // Retry loop with exponential backoff
-        for attempt in 0..=self.retry_config.max_retries {
-            // Get next node via round-robin
-            let node_addr = {
-                let mut lb = self.load_balancer.write().await;
-                lb.next_node().ok_or_else(|| {
-                    if attempt < self.retry_config.max_retries {
-                        MadrpcError::NodeUnavailable(
-                            format!("No available nodes (attempt {}/{})",
-                                attempt + 1, self.retry_config.max_retries + 1)
-                        )
-                    } else {
-                        MadrpcError::AllNodesFailed
-                    }
-                })?
-            };
+        // Forward using JSON-RPC
+        let result = self.forward_request_jsonrpc(jsonrpc_request).await?;
 
-            // Track which node received the request
-            self.metrics_collector.record_node_request(&node_addr);
-
-            // Try to connect to the node
-            let mut stream = match self.transport.connect(&node_addr).await {
-                Ok(s) => s,
-                Err(e) if attempt < self.retry_config.max_retries => {
-                    tracing::warn!(
-                        "Connection to {} failed (attempt {}): {}, retrying in {}ms",
-                        node_addr, attempt + 1, e, backoff_ms
-                    );
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    backoff_ms = std::cmp::min(
-                        (backoff_ms as f64 * self.retry_config.backoff_multiplier) as u64,
-                        self.retry_config.max_backoff_ms
-                    );
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
-
-            // Try to send the request
-            let response = self.transport.send_request(&mut stream, request).await;
-            let success = response.is_ok();
-
-            // If request failed and we have retries left, check if it's retryable
-            if let Err(ref e) = response {
-                if attempt < self.retry_config.max_retries && self.is_retryable(e) {
-                    tracing::warn!(
-                        "Request to {} failed (attempt {}): {}, retrying in {}ms",
-                        node_addr, attempt + 1, e, backoff_ms
-                    );
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    backoff_ms = std::cmp::min(
-                        (backoff_ms as f64 * self.retry_config.backoff_multiplier) as u64,
-                        self.retry_config.max_backoff_ms
-                    );
-                    continue;
-                }
-            }
-
-            // Connection is closed here when stream is dropped
-
-            // Record metrics based on response
-            let response = response?;
-            self.metrics_collector.record_call(&method, start_time, success);
-            return Ok(response);
-        }
-
-        // This should never be reached since we either return Ok or break with Err
-        unreachable!("Retry loop should always return or error")
+        // Convert result back to Response
+        Ok(Response::success(request.id, result))
     }
 
     /// Checks if an error is retryable.
