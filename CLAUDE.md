@@ -89,7 +89,6 @@ madrpc-2/
   - `error.rs` - `MadrpcError` enum with retryable error classification
 - `src/transport/` - HTTP transport
   - `http.rs` - HTTP transport using hyper/axum
-  - `tcp.rs` - Legacy TCP transport (deprecated)
 
 **Key Types**:
 ```rust
@@ -115,6 +114,8 @@ pub enum MadrpcError { /* Transport, JsonSerialization, Timeout, etc. */ }
   - `bindings.rs` - JavaScript bindings (`madrpc.register`, `madrpc.call`)
   - `conversions.rs` - JSON ↔ JavaScript value conversions
   - `job_executor.rs` - Tokio integration for async JavaScript
+- `src/http_router.rs` - HTTP router with axum
+- `src/http_server.rs` - HTTP server using hyper
 
 **Critical Implementation Details**:
 - **Thread Safety**: Each request creates a fresh Boa Context to enable true parallelism
@@ -130,17 +131,18 @@ pub enum MadrpcError { /* Transport, JsonSerialization, Timeout, etc. */ }
 - `src/load_balancer.rs` - Round-robin selection with circuit breaker
 - `src/node.rs` - Node state management with health tracking
 - `src/health_checker.rs` - Periodic health checks
+- `src/http_router.rs` - HTTP router with fallback forwarding
+- `src/http_server.rs` - HTTP server using axum
 
 **Circuit Breaker**: Exponential backoff with configurable failure threshold, timeout, and multiplier.
 
 ### `crates/madrpc-client` - RPC Client
 
-**Purpose**: Client for making RPC calls with connection pooling and retry logic
+**Purpose**: Client for making RPC calls with automatic retry logic
 
 **Where to find what**:
 - `src/lib.rs` - Public API exports
-- `src/client.rs` - Main `MadrpcClient` with retry logic
-- `src/pool.rs` - TCP connection pooling with timeout and validation
+- `src/client.rs` - Main `MadrpcClient` with retry logic and HTTP client
 
 **Retry Logic**: Exponential backoff with jitter for transient errors (network issues, timeouts).
 
@@ -227,7 +229,7 @@ madrpc.register('aggregate', async (args) => {
 
 **Retryable Errors** (transient):
 - Network issues, timeouts, connection failures
-- Node unavailable, pool exhaustion
+- Node unavailable
 
 **Non-Retryable Errors** (permanent):
 - Invalid requests, JavaScript execution errors
