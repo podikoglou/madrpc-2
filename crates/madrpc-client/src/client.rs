@@ -1,11 +1,11 @@
-use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse};
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use hyper::{Client, Request as HttpRequest, Method};
-use hyper::body::{Bytes, Incoming};
-use hyper_util::client::legacy::connect::HttpConnector;
+use hyper::{Request as HttpRequest, Method};
+use hyper::body::Bytes;
+use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use http_body_util::{Full, BodyExt};
 use std::sync::Arc;
 
