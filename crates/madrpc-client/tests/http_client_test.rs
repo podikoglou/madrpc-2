@@ -13,11 +13,11 @@ use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
-use hyper::{Response, Body, Request, StatusCode};
+use hyper::{Response, Request, StatusCode};
 use hyper::service::service_fn;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use http_body_util::Full;
+use http_body_util::{Full, BodyExt};
 use hyper::body::{Bytes, Incoming};
 
 /// Test JSON-RPC server that runs on a separate task
