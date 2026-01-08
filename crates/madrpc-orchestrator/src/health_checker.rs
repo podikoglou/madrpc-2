@@ -1,4 +1,4 @@
-use madrpc_common::protocol::Request;
+use madrpc_common::protocol::{Request, JsonRpcRequest, JsonRpcResponse, JsonRpcError};
 use madrpc_common::protocol::error::{MadrpcError, Result as MadrpcResult};
 use madrpc_common::transport::TcpTransportAsync;
 use std::sync::Arc;
@@ -186,15 +186,14 @@ impl HealthChecker {
         }
     }
 
-    /// Check a single node's health via TCP.
+    /// Check a single node's health via HTTP.
     ///
     /// This performs the actual health check by:
-    /// 1. Opening TCP connection (with timeout)
-    /// 2. Sending `_info` request (built-in Madrpc method)
-    /// 3. Verifying response success
+    /// 1. Sending HTTP GET request to `http://{addr}/__health`
+    /// 2. Verifying response is successful (status code 200)
     ///
     /// # Arguments
-    /// * `transport` - TCP transport to use
+    /// * `transport` - TCP transport to use (kept for compatibility, not used in HTTP mode)
     /// * `addr` - Node address to connect to
     /// * `timeout` - Maximum time to wait for connection and response
     ///
@@ -206,24 +205,35 @@ impl HealthChecker {
         addr: &str,
         timeout: Duration,
     ) -> MadrpcResult<()> {
-        // Connect with timeout
-        let connect_future = transport.connect(addr);
-        let mut stream = tokio::time::timeout(timeout, connect_future)
-            .await
-            .map_err(|_| MadrpcError::Timeout(timeout.as_millis() as u64))??;
+        use hyper::{Request, Body};
+        use hyper_util::client::legacy::{Client, Connect};
+        use hyper_util::rt::TokioExecutor;
+        use http_body_util::Full;
+        use hyper::body::Bytes;
 
-        // Send _info request with timeout
-        let request = Request::new("_info", serde_json::json!({}));
-        let send_future = transport.send_request(&mut stream, &request);
-        let response = tokio::time::timeout(timeout, send_future)
+        // Build HTTP health check request
+        let url = format!("http://{}/__health", addr);
+        let http_request = Request::builder()
+            .method("GET")
+            .uri(&url)
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| MadrpcError::Transport(format!("Failed to build health check request: {}", e)))?;
+
+        // Create HTTP client
+        let client = Client::builder(TokioExecutor::new()).build_http();
+
+        // Send request with timeout
+        let response_future = client.request(http_request);
+        let response = tokio::time::timeout(timeout, response_future)
             .await
-            .map_err(|_| MadrpcError::Timeout(timeout.as_millis() as u64))??;
+            .map_err(|_| MadrpcError::Timeout(timeout.as_millis() as u64))?
+            .map_err(|e| MadrpcError::Transport(format!("HTTP health check failed: {}", e)))?;
 
         // Verify response is successful
-        if !response.success {
+        if response.status() != hyper::StatusCode::OK {
             return Err(MadrpcError::NodeUnavailable(format!(
-                "Health check failed: {}",
-                response.error.unwrap_or_else(|| "Unknown error".to_string())
+                "Health check returned status: {}",
+                response.status()
             )));
         }
 

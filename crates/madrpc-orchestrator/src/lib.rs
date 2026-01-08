@@ -82,8 +82,12 @@ pub mod load_balancer;
 pub mod node;
 pub mod health_checker;
 pub mod orchestrator;
+pub mod http_router;
+pub mod http_server;
 
 pub use load_balancer::LoadBalancer;
 pub use node::{Node, DisableReason, HealthCheckStatus, CircuitBreakerState, CircuitBreakerConfig};
 pub use health_checker::{HealthChecker, HealthCheckConfig};
 pub use orchestrator::{Orchestrator, RetryConfig};
+pub use http_router::OrchestratorRouter;
+pub use http_server::HttpServer;

@@ -457,6 +457,219 @@ impl Orchestrator {
         let lb = self.load_balancer.read().await;
         lb.nodes()
     }
+
+    // ============================================================================
+    // HTTP/JSON-RPC Methods
+    // ============================================================================
+
+    /// Forwards a JSON-RPC request to a node via HTTP.
+    ///
+    /// This is the HTTP/JSON-RPC version of `forward_request` that:
+    /// 1. Uses the load balancer to select the next node
+    /// 2. Makes an HTTP POST request to the node
+    /// 3. Returns the result as a serde_json::Value
+    ///
+    /// # Arguments
+    /// * `req` - JSON-RPC request to forward
+    ///
+    /// # Returns
+    /// - `Ok(Value)` - Result from the node
+    /// - `Err(MadrpcError)` - Error if forwarding fails
+    pub async fn forward_request_jsonrpc(
+        &self,
+        req: madrpc_common::protocol::JsonRpcRequest,
+    ) -> Result<serde_json::Value, MadrpcError> {
+        let start_time = Instant::now();
+        let method = req.method.clone();
+        let mut backoff_ms = self.retry_config.initial_backoff_ms;
+
+        // Retry loop with exponential backoff
+        for attempt in 0..=self.retry_config.max_retries {
+            // Get next node via round-robin
+            let node_addr = {
+                let mut lb = self.load_balancer.write().await;
+                lb.next_node().ok_or_else(|| {
+                    if attempt < self.retry_config.max_retries {
+                        MadrpcError::NodeUnavailable(format!(
+                            "No available nodes (attempt {}/{})",
+                            attempt + 1,
+                            self.retry_config.max_retries + 1
+                        ))
+                    } else {
+                        MadrpcError::AllNodesFailed
+                    }
+                })?
+            };
+
+            // Track which node received the request
+            self.metrics_collector.record_node_request(&node_addr);
+
+            // Try to send the request via HTTP
+            let response = self.send_http_request(&node_addr, &req).await;
+            let success = response.is_ok();
+
+            // If request failed and we have retries left, check if it's retryable
+            if let Err(ref e) = response {
+                if attempt < self.retry_config.max_retries && self.is_retryable(e) {
+                    tracing::warn!(
+                        "HTTP request to {} failed (attempt {}): {}, retrying in {}ms",
+                        node_addr,
+                        attempt + 1,
+                        e,
+                        backoff_ms
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = std::cmp::min(
+                        (backoff_ms as f64 * self.retry_config.backoff_multiplier) as u64,
+                        self.retry_config.max_backoff_ms,
+                    );
+                    continue;
+                }
+            }
+
+            // Record metrics based on response
+            let response = response?;
+            self.metrics_collector.record_call(&method, start_time, success);
+            return Ok(response);
+        }
+
+        // This should never be reached since we either return Ok or break with Err
+        unreachable!("Retry loop should always return or error")
+    }
+
+    /// Sends an HTTP POST request to a node.
+    ///
+    /// # Arguments
+    /// * `node_addr` - Node address (e.g., "127.0.0.1:9001")
+    /// * `req` - JSON-RPC request to send
+    ///
+    /// # Returns
+    /// - `Ok(Value)` - Result from the node
+    /// - `Err(MadrpcError)` - Error if the request fails
+    async fn send_http_request(
+        &self,
+        node_addr: &str,
+        req: &madrpc_common::protocol::JsonRpcRequest,
+    ) -> Result<serde_json::Value, MadrpcError> {
+        use hyper::{Request, Body};
+        use hyper_util::client::legacy::{Client, Connect};
+        use hyper_util::rt::TokioExecutor;
+        use http_body_util::Full;
+        use hyper::body::Bytes;
+
+        // Build HTTP request
+        let url = format!("http://{}/", node_addr);
+        let body = serde_json::to_vec(req)
+            .map_err(|e| MadrpcError::JsonSerialization(e))?;
+
+        let http_request = Request::builder()
+            .method("POST")
+            .uri(&url)
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| MadrpcError::Transport(format!("Failed to build request: {}", e)))?;
+
+        // Create HTTP client
+        let client = Client::builder(TokioExecutor::new()).build_http();
+
+        // Send request with timeout
+        let timeout = Duration::from_secs(30);
+        let response_future = client.request(http_request);
+        let response = tokio::time::timeout(timeout, response_future)
+            .await
+            .map_err(|_| MadrpcError::Timeout(timeout.as_millis() as u64))?
+            .map_err(|e| MadrpcError::Transport(format!("HTTP request failed: {}", e)))?;
+
+        // Read response body
+        let body_bytes = hyper::body::to_bytes(response.into_body())
+            .await
+            .map_err(|e| MadrpcError::Transport(format!("Failed to read response: {}", e)))?;
+
+        // Parse JSON-RPC response
+        let jsonrpc_response: madrpc_common::protocol::JsonRpcResponse =
+            serde_json::from_slice(&body_bytes)
+                .map_err(|e| MadrpcError::JsonSerialization(e))?;
+
+        // Extract result or error
+        if let Some(error) = jsonrpc_response.error {
+            return Err(MadrpcError::JavaScriptExecution(error.message));
+        }
+
+        jsonrpc_response.result.ok_or_else(|| {
+            MadrpcError::Transport("Response missing result".to_string())
+        })
+    }
+
+    /// Gets orchestrator metrics as a JSON value.
+    ///
+    /// Returns metrics including:
+    /// - Request counts per node
+    /// - Method call statistics
+    /// - Node health status
+    ///
+    /// # Returns
+    /// - `Ok(Value)` - Metrics data
+    /// - `Err(MadrpcError)` - Error if metrics collection fails
+    pub async fn get_metrics(&self) -> Result<serde_json::Value, MadrpcError> {
+        let nodes = self.nodes_with_status().await;
+        let snapshot = self.metrics_collector.get_snapshot();
+
+        let nodes_data: Vec<serde_json::Value> = nodes
+            .into_iter()
+            .map(|node| {
+                serde_json::json!({
+                    "addr": node.addr,
+                    "enabled": node.enabled,
+                    "circuit_state": format!("{:?}", node.circuit_state),
+                    "consecutive_failures": node.consecutive_failures,
+                    "last_health_check": node.last_health_check_status
+                        .map(|s| format!("{:?}", s))
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "nodes": nodes_data,
+            "metrics": snapshot.to_json()
+        }))
+    }
+
+    /// Gets orchestrator information as a JSON value.
+    ///
+    /// Returns information including:
+    /// - Node count and addresses
+    /// - Load balancer state
+    /// - Circuit breaker states
+    ///
+    /// # Returns
+    /// - `Ok(Value)` - Info data
+    /// - `Err(MadrpcError)` - Error if info collection fails
+    pub async fn get_info(&self) -> Result<serde_json::Value, MadrpcError> {
+        let nodes = self.nodes_with_status().await;
+        let enabled_nodes: Vec<&Node> = nodes.iter().filter(|n| n.enabled).collect();
+
+        let nodes_data: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|node| {
+                serde_json::json!({
+                    "addr": node.addr,
+                    "enabled": node.enabled,
+                    "disable_reason": node.disable_reason.map(|r| format!("{:?}", r)),
+                    "circuit_state": format!("{:?}", node.circuit_state),
+                    "consecutive_failures": node.consecutive_failures,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "type": "orchestrator",
+            "version": env!("CARGO_PKG_VERSION"),
+            "total_nodes": nodes.len(),
+            "enabled_nodes": enabled_nodes.len(),
+            "disabled_nodes": nodes.len() - enabled_nodes.len(),
+            "nodes": nodes_data,
+        }))
+    }
 }
 
 #[cfg(test)]
