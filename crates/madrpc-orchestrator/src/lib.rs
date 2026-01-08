@@ -11,22 +11,20 @@
 //!
 //! 1. **Load Balancing**: Distribute requests across nodes using round-robin selection
 //! 2. **Circuit Breaking**: Prevent cascading failures by skipping unhealthy nodes
-//! 3. **Health Checking**: Periodically verify node availability via TCP connections
+//! 3. **Health Checking**: Periodically verify node availability via HTTP
 //! 4. **Request Forwarding**: Forward requests to selected nodes and return responses
 //!
 //! # Key Design Decisions
 //!
-//! ## Connection-per-Request Strategy
+//! ## HTTP Request Strategy
 //!
-//! The orchestrator creates a new TCP connection for each request rather than maintaining
-//! a connection pool. This design choice enables:
+//! The orchestrator uses HTTP/1.1 with keep-alive for efficient connection reuse via hyper's
+//! connection pool. This design choice enables:
 //!
 //! - **True Parallelism**: Multiple requests to the same node execute concurrently
-//! - **Simplified State Management**: No need to manage shared connection lifecycles
+//! - **Automatic Connection Pooling**: Hyper's HTTP/1.1 keep-alive handles connection reuse
 //! - **Fault Isolation**: Connection failures don't affect other requests
-//!
-//! The overhead of connection creation is acceptable because the orchestrator typically
-//! runs on the same machine as nodes or in a low-latency network environment.
+//! - **Standard Protocol**: Uses well-understood HTTP with JSON-RPC 2.0
 //!
 //! ## Circuit Breaker Pattern
 //!
@@ -62,8 +60,8 @@
 //!
 //! let orchestrator = Orchestrator::with_config(
 //!     vec![
-//!         "127.0.0.1:9001".to_string(),
-//!         "127.0.0.1:9002".to_string(),
+//!         "http://127.0.0.1:9001".to_string(),
+//!         "http://127.0.0.1:9002".to_string(),
 //!     ],
 //!     health_config,
 //! ).await?;
@@ -72,8 +70,8 @@
 //! // let response = orchestrator.forward_request(&request).await?;
 //!
 //! // Manually manage nodes
-//! orchestrator.disable_node("127.0.0.1:9001").await;
-//! orchestrator.add_node("127.0.0.1:9003".to_string()).await;
+//! orchestrator.disable_node("http://127.0.0.1:9001").await;
+//! orchestrator.add_node("http://127.0.0.1:9003".to_string()).await;
 //! # Ok(())
 //! # }
 //! ```
