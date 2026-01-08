@@ -7,9 +7,9 @@ MaDRPC is an experimental distributed RPC system that enables massively parallel
 MaDRPC allows you to write JavaScript functions that can be called remotely via RPC, with support for async/await and parallel execution across multiple compute nodes. The system uses:
 
 - **Boa** - A pure Rust JavaScript engine for executing user code
-- **TCP** - For transport with JSON serialization
-- **Tokio** - Async runtime for orchestrator and client
-- **Native threads** - For parallel compute node execution
+- **HTTP/JSON-RPC 2.0** - Standard HTTP protocol with JSON-RPC 2.0 for transport
+- **Tokio** - Async runtime for all components
+- **Hyper/Axum** - HTTP server and client libraries
 
 ### What Makes It Interesting
 
@@ -17,7 +17,7 @@ MaDRPC allows you to write JavaScript functions that can be called remotely via 
 
 **"Stupid" Orchestrator**: The orchestrator is a simple round-robin load balancer that just forwards requests. It doesn't execute JavaScript or maintain complex state - it's a thin, efficient proxy.
 
-**Thread-Per-Connection Nodes**: Each compute node spawns a dedicated OS thread per connection (limited by a semaphore), with each request getting a fresh Boa Context for true parallelism.
+**Async Request Handling**: Each component uses tokio async runtime with HTTP/1.1 keep-alive for efficient connection management. Nodes create a fresh Boa Context per request for true parallelism.
 
 **Built-in Metrics**: All components expose metrics via `_metrics` and `_info` endpoints, with a terminal UI (`top` command) for real-time monitoring.
 
@@ -25,10 +25,10 @@ MaDRPC allows you to write JavaScript functions that can be called remotely via 
 
 ```mermaid
 graph LR
-    Client[Client] -->|TCP+JSON| Orch[Orchestrator]
-    Orch --> N1[Node 1]
-    Orch --> N2[Node 2]
-    Orch --> N3[Node 3]
+    Client[Client] -->|HTTP POST| Orch[Orchestrator]
+    Orch -->|HTTP POST| N1[Node 1]
+    Orch -->|HTTP POST| N2[Node 2]
+    Orch -->|HTTP POST| N3[Node 3]
 
     N1 -.->|madrpc.call| Orch
     N2 -.->|madrpc.call| Orch
@@ -69,8 +69,8 @@ You'll need three components:
 ```bash
 cargo run --bin madrpc -- orchestrator \
   -b 0.0.0.0:8080 \
-  -n 127.0.0.1:9001 \
-  -n 127.0.0.1:9002
+  -n http://127.0.0.1:9001 \
+  -n http://127.0.0.1:9002
 ```
 
 **2. Start compute nodes** (in separate terminals):
@@ -119,6 +119,77 @@ Call it via the CLI:
 ```bash
 cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
 # Output: {"result":8}
+```
+
+### Calling from JavaScript (Node.js)
+
+You can also call MaDRPC methods from any HTTP client. Here's an example using Node.js:
+
+```javascript
+const http = require('http');
+
+// JSON-RPC 2.0 request
+const request = {
+  jsonrpc: "2.0",
+  method: "add",
+  params: { a: 5, b: 3 },
+  id: 1
+};
+
+const data = JSON.stringify(request);
+
+const options = {
+  hostname: '127.0.0.1',
+  port: 8080,
+  path: '/',
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Content-Length': data.length
+  }
+};
+
+const req = http.request(options, (res) => {
+  let body = '';
+  res.on('data', (chunk) => { body += chunk; });
+  res.on('end', () => {
+    const response = JSON.parse(body);
+    console.log('Result:', response.result);
+  });
+});
+
+req.on('error', (e) => {
+  console.error(`Problem with request: ${e.message}`);
+});
+
+req.write(data);
+req.end();
+```
+
+Or using the modern `fetch` API (Node.js 18+):
+
+```javascript
+async function callRpc(method, params) {
+  const response = await fetch('http://127.0.0.1:8080', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: method,
+      params: params,
+      id: 1
+    })
+  });
+
+  const data = await response.json();
+  return data.result;
+}
+
+// Usage
+const result = await callRpc('add', { a: 5, b: 3 });
+console.log('Result:', result); // { result: 8 }
 ```
 
 ### Async RPC with Parallel Calls
@@ -295,22 +366,21 @@ cargo run --bin madrpc -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
 
 ## Wire Protocol
 
-MaDRPC uses a simple TCP-based protocol:
+MaDRPC uses standard HTTP/JSON-RPC 2.0:
 
-1. **Transport:** TCP with keep-alive connections
-2. **Serialization:** JSON
-3. **Message Format:** `[4-byte length prefix (u32 big-endian)] + [JSON data]`
-4. **Max Message Size:** 100 MB
+1. **Transport:** HTTP/1.1
+2. **Protocol:** JSON-RPC 2.0 specification
+3. **Serialization:** JSON
+4. **Content-Type:** application/json
 
 ### Request Format
 
 ```json
 {
-  "id": 12345,
+  "jsonrpc": "2.0",
   "method": "myMethod",
-  "args": {"param1": "value1"},
-  "timeout_ms": 5000,
-  "idempotency_key": "optional-uuid"
+  "params": {"param1": "value1"},
+  "id": 12345
 }
 ```
 
@@ -318,10 +388,23 @@ MaDRPC uses a simple TCP-based protocol:
 
 ```json
 {
-  "id": 12345,
+  "jsonrpc": "2.0",
   "result": {"field": "value"},
-  "error": null,
-  "success": true
+  "id": 12345
+}
+```
+
+### Error Response Format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32600,
+    "message": "Invalid Request",
+    "data": "detailed error information"
+  },
+  "id": 12345
 }
 ```
 
@@ -348,7 +431,6 @@ The client automatically retries transient errors with exponential backoff:
 - Timeouts
 - Connection failures
 - Node unavailable
-- Pool exhaustion
 
 ### Circuit Breaker
 
