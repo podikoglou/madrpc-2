@@ -10,5 +10,4 @@ thiserror = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 hyper = { version = "1.5", features = ["http1"] }
-hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
