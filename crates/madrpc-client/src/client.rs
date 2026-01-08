@@ -478,10 +478,8 @@ impl MadrpcClient {
             return Err(err);
         }
 
-        // Return the result
-        jsonrpc_res.result.ok_or_else(|| {
-            MadrpcError::InvalidResponse("Missing result in successful response".to_string())
-        })
+        // Return the result (null results are valid in JSON-RPC)
+        Ok(jsonrpc_res.result.unwrap_or(Value::Null))
     }
 }
 
