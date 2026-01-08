@@ -15,7 +15,7 @@ MaDRPC allows you to write JavaScript functions that can be called remotely via 
 
 **JavaScript-Driven Parallelism**: Unlike traditional RPC systems where the client orchestrates parallel work, MaDRPC lets JavaScript functions make async RPC calls to other nodes. This means you can write distributed algorithms entirely in JavaScript using `async/await` and `Promise.all()`.
 
-**"Stupid" Orchestrator**: The orchestrator is a simple round-robin load balancer that just forwards requests. It doesn't execute JavaScript or maintain complex state - it's a thin, efficient proxy.
+**Simple Orchestrator**: The orchestrator is a round-robin load balancer that forwards requests. It doesn't execute JavaScript or maintain complex state - it's a thin, efficient proxy.
 
 **Async Request Handling**: Each component uses tokio async runtime with HTTP/1.1 keep-alive for efficient connection management. Nodes create a fresh Boa Context per request for true parallelism.
 

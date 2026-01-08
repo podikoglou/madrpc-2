@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! The orchestrator is a "stupid forwarder" - it does NOT execute JavaScript code or have
+//! The orchestrator is a simple forwarder - it does NOT execute JavaScript code or have
 //! a Boa engine. Its only responsibilities are:
 //!
 //! 1. **Load Balancing**: Distribute requests across nodes using round-robin selection
