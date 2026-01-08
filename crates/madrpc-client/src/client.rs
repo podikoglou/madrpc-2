@@ -428,10 +428,15 @@ impl MadrpcClient {
         // Check HTTP status code
         let status = http_response.status();
         if !status.is_success() {
-            return Err(MadrpcError::InvalidResponse(format!(
-                "HTTP error: {}",
-                status
-            )));
+            // HTTP errors are retryable for server errors (5xx)
+            if status.is_server_error() {
+                return Err(MadrpcError::Transport(format!("HTTP error: {}", status)));
+            } else {
+                return Err(MadrpcError::InvalidResponse(format!(
+                    "HTTP error: {}",
+                    status
+                )));
+            }
         }
 
         // Collect the response body
