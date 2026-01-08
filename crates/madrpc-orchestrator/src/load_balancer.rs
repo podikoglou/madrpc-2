@@ -120,9 +120,11 @@ impl LoadBalancer {
             let idx = self.round_robin_index % self.enabled_nodes.len();
             self.round_robin_index = self.round_robin_index.wrapping_add(1) % self.enabled_nodes.len();
 
-            if let Some(node) = self.nodes.get(&self.enabled_nodes[idx]) {
+            if let Some(node) = self.nodes.get_mut(&self.enabled_nodes[idx]) {
                 // Skip nodes with open circuits (fail fast)
                 if node.circuit_state != CircuitBreakerState::Open {
+                    node.request_count += 1;
+                    node.last_request_time = Some(Instant::now());
                     return Some(self.enabled_nodes[idx].clone());
                 }
             }
