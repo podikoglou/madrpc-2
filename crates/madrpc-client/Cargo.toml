@@ -10,3 +10,6 @@ thiserror = "1.0"
 serde_json = "1.0"
 rand = "0.8"
 tracing = "0.1"
+hyper = { version = "1.5", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
