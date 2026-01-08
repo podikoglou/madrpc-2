@@ -40,6 +40,7 @@
 //! ```
 
 pub mod error;
+pub mod jsonrpc;
 pub mod requests;
 pub mod responses;
 
@@ -47,5 +48,6 @@ pub mod responses;
 mod tests;
 
 pub use error::{MadrpcError, Result};
+pub use jsonrpc::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
 pub use requests::{Request, RequestId, MethodName, RpcArgs};
 pub use responses::{Response, RpcResult};
