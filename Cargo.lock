@@ -1178,7 +1178,6 @@ dependencies = [
  "socket2",
  "system-configuration",
  "tokio",
- "tower-layer",
  "tower-service",
  "tracing",
  "windows-registry",
@@ -1592,7 +1591,6 @@ version = "0.1.0"
 dependencies = [
  "http-body-util",
  "hyper",
- "hyper-util",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
