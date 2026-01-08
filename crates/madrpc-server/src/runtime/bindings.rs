@@ -245,7 +245,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
                     Ok(promise.into())
                 },
-                &client_clone_for_closure,
+                client_clone_for_closure,
             ),
         ).build();
 
@@ -299,7 +299,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
                     Ok(result)
                 },
-                &client_clone_for_closure,
+                client_clone_for_closure,
             ),
         ).build();
 
