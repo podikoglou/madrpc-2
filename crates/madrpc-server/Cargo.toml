@@ -12,12 +12,12 @@ boa_engine = { path = "/tmp/boa/core/engine" }
 boa_gc = { path = "/tmp/boa/core/gc", features = ["thin-vec"] }
 serde_json = "1.0"
 thiserror = "1.0"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
 tracing = "0.1"
 futures-concurrency = "7.6"
 futures-lite = "2.5"
-hyper = { version = "1.5", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
+hyper = { version = "1.5", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 
 [dev-dependencies]
