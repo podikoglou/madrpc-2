@@ -478,7 +478,7 @@ impl Orchestrator {
     pub async fn forward_request_jsonrpc(
         &self,
         req: madrpc_common::protocol::JsonRpcRequest,
-    ) -> Result<serde_json::Value, MadrpcError> {
+    ) -> Result<serde_json::Value> {
         let start_time = Instant::now();
         let method = req.method.clone();
         let mut backoff_ms = self.retry_config.initial_backoff_ms;
@@ -550,9 +550,9 @@ impl Orchestrator {
         &self,
         node_addr: &str,
         req: &madrpc_common::protocol::JsonRpcRequest,
-    ) -> Result<serde_json::Value, MadrpcError> {
-        use hyper::{Request, Body};
-        use hyper_util::client::legacy::{Client, Connect};
+    ) -> Result<serde_json::Value> {
+        use hyper::Request;
+        use hyper_util::client::legacy::Client;
         use hyper_util::rt::TokioExecutor;
         use http_body_util::Full;
         use hyper::body::Bytes;
@@ -581,7 +581,8 @@ impl Orchestrator {
             .map_err(|e| MadrpcError::Transport(format!("HTTP request failed: {}", e)))?;
 
         // Read response body
-        let body_bytes = hyper::body::to_bytes(response.into_body())
+        let body_bytes = response.into_body();
+        let body_bytes = axum::body::to_bytes(axum::body::Body::new(body_bytes), usize::MAX)
             .await
             .map_err(|e| MadrpcError::Transport(format!("Failed to read response: {}", e)))?;
 
@@ -610,9 +611,9 @@ impl Orchestrator {
     /// # Returns
     /// - `Ok(Value)` - Metrics data
     /// - `Err(MadrpcError)` - Error if metrics collection fails
-    pub async fn get_metrics(&self) -> Result<serde_json::Value, MadrpcError> {
+    pub async fn get_metrics(&self) -> Result<serde_json::Value> {
         let nodes = self.nodes_with_status().await;
-        let snapshot = self.metrics_collector.get_snapshot();
+        let snapshot = self.metrics_collector.snapshot();
 
         let nodes_data: Vec<serde_json::Value> = nodes
             .into_iter()
@@ -630,7 +631,7 @@ impl Orchestrator {
 
         Ok(serde_json::json!({
             "nodes": nodes_data,
-            "metrics": snapshot.to_json()
+            "metrics": serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null)
         }))
     }
 
@@ -644,7 +645,7 @@ impl Orchestrator {
     /// # Returns
     /// - `Ok(Value)` - Info data
     /// - `Err(MadrpcError)` - Error if info collection fails
-    pub async fn get_info(&self) -> Result<serde_json::Value, MadrpcError> {
+    pub async fn get_info(&self) -> Result<serde_json::Value> {
         let nodes = self.nodes_with_status().await;
         let enabled_nodes: Vec<&Node> = nodes.iter().filter(|n| n.enabled).collect();
 

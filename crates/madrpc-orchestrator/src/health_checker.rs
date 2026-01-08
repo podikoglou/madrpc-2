@@ -1,4 +1,4 @@
-use madrpc_common::protocol::{Request, JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use madrpc_common::protocol::Request;
 use madrpc_common::protocol::error::{MadrpcError, Result as MadrpcResult};
 use madrpc_common::transport::TcpTransportAsync;
 use std::sync::Arc;
@@ -201,12 +201,12 @@ impl HealthChecker {
     /// - `Ok(())` - Node is healthy
     /// - `Err(...)` - Node is unhealthy or unreachable
     async fn check_node_health(
-        transport: &TcpTransportAsync,
+        _transport: &TcpTransportAsync,
         addr: &str,
         timeout: Duration,
     ) -> MadrpcResult<()> {
-        use hyper::{Request, Body};
-        use hyper_util::client::legacy::{Client, Connect};
+        use hyper::Request;
+        use hyper_util::client::legacy::Client;
         use hyper_util::rt::TokioExecutor;
         use http_body_util::Full;
         use hyper::body::Bytes;

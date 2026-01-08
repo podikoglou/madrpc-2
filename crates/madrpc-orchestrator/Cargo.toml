@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-ajj = "0.4"
 axum = "0.8"
 futures = "0.3"
 hyper = { version = "1.5", features = ["full"] }
