@@ -366,6 +366,7 @@ impl MadrpcContext {
 mod tests {
     use super::*;
     use std::fs;
+    use serde_json::json;
 
     /// Test that context can be created and used on the same thread
     #[test]
