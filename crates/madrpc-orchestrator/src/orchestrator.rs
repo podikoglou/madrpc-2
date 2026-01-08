@@ -545,12 +545,13 @@ impl Orchestrator {
     /// - `Ok(Value)` - Metrics data
     /// - `Err(MadrpcError)` - Error if metrics collection fails
     pub async fn get_metrics(&self) -> Result<serde_json::Value> {
-        let snapshot = self.metrics_collector.snapshot();
+        let mut snapshot = self.metrics_collector.snapshot();
 
-        // Note: Orchestrator doesn't track per-node request counts or last request times
-        // The load balancer only tracks health/circuit state. To properly populate
-        // snapshot.nodes, we would need to track request counts per node.
-        // For now, return the snapshot without node metrics.
+        // Populate per-node metrics from the load balancer
+        let lb = self.load_balancer.read().await;
+        snapshot.nodes = Some(lb.node_metrics());
+        drop(lb);
+
         serde_json::to_value(snapshot)
             .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize metrics: {}", e)))
     }
