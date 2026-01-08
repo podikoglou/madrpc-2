@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## MaDRPC - Massively Distributed RPC
 
-MaDRPC is a Rust-based distributed RPC system that enables massively parallel computation by executing JavaScript functions across multiple nodes. The system uses **Boa** as the JavaScript engine and **TCP** for transport.
+MaDRPC is a Rust-based distributed RPC system that enables massively parallel computation by executing JavaScript functions across multiple nodes. The system uses **Boa** as the JavaScript engine and **HTTP/JSON-RPC 2.0** for transport.
 
 ## Build and Run Commands
 
@@ -13,13 +13,13 @@ MaDRPC is a Rust-based distributed RPC system that enables massively parallel co
 cargo build --release
 
 # Start an orchestrator (load balancer)
-cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080 -n 127.0.0.1:9001 -n 127.0.0.1:9002
+cargo run --bin madrpc -- orchestrator -b 0.0.0.0:8080 -n http://127.0.0.1:9001 -n http://127.0.0.1:9002
 
 # Start a compute node
-cargo run --bin madrpc -- node -s examples/monte-carlo-pi/scripts/pi.js -b 0.0.0.0:9001 --pool-size 4
+cargo run --bin madrpc -- node -s examples/monte-carlo-pi/scripts/pi.js -b 0.0.0.0:9001
 
 # Monitor with real-time metrics TUI
-cargo run --bin madrpc -- top 127.0.0.1:8080
+cargo run --bin madrpc -- top http://127.0.0.1:8080
 
 # Run examples
 cargo run -p monte-carlo-pi
@@ -28,7 +28,7 @@ cargo run -p simple-test
 
 ## Architecture Overview
 
-The system consists of three main components that communicate via TCP:
+The system consists of three main components that communicate via HTTP:
 
 1. **Nodes** (`madrpc-server`) - Execute JavaScript functions using Boa
 2. **Orchestrator** (`madrpc-orchestrator`) - Round-robin load balancer that forwards requests
@@ -37,24 +37,24 @@ The system consists of three main components that communicate via TCP:
 ### Key Design Patterns
 
 - **"Stupid Forwarder" Orchestrator**: The orchestrator does no JavaScript execution - it only forwards requests to nodes using round-robin load balancing
-- **Thread-Per-Connection Nodes**: Each node accepts TCP connections and spawns a dedicated worker thread for each connection, limited by a semaphore (default: `num_cpus * 2`)
-- **Connection Pooling**: Client maintains connection pools for performance
-- **Keep-Alive**: Each TCP connection processes multiple requests until closed
+- **HTTP/JSON-RPC 2.0**: All communication uses standard JSON-RPC 2.0 over HTTP POST
+- **Connection Keep-Alive**: Hyper's HTTP/1.1 keep-alive handles connection pooling automatically
+- **Async/Await**: Orchestrator and client use tokio async runtime for efficient concurrent request handling
 
 ### Data Flow
 
-1. Client makes RPC call to orchestrator
+1. Client makes HTTP POST with JSON-RPC request to orchestrator
 2. Orchestrator selects next node via round-robin (`LoadBalancer::next_node()`)
-3. Request forwarded to selected compute node via TCP
-4. Node creates a fresh Boa Context on the worker thread and executes function
-5. Result returned through orchestrator to client
+3. Request forwarded to selected compute node via HTTP
+4. Node creates a fresh Boa Context and executes function
+5. Result returned through orchestrator to client as JSON-RPC response
 
 ### Wire Protocol
 
-- **Transport**: TCP with keep-alive connections
-- **Serialization**: JSON over TCP
-- **Message Format**: `[4-byte length prefix as u32 big-endian] + [JSON data]`
-- **Max Message Size**: 100 MB (to prevent memory exhaustion)
+- **Transport**: HTTP/1.1 with JSON-RPC 2.0
+- **Serialization**: JSON
+- **Message Format**: JSON-RPC 2.0 specification (`{"jsonrpc":"2.0","method":"...","params":{...},"id":...}`)
+- **Content-Type**: `application/json`
 
 ## Directory Structure
 
@@ -78,18 +78,18 @@ madrpc-2/
 
 ### `crates/madrpc-common` - Protocol and Transport Layer
 
-**Purpose**: Core protocol definitions and TCP transport layer shared across all components
+**Purpose**: Core protocol definitions and HTTP transport layer shared across all components
 
 **Where to find what**:
 - `src/lib.rs` - Public API exports
 - `src/protocol/` - RPC protocol definitions
-  - `requests.rs` - `Request` struct with unique IDs, timeouts, idempotency keys
-  - `responses.rs` - `Response` struct with success/error handling
+  - `jsonrpc.rs` - JSON-RPC 2.0 request/response types
+  - `requests.rs` - Legacy request types (deprecated)
+  - `responses.rs` - Legacy response types (deprecated)
   - `error.rs` - `MadrpcError` enum with retryable error classification
-- `src/transport/` - TCP transport and codecs
-  - `tcp.rs` - Synchronous and async TCP transports
-  - `tcp_server.rs` - Async TCP server (used by orchestrator)
-  - `codec.rs` - JSON encoding/decoding with 4-byte length prefix
+- `src/transport/` - HTTP transport
+  - `http.rs` - HTTP transport using hyper/axum
+  - `tcp.rs` - Legacy TCP transport (deprecated)
 
 **Key Types**:
 ```rust
@@ -210,14 +210,14 @@ madrpc.register('aggregate', async (args) => {
 ## Thread Model
 
 ### Orchestrator (Async)
-- Uses tokio async runtime
-- `TcpServer` spawns async task per connection
+- Uses tokio async runtime with multi-threaded scheduler
+- `HttpServer` uses axum for HTTP handling
 - Single thread can handle many connections efficiently
 - No JavaScript execution (just forwarding)
 
-### Nodes (Threaded)
-- `TcpServerThreaded` spawns OS thread per connection
-- Limited by semaphore (default: `num_cpus * 2`)
+### Nodes (Async)
+- `HttpServer` uses hyper for HTTP handling
+- Each request spawns a tokio task
 - Each request gets fresh Boa Context
 - True parallelism with no shared JavaScript state
 
@@ -274,11 +274,10 @@ madrpc.register('aggregate', async (args) => {
 
 ## Important Implementation Notes
 
-- **Boa Context Threading**: Boa Context has thread-local state and must be accessed from the same thread it was created on. Each worker thread creates its own context per request.
-- **No Context Pool**: Previous QuickJS approach used a context pool, but this was removed due to thread-safety issues. Each request now gets a fresh Boa Context.
-- **TCP Transport**: Uses JSON for serialization over plain TCP sockets with 4-byte length prefix (big-endian).
-- **Thread-Per-Connection**: Nodes use `TcpServerThreaded` which spawns OS threads (not async tasks) for each connection, limited by a custom `StdSemaphore` using `AtomicUsize` and `Condvar`.
-- **Orchestrator is Async**: The orchestrator uses `TcpServer` (tokio async) since it doesn't use Boa and handles many concurrent connections efficiently.
+- **Boa Context Threading**: Boa Context has thread-local state and must be accessed from the same thread it was created on. Each request creates its own context.
+- **Fresh Context Per Request**: Each request gets a fresh Boa Context to enable true parallelism without shared state.
+- **HTTP/JSON-RPC**: Uses standard JSON-RPC 2.0 over HTTP POST for all communication.
+- **Async/Await**: All HTTP servers use tokio async runtime for efficient concurrent request handling.
 - **Metrics**: Built-in metrics collection on nodes/orchestrator via `madrpc-metrics` - see `top` command for TUI monitoring
 
 ## Development Practices
