@@ -180,14 +180,17 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
     // Only register async call and setOrchestrator if we have a client
     if let Some(client_arc) = client {
+        // Clone the Arc to move into the closure
+        let client_clone_for_closure = client_arc.clone();
+
         // Register native `madrpc.call` function using NativeFunction::from_copy_closure_with_captures
         // This uses the existing tokio runtime and properly integrates with Boa's job queue
         let call_fn = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
-                move |_this, args: &[JsValue], client_arc: &&Arc<madrpc_client::MadrpcClient>, context| {
+                move |_this, args: &[JsValue], client_captured: &&Arc<madrpc_client::MadrpcClient>, context| {
                     // Clone the Arc for this async operation
-                    let client_clone = Arc::clone(&client_arc);
+                    let client_clone = Arc::clone(&client_captured);
 
                     // Validate and extract arguments (synchronous part)
                     let method = match args.get(0).and_then(|v| v.as_string()) {
@@ -242,7 +245,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
                     Ok(promise.into())
                 },
-                &client_arc,
+                &client_clone_for_closure,
             ),
         ).build();
 
@@ -256,9 +259,9 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
         let call_sync_fn = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
-                move |_this, args: &[JsValue], client_arc: &&Arc<madrpc_client::MadrpcClient>, context| {
+                move |_this, args: &[JsValue], client_captured: &&Arc<madrpc_client::MadrpcClient>, context| {
                     // Clone the Arc for this call
-                    let client_clone = Arc::clone(&client_arc);
+                    let client_clone = Arc::clone(&client_captured);
 
                     // Validate arguments
                     let method = args.get(0)
@@ -296,7 +299,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
                     Ok(result)
                 },
-                &client_arc,
+                &client_clone_for_closure,
             ),
         ).build();
 
