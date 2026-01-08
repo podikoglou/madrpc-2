@@ -51,10 +51,17 @@ static BLOCKING_RUNTIME: OnceLock<Mutex<tokio::runtime::Runtime>> = OnceLock::ne
 /// Returns an error if tokio runtime creation fails (e.g., due to system
 /// resource limits).
 pub fn get_blocking_runtime() -> std::io::Result<&'static Mutex<tokio::runtime::Runtime>> {
-    BLOCKING_RUNTIME.get_or_try_init(|| {
-        tokio::runtime::Runtime::new()
-            .map(Mutex::new)
-    })
+    if let Some(runtime) = BLOCKING_RUNTIME.get() {
+        return Ok(runtime);
+    }
+
+    let runtime = tokio::runtime::Runtime::new()
+        .map(Mutex::new)?;
+
+    // SAFETY: This is the only place where we set the BLOCKING_RUNTIME
+    // and we check if it's already set before returning.
+    // The OnceLock ensures this only runs once.
+    Ok(BLOCKING_RUNTIME.get_or_init(|| runtime))
 }
 
 /// Async RPC call implementation using NativeFunction::from_async_fn.
@@ -173,67 +180,70 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
     // Only register async call and setOrchestrator if we have a client
     if let Some(client_arc) = client {
-        // Register native `madrpc.call` function using NativeFunction::from_async_fn
+        // Register native `madrpc.call` function using NativeFunction::from_copy_closure_with_captures
         // This uses the existing tokio runtime and properly integrates with Boa's job queue
         let call_fn = FunctionObjectBuilder::new(
             ctx.realm(),
-            NativeFunction::from_copy_closure(move |_this, args, context| {
-                // Clone the Arc for this async operation
-                let client_clone = Arc::clone(&client_arc);
+            NativeFunction::from_copy_closure_with_captures(
+                move |_this, args, context, client_arc: Arc<madrpc_client::MadrpcClient>| {
+                    // Clone the Arc for this async operation
+                    let client_clone = Arc::clone(&client_arc);
 
-                // Validate and extract arguments (synchronous part)
-                let method = match args.get(0).and_then(|v| v.as_string()) {
-                    Some(s) => match s.to_std_string() {
-                        Ok(s) => s,
-                        Err(e) => return Err(JsNativeError::typ()
-                            .with_message(format!("Invalid method name: {:?}", e)).into()),
-                    },
-                    None => return Err(JsNativeError::typ()
-                        .with_message("First argument must be a string (method name)").into()),
-                };
+                    // Validate and extract arguments (synchronous part)
+                    let method = match args.get(0).and_then(|v| v.as_string()) {
+                        Some(s) => match s.to_std_string() {
+                            Ok(s) => s,
+                            Err(e) => return Err(JsNativeError::typ()
+                                .with_message(format!("Invalid method name: {:?}", e)).into()),
+                        },
+                        None => return Err(JsNativeError::typ()
+                            .with_message("First argument must be a string (method name)").into()),
+                    };
 
-                let args_value = if args.len() > 1 { args[1].clone() } else { JsValue::undefined() };
+                    let args_value = if args.len() > 1 { args[1].clone() } else { JsValue::undefined() };
 
-                // Convert JS args to JSON (synchronous part)
-                let json_args = js_value_to_json(args_value, context)
-                    .map_err(|e| JsNativeError::typ()
-                        .with_message(format!("Failed to convert args to JSON: {}", e)))?;
+                    // Convert JS args to JSON (synchronous part)
+                    let json_args = js_value_to_json(args_value, context)
+                        .map_err(|e| JsNativeError::typ()
+                            .with_message(format!("Failed to convert args to JSON: {}", e)))?;
 
-                // Create a promise
-                let (promise, resolvers) = JsPromise::new_pending(context);
+                    // Create a promise
+                    let (promise, resolvers) = JsPromise::new_pending(context);
 
-                // Enqueue an async job that will use the existing tokio runtime
-                context.enqueue_job(
-                    Job::AsyncJob(
-                        boa_engine::job::NativeAsyncJob::new(async move |context| {
-                            // Make the async RPC call using the existing tokio runtime
-                            let result_json = rpc_call_async(client_clone, method, json_args).await;
+                    // Enqueue an async job that will use the existing tokio runtime
+                    context.enqueue_job(
+                        Job::AsyncJob(
+                            boa_engine::job::NativeAsyncJob::new(async move |context| {
+                                // Make the async RPC call using the existing tokio runtime
+                                let result_json = rpc_call_async(client_clone, method, json_args).await;
 
-                            let mut ctx = context.borrow_mut();
-                            match result_json {
-                                Ok(result_json) => {
-                                    // Convert result back to JS value
-                                    let result = json_to_js_value(result_json, &mut *ctx)
-                                        .map_err(|e| JsNativeError::typ()
-                                            .with_message(format!("Failed to convert result to JS: {}", e)))?;
+                                let mut ctx = context.borrow_mut();
+                                match result_json {
+                                    Ok(result_json) => {
+                                        // Convert result back to JS value
+                                        let result = json_to_js_value(result_json, &mut *ctx)
+                                            .map_err(|e| JsNativeError::typ()
+                                                .with_message(format!("Failed to convert result to JS: {}", e)))?;
 
-                                    // Resolve the promise
-                                    resolvers.resolve.call(&JsValue::undefined(), &[result], &mut *ctx)
-                                        .map_err(Into::into)
+                                        // Resolve the promise
+                                        resolvers.resolve.call(&JsValue::undefined(), &[result], &mut *ctx)
+                                            .map_err(Into::into)
+                                    }
+                                    Err(e) => {
+                                        // Reject the promise
+                                        let error_val = JsValue::new(js_string!(e.as_str()));
+                                        resolvers.reject.call(&JsValue::undefined(), &[error_val], &mut *ctx)
+                                            .map_err(Into::into)
+                                    }
                                 }
-                                Err(e) => {
-                                    // Reject the promise
-                                    let error_val = JsValue::new(js_string!(e.as_str()));
-                                    resolvers.reject.call(&JsValue::undefined(), &[error_val], &mut *ctx)
-                                        .map_err(Into::into)
-                                }
-                            }
-                        }).into()
-                    )
-                );
+                            }).into()
+                        )
+                    );
 
-                Ok(promise.into())
-            }),
+                    Ok(promise.into())
+                },
+                client_arc.clone(),
+            ),
         ).build();
 
         madrpc_object.set(js_string!("call"), call_fn, false, ctx)
@@ -245,46 +255,49 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
         // a new one on each call. This prevents resource exhaustion and improves performance.
         let call_sync_fn = FunctionObjectBuilder::new(
             ctx.realm(),
-            NativeFunction::from_copy_closure(move |_this, args, context| {
-                // Clone the Arc for this call
-                let client_clone = Arc::clone(&client_arc);
+            NativeFunction::from_copy_closure_with_captures(
+                move |_this, args, context, client_arc: Arc<madrpc_client::MadrpcClient>| {
+                    // Clone the Arc for this call
+                    let client_clone = Arc::clone(&client_arc);
 
-                // Validate arguments
-                let method = args.get(0)
-                    .and_then(|v| v.as_string())
-                    .ok_or_else(|| JsNativeError::typ()
-                        .with_message("First argument must be a string (method name)"))?
-                    .to_std_string()
-                    .map_err(|e| JsNativeError::typ()
-                        .with_message(format!("Invalid method name: {:?}", e)))?;
+                    // Validate arguments
+                    let method = args.get(0)
+                        .and_then(|v| v.as_string())
+                        .ok_or_else(|| JsNativeError::typ()
+                            .with_message("First argument must be a string (method name)"))?
+                        .to_std_string()
+                        .map_err(|e| JsNativeError::typ()
+                            .with_message(format!("Invalid method name: {:?}", e)))?;
 
-                let args_value = if args.len() > 1 { args[1].clone() } else { JsValue::undefined() };
+                    let args_value = if args.len() > 1 { args[1].clone() } else { JsValue::undefined() };
 
-                // Convert JS args to JSON
-                let json_args = js_value_to_json(args_value, context)
-                    .map_err(|e| JsNativeError::typ()
-                        .with_message(format!("Failed to convert args to JSON: {}", e)))?;
+                    // Convert JS args to JSON
+                    let json_args = js_value_to_json(args_value, context)
+                        .map_err(|e| JsNativeError::typ()
+                            .with_message(format!("Failed to convert args to JSON: {}", e)))?;
 
-                // Use the SHARED runtime instead of creating a new one
-                let rt_mutex = get_blocking_runtime()
-                    .map_err(|e| JsNativeError::typ()
-                        .with_message(format!("Failed to get blocking runtime: {}", e)))?;
+                    // Use the SHARED runtime instead of creating a new one
+                    let rt_mutex = get_blocking_runtime()
+                        .map_err(|e| JsNativeError::typ()
+                            .with_message(format!("Failed to get blocking runtime: {}", e)))?;
 
-                let rt = rt_mutex.lock()
-                    .map_err(|e| JsNativeError::typ()
-                        .with_message(format!("Failed to lock runtime: {}", e)))?;
+                    let rt = rt_mutex.lock()
+                        .map_err(|e| JsNativeError::typ()
+                            .with_message(format!("Failed to lock runtime: {}", e)))?;
 
-                let result_json = rt.block_on(client_clone.call(&method, json_args))
-                    .map_err(|e| JsNativeError::typ()
-                        .with_message(format!("RPC call failed: {}", e)))?;
+                    let result_json = rt.block_on(client_clone.call(&method, json_args))
+                        .map_err(|e| JsNativeError::typ()
+                            .with_message(format!("RPC call failed: {}", e)))?;
 
-                // Convert result back to JS value
-                let result = json_to_js_value(result_json, context)
-                    .map_err(|e| JsNativeError::typ()
-                        .with_message(format!("Failed to convert result to JS: {}", e)))?;
+                    // Convert result back to JS value
+                    let result = json_to_js_value(result_json, context)
+                        .map_err(|e| JsNativeError::typ()
+                            .with_message(format!("Failed to convert result to JS: {}", e)))?;
 
-                Ok(result)
-            }),
+                    Ok(result)
+                },
+                client_arc.clone(),
+            ),
         ).build();
 
         madrpc_object.set(js_string!("callSync"), call_sync_fn, false, ctx)

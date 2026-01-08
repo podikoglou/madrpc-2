@@ -179,7 +179,7 @@ impl Node {
     /// - Parameters are invalid
     pub async fn call_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, MadrpcError> {
         // Create a fresh Boa context for this request
-        let ctx = if let Some(client) = &self.orchestrator_client {
+        let mut ctx = if let Some(client) = &self.orchestrator_client {
             let client_clone = (**client).clone();
             MadrpcContext::with_client_from_source(&self.script_source, Some(client_clone))?
         } else {
