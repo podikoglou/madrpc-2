@@ -16,7 +16,7 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 futures-concurrency = "7.6"
 futures-lite = "2.5"
-hyper = { version = "1.5", features = ["full"] }
+hyper = { version = "1.5", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 
