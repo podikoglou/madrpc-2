@@ -185,7 +185,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
         let call_fn = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
-                move |_this, args, context, client_arc: Arc<madrpc_client::MadrpcClient>| {
+                move |_this, args, context, client_arc: &Arc<madrpc_client::MadrpcClient>| {
                     // Clone the Arc for this async operation
                     let client_clone = Arc::clone(&client_arc);
 
@@ -242,7 +242,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
                     Ok(promise.into())
                 },
-                client_arc.clone(),
+                &client_arc,
             ),
         ).build();
 
@@ -256,7 +256,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
         let call_sync_fn = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
-                move |_this, args, context, client_arc: Arc<madrpc_client::MadrpcClient>| {
+                move |_this, args, context, client_arc: &Arc<madrpc_client::MadrpcClient>| {
                     // Clone the Arc for this call
                     let client_clone = Arc::clone(&client_arc);
 
@@ -296,7 +296,7 @@ pub(crate) fn install_madrpc_bindings(ctx: &mut Context, client: Option<Arc<madr
 
                     Ok(result)
                 },
-                client_arc.clone(),
+                &client_arc,
             ),
         ).build();
 
