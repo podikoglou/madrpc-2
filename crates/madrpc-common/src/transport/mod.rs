@@ -1,51 +1,42 @@
 //! MaDRPC Transport Layer
 //!
-//! This module provides TCP transport and codecs for sending/receiving RPC messages.
+//! This module provides HTTP transport for sending/receiving JSON-RPC messages.
 //!
 //! # Architecture
 //!
 //! The transport layer handles all network communication using:
-//! - **Transport**: TCP with keep-alive connections
-//! - **Codec**: JSON serialization for protocol messages
-//! - **Wire Format**: `[4-byte length prefix as u32 big-endian] + [JSON data]`
+//! - **Transport**: HTTP/1.1 with JSON-RPC protocol
+//! - **Serialization**: JSON for request/response encoding
+//! - **Protocol**: Standard JSON-RPC 2.0 specification
 //!
 //! # Components
 //!
-//! - **[`Codec`]** / **[`JsonCodec`]**: Encode/decode protocol messages to JSON
-//! - **[`TcpTransport`]**: Synchronous TCP transport (used by nodes)
-//! - **[`TcpTransportAsync`]**: Async TCP transport (used by orchestrator)
-//! - **[`TcpServer`]**: Async TCP server (used by orchestrator)
-//!
-//! # Message Size Limits
-//!
-//! All transport implementations enforce a maximum message size of 100 MB
-//! to prevent memory exhaustion attacks.
+//! - **[`HttpTransport`]**: HTTP transport for JSON-RPC requests
+//! - **[`HyperRequest`]**: Type alias for hyper Request
+//! - **[`HyperResponse`]**: Type alias for hyper Response
 //!
 //! # Example
 //!
 //! ```no_run
-//! use madrpc_common::transport::TcpTransport;
-//! use madrpc_common::protocol::Request;
+//! use madrpc_common::transport::HttpTransport;
+//! use madrpc_common::protocol::JsonRpcRequest;
 //! use serde_json::json;
 //!
-//! // Connect to a node
-//! let transport = TcpTransport::new().unwrap();
-//! let mut stream = transport.connect("127.0.0.1:8080").unwrap();
+//! // Create HTTP transport
+//! let transport = HttpTransport::new();
 //!
-//! // Send a request
-//! let request = Request::new("compute", json!({"n": 100}));
-//! let response = transport.send_request(&mut stream, &request).unwrap();
+//! // Create JSON-RPC request
+//! let request = JsonRpcRequest {
+//!     jsonrpc: "2.0".to_string(),
+//!     method: "compute".to_string(),
+//!     params: json!({"n": 100}),
+//!     id: 1.into(),
+//! };
+//!
+//! // Send request
+//! let response = transport.send_request("127.0.0.1:8080", &request).await.unwrap();
 //! ```
 
-pub mod codec;
 pub mod http;
-pub mod tcp;
-pub mod tcp_server;
 
-pub use codec::{Codec, JsonCodec};
 pub use http::{HttpTransport, HyperRequest, HyperResponse};
-pub use tcp::{TcpTransport, TcpTransportAsync};
-pub use tcp_server::TcpServer;
-
-#[cfg(test)]
-mod tests;
