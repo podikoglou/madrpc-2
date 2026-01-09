@@ -178,22 +178,50 @@ impl Node {
     /// - Method execution fails
     /// - Parameters are invalid
     pub async fn call_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        // Create a fresh Boa context for this request
-        let mut ctx = if let Some(client) = &self.orchestrator_client {
-            let client_clone = (**client).clone();
-            MadrpcContext::with_client_from_source(&self.script_source, Some(client_clone))?
-        } else {
-            MadrpcContext::from_source(&self.script_source)?
-        };
+        // Use spawn_blocking to move JavaScript execution to a blocking thread
+        // This is necessary because MadrpcContext is !Send (Boa's Context has thread affinity)
+        let script_source = self.script_source.clone();
+        let method = method.to_string();
+        let method_for_metrics = method.clone();
+        let orchestrator_client = self.orchestrator_client.clone();
+        let metrics_collector = self.metrics_collector.clone();
 
-        // Call the method (this is synchronous but we're in an async context)
-        let start_time = std::time::Instant::now();
-        let result = ctx.call_rpc(method, params);
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|e| MadrpcError::JavaScriptExecution(format!("No tokio runtime: {}", e)))?;
+
+        let (result, start_time) = handle.spawn_blocking(move || {
+            let start_time = std::time::Instant::now();
+
+            // Create a fresh Boa context for this request on the blocking thread
+            let ctx_result = if let Some(client) = orchestrator_client {
+                let client_clone = (*client).clone();
+                MadrpcContext::with_client_from_source(&script_source, Some(client_clone))
+            } else {
+                MadrpcContext::from_source(&script_source)
+            };
+
+            let mut ctx = match ctx_result {
+                Ok(ctx) => ctx,
+                Err(e) => return (Err(e), start_time),
+            };
+
+            // Block on the async call_rpc_async using a new runtime
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+
+            let method_ref = method.as_str();
+            let result = runtime.block_on(ctx.call_rpc_async(method_ref, params));
+
+            (result, start_time)
+        }).await
+            .map_err(|e| MadrpcError::JavaScriptExecution(format!("Task join error: {}", e)))?;
 
         // Record metrics
         match &result {
-            Ok(_) => self.metrics_collector.record_call(method, start_time, true),
-            Err(_) => self.metrics_collector.record_call(method, start_time, false),
+            Ok(_) => metrics_collector.record_call(&method_for_metrics, start_time, true),
+            Err(_) => metrics_collector.record_call(&method_for_metrics, start_time, false),
         }
 
         result

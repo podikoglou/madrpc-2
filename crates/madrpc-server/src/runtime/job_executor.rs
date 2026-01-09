@@ -159,8 +159,8 @@ impl JobExecutor for TokioJobExecutor {
     /// Runs all jobs synchronously (blocking).
     ///
     /// This creates a tokio runtime if one doesn't exist, or uses the existing one.
-    /// If already inside a tokio runtime, it uses `block_in_place` to avoid
-    /// nested runtime issues.
+    /// If already inside a tokio runtime, it uses `block_in_place` to block the
+    /// current thread without creating a nested runtime.
     ///
     /// # Parameters
     ///
@@ -175,23 +175,38 @@ impl JobExecutor for TokioJobExecutor {
     /// This function will block the current thread until all jobs complete.
     /// It should only be called when async execution is not possible.
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> boa_engine::JsResult<()> {
-        // Try to use the current runtime if we're in one
+        // If we're in a tokio runtime, use block_in_place
+        // This moves off the worker thread and blocks, avoiding the runtime nesting issue
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // Check if we're in a multi-threaded runtime
-            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
-                // We're in a multi-threaded runtime, use block_in_place
+            let flavor = handle.runtime_flavor();
+            tracing::debug!("TokioJobExecutor::run_jobs() - runtime flavor: {:?}", flavor);
+
+            // Only use block_in_place in a multi-threaded runtime
+            if matches!(flavor, tokio::runtime::RuntimeFlavor::MultiThread) {
                 return tokio::task::block_in_place(|| {
-                    handle.block_on(async {
-                        // Create a LocalSet for this scope
-                        let local_set = tokio::task::LocalSet::new();
-                        local_set.run_until(self.run_jobs_async(&RefCell::new(context))).await
-                    })
+                    // Create a new runtime for the blocking operation
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_time()
+                        .build()
+                        .unwrap();
+
+                    tokio::task::LocalSet::new()
+                        .block_on(&runtime, self.run_jobs_async(&RefCell::new(context)))
                 });
             }
-            // Current thread runtime - always create a new runtime to avoid conflicts
+
+            // For current-thread runtime, we need a different approach
+            // Create a new runtime and block on it
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+
+            return tokio::task::LocalSet::new()
+                .block_on(&runtime, self.run_jobs_async(&RefCell::new(context)));
         }
 
-        // No current runtime (or current-thread runtime), create a new one
+        // No current runtime, create a new one
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()

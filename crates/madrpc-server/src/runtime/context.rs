@@ -1,10 +1,11 @@
-use boa_engine::{Context, Source, js_string, value::JsValue, object::builtins::JsPromise, builtins::promise::PromiseState};
+use boa_engine::{Context, Source, js_string, value::JsValue, object::builtins::JsPromise, builtins::promise::PromiseState, job::JobExecutor};
 use std::path::Path;
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
+use std::cell::RefCell;
 
-use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}};
+use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}, TokioJobExecutor};
 
 /// Thread-local marker to ensure MadrpcContext is used on the correct thread.
 ///
@@ -75,6 +76,8 @@ pub struct MadrpcContext {
     /// Note: This is NOT used in bindings anymore - we use closure capture instead
     /// But we keep it here for the distributed_call method
     client: Option<Arc<madrpc_client::MadrpcClient>>,
+    /// The job executor for async JavaScript execution
+    job_executor: Rc<TokioJobExecutor>,
 }
 
 impl MadrpcContext {
@@ -150,7 +153,7 @@ impl MadrpcContext {
         let client = client.map(Arc::new);
         let job_executor = std::rc::Rc::new(crate::runtime::TokioJobExecutor::new());
         let mut ctx = Context::builder()
-            .job_executor(job_executor)
+            .job_executor(job_executor.clone())
             .build()
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to build context: {}", e)))?;
 
@@ -168,6 +171,7 @@ impl MadrpcContext {
             _thread_marker: ThreadNotSendSync { _marker: PhantomData },
             ctx,
             client,
+            job_executor,
         })
     }
 
@@ -198,7 +202,7 @@ impl MadrpcContext {
         let client = client.map(Arc::new);
         let job_executor = std::rc::Rc::new(crate::runtime::TokioJobExecutor::new());
         let mut ctx = Context::builder()
-            .job_executor(job_executor)
+            .job_executor(job_executor.clone())
             .build()
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Failed to build context: {}", e)))?;
 
@@ -213,6 +217,7 @@ impl MadrpcContext {
             _thread_marker: ThreadNotSendSync { _marker: PhantomData },
             ctx,
             client,
+            job_executor,
         })
     }
 
@@ -333,6 +338,120 @@ impl MadrpcContext {
         let _ = self.ctx.run_jobs();
 
         tracing::debug!("call_rpc: Converting result to JSON...");
+        js_value_to_json(result, &mut self.ctx)
+    }
+
+    /// Call a registered RPC function asynchronously.
+    ///
+    /// This is the async version of `call_rpc()` that properly handles JavaScript
+    /// promises without blocking. It uses `run_jobs_async()` to drive promise
+    /// resolution within the existing tokio runtime, avoiding the "runtime within
+    /// runtime" panic.
+    ///
+    /// # Parameters
+    ///
+    /// * `method` - Name of the registered function to call
+    /// * `args` - Arguments to pass to the function (must be valid JSON)
+    ///
+    /// # Returns
+    ///
+    /// The function's return value as JSON.
+    ///
+    /// # Promise Handling
+    ///
+    /// If the function returns a Promise, this method will await its resolution
+    /// using `run_jobs_async()` to drive the promise to completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The method is not registered
+    /// - The registered value is not a function
+    /// - Function execution fails
+    /// - Arguments cannot be converted
+    /// - A promise is rejected
+    pub async fn call_rpc_async(&mut self, method: &str, args: JsonValue) -> Result<JsonValue> {
+        tracing::debug!("call_rpc_async: calling method '{}'", method);
+
+        // Get madrpc object and registry
+        let madrpc = self.ctx.global_object()
+            .get(js_string!("madrpc"), &mut self.ctx)
+            .map_err(|e| MadrpcError::JavaScriptExecution(e.to_string()))?;
+
+        tracing::debug!("call_rpc_async: Getting registry...");
+        let registry_val = madrpc.as_object()
+            .and_then(|o| o.get(js_string!("__registry"), &mut self.ctx).ok())
+            .ok_or_else(|| MadrpcError::InvalidRequest("Failed to access registry".into()))?;
+
+        let registry = registry_val.as_object()
+            .ok_or_else(|| MadrpcError::InvalidRequest("Registry is not an object".into()))?;
+
+        // Get registered function
+        tracing::debug!("call_rpc_async: Getting function '{}' from registry...", method);
+        let func = registry.get(js_string!(method), &mut self.ctx)
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Method '{}' lookup error: {}", method, e)))?;
+
+        if func.is_undefined() {
+            return Err(MadrpcError::InvalidRequest(format!("Method '{}' is not registered", method)));
+        }
+
+        let func_obj = func.as_object()
+            .ok_or_else(|| MadrpcError::InvalidRequest("Registered value is not a function".into()))?;
+
+        // Convert args to JsValue and call
+        tracing::debug!("call_rpc_async: Converting args and calling function...");
+        let args_js = json_to_js_value(args, &mut self.ctx)?;
+        let result = func_obj.call(&JsValue::undefined(), &[args_js], &mut self.ctx)
+            .map_err(|e| MadrpcError::JavaScriptExecution(format!("Function execution error: {}", e)))?;
+
+        // Check if result is a Promise
+        if let Some(result_obj) = result.as_object() {
+            if let Ok(promise) = JsPromise::from_object(result_obj.clone()) {
+                tracing::debug!("call_rpc_async: Result is a Promise, waiting for resolution...");
+
+                // Use run_jobs_async to drive the promise to completion
+                let executor = self.job_executor.clone();
+                let context_ref = RefCell::new(&mut self.ctx);
+                let promise_clone = promise.clone();
+
+                // Run jobs until the promise settles
+                let max_iterations = 100_000;
+                for _iteration in 0..max_iterations {
+                    executor.clone().run_jobs_async(&context_ref).await;
+
+                    match promise_clone.state() {
+                        PromiseState::Pending => {
+                            // Continue polling
+                            tokio::time::sleep(std::time::Duration::from_micros(100)).await;
+                        }
+                        PromiseState::Fulfilled(value) => {
+                            tracing::debug!("call_rpc_async: Promise fulfilled");
+                            return js_value_to_json(value, &mut self.ctx);
+                        }
+                        PromiseState::Rejected(reason) => {
+                            tracing::debug!("call_rpc_async: Promise rejected");
+                            let reason_str = if let Some(s) = reason.as_string() {
+                                s.to_std_string()
+                                    .unwrap_or_else(|_| "Unknown error".to_string())
+                            } else {
+                                format!("{:?}", reason)
+                            };
+                            return Err(MadrpcError::JavaScriptExecution(format!("Promise rejected: {}", reason_str)));
+                        }
+                    }
+                }
+
+                return Err(MadrpcError::JavaScriptExecution("Promise did not resolve within timeout".to_string()));
+            }
+        }
+
+        // Not a promise, just run jobs once for any microtasks
+        let executor = self.job_executor.clone();
+        let context_ref = RefCell::new(&mut self.ctx);
+        executor.run_jobs_async(&context_ref).await
+            .map_err(|e| MadrpcError::JavaScriptExecution(format!("Job execution error: {}", e)))?;
+
+        tracing::debug!("call_rpc_async: Converting result to JSON...");
         js_value_to_json(result, &mut self.ctx)
     }
 
