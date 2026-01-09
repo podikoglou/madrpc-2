@@ -1,4 +1,6 @@
 use madrpc_common::protocol::error::{MadrpcError, Result as MadrpcResult};
+use madrpc_client::MadrpcClient;
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -174,15 +176,16 @@ impl HealthChecker {
         }
     }
 
-    /// Check a single node's health via HTTP.
+    /// Check a single node's health via JSON-RPC.
     ///
     /// This performs the actual health check by:
-    /// 1. Sending HTTP GET request to `http://{addr}/__health`
-    /// 2. Verifying response is successful (status code 200)
+    /// 1. Creating a MadrpcClient for the node address
+    /// 2. Calling the `_health` JSON-RPC method
+    /// 3. Verifying the response contains the expected status
     ///
     /// # Arguments
-    /// * `addr` - Node address to connect to
-    /// * `timeout` - Maximum time to wait for connection and response
+    /// * `addr` - Node address to connect to (e.g., "http://127.0.0.1:8081" or "127.0.0.1:8081")
+    /// * `timeout` - Maximum time to wait for the health check response
     ///
     /// # Returns
     /// - `Ok(())` - Node is healthy
@@ -191,43 +194,37 @@ impl HealthChecker {
         addr: &str,
         timeout: Duration,
     ) -> MadrpcResult<()> {
-        use hyper::Request;
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-        use http_body_util::Full;
-        use hyper::body::Bytes;
+        // Normalize address - ensure it has http:// prefix if missing
+        let base_url = if addr.starts_with("http://") || addr.starts_with("https://") {
+            addr.to_string()
+        } else {
+            format!("http://{}", addr)
+        };
 
-        // Build HTTP health check request
-        // Strip http:// or https:// prefix if present
-        let clean_addr = addr.strip_prefix("http://")
-            .or_else(|| addr.strip_prefix("https://"))
-            .unwrap_or(addr);
-        let url = format!("http://{}/__health", clean_addr);
-        let http_request = Request::builder()
-            .method("GET")
-            .uri(&url)
-            .body(Full::new(Bytes::new()))
-            .map_err(|e| MadrpcError::Transport(format!("Failed to build health check request: {}", e)))?;
+        // Create client for this health check
+        let client = MadrpcClient::new(&base_url).await
+            .map_err(|e| MadrpcError::Transport(format!("Failed to create health check client: {}", e)))?;
 
-        // Create HTTP client
-        let client = Client::builder(TokioExecutor::new()).build_http();
-
-        // Send request with timeout
-        let response_future = client.request(http_request);
-        let response = tokio::time::timeout(timeout, response_future)
+        // Call _health with timeout
+        let health_future = client.call("_health", json!({}));
+        let result = tokio::time::timeout(timeout, health_future)
             .await
-            .map_err(|_| MadrpcError::Timeout(timeout.as_millis() as u64))?
-            .map_err(|e| MadrpcError::Transport(format!("HTTP health check failed: {}", e)))?;
+            .map_err(|_| MadrpcError::Timeout(timeout.as_millis() as u64))?;
 
-        // Verify response is successful
-        if response.status() != hyper::StatusCode::OK {
-            return Err(MadrpcError::NodeUnavailable(format!(
-                "Health check returned status: {}",
-                response.status()
-            )));
+        // Verify the response contains the expected status
+        match result {
+            Ok(response) => {
+                if response["status"] == "healthy" {
+                    Ok(())
+                } else {
+                    Err(MadrpcError::NodeUnavailable(format!(
+                        "Health check returned unexpected status: {}",
+                        response
+                    )))
+                }
+            }
+            Err(e) => Err(e),
         }
-
-        Ok(())
     }
 
     /// Process health check result for a node.
@@ -541,29 +538,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check_url_handling() {
-        // Test that addresses with http:// prefix are handled correctly
-        // This is a compile-time check that the code doesn't panic
-
-        // The actual URL construction happens in check_node_health
-        // We just need to verify it compiles and doesn't create malformed URLs
+        // Test that addresses are normalized correctly for MadrpcClient
         let test_cases = vec![
-            "127.0.0.1:8081",
-            "http://127.0.0.1:8081",
-            "https://127.0.0.1:8081",
+            ("127.0.0.1:8081", "http://127.0.0.1:8081"),
+            ("http://127.0.0.1:8081", "http://127.0.0.1:8081"),
+            ("https://127.0.0.1:8081", "https://127.0.0.1:8081"),
         ];
 
-        for addr in test_cases {
-            // Verify strip_prefix works correctly
-            let clean_addr = addr.strip_prefix("http://")
-                .or_else(|| addr.strip_prefix("https://"))
-                .unwrap_or(addr);
-
-            // All should result in the same clean address
-            assert_eq!(clean_addr, "127.0.0.1:8081");
-
-            // URL construction should work
-            let url = format!("http://{}/__health", clean_addr);
-            assert_eq!(url, "http://127.0.0.1:8081/__health");
+        for (input, expected) in test_cases {
+            let base_url = if input.starts_with("http://") || input.starts_with("https://") {
+                input.to_string()
+            } else {
+                format!("http://{}", input)
+            };
+            assert_eq!(base_url, expected);
         }
     }
 }

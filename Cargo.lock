@@ -1423,6 +1423,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "madrpc-client",
  "madrpc-common",
  "madrpc-metrics",
  "serde_json",
