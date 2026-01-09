@@ -8,8 +8,8 @@ madrpc-client = { path = "../madrpc-client" }
 madrpc-common = { path = "../madrpc-common" }
 madrpc-metrics = { path = "../madrpc-metrics" }
 num_cpus = "1.16"
-boa_engine = { path = "/tmp/boa/core/engine" }
-boa_gc = { path = "/tmp/boa/core/gc", features = ["thin-vec"] }
+boa_engine = "0.21"
+boa_gc = "0.21"
 serde_json = "1.0"
 thiserror = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
