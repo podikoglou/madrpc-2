@@ -80,6 +80,10 @@ impl NodeRouter {
 
         // Handle built-in methods
         match req.method.as_str() {
+            "_health" => {
+                // Health check endpoint - returns success if node is running
+                Ok(JsonRpcResponse::success(id, serde_json::json!({"status": "healthy"})))
+            }
             "_metrics" => {
                 match self.node.get_metrics().await {
                     Ok(metrics) => Ok(JsonRpcResponse::success(id, metrics)),
@@ -173,6 +177,25 @@ mod tests {
         assert!(response.result.is_some());
         assert!(response.error.is_none());
         assert_eq!(response.result.unwrap()["server_type"], "node");
+    }
+
+    #[tokio::test]
+    async fn test_router_health_handler() {
+        let script = create_test_script("// empty");
+        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+        let router = NodeRouter::new(node.clone());
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "_health".into(),
+            params: json!({}),
+            id: json!(1),
+        };
+
+        let response = router.handle_request(req).await.unwrap();
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
+        assert_eq!(response.result.unwrap()["status"], "healthy");
     }
 
     #[tokio::test]
