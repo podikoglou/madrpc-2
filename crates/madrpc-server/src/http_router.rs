@@ -117,6 +117,7 @@ impl NodeRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
