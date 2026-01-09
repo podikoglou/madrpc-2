@@ -39,6 +39,7 @@
 //! let response = Response::success(request.id, json!({"result": 42}));
 //! ```
 
+pub mod builtin;
 pub mod error;
 pub mod jsonrpc;
 pub mod requests;
@@ -47,6 +48,7 @@ pub mod responses;
 #[cfg(test)]
 mod tests;
 
+pub use builtin::*;
 pub use error::{MadrpcError, Result};
 pub use jsonrpc::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
 pub use requests::{Request, RequestId, MethodName, RpcArgs};

@@ -500,29 +500,13 @@ async fn test_metrics_endpoints() {
     let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
     let (node_addr, _handle) = start_node_server(node).await;
 
-    let client = reqwest::Client::new();
+    // Test _info endpoint using JSON-RPC
+    let info_response = http_jsonrpc_call(node_addr, "_info", serde_json::json!({})).await;
+    assert!(info_response["result"]["server_type"].is_string());
 
-    // Test _info endpoint
-    let info_response = client
-        .get(format!("http://{}/_info", node_addr))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(info_response.status(), 200);
-    let info: serde_json::Value = info_response.json().await.unwrap();
-    assert!(info["type"].is_string());
-
-    // Test _metrics endpoint
-    let metrics_response = client
-        .get(format!("http://{}/_metrics", node_addr))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(metrics_response.status(), 200);
-    let metrics: serde_json::Value = metrics_response.json().await.unwrap();
-    assert!(metrics["total_requests"].is_number());
+    // Test _metrics endpoint using JSON-RPC
+    let metrics_response = http_jsonrpc_call(node_addr, "_metrics", serde_json::json!({})).await;
+    assert!(metrics_response["result"]["total_requests"].is_number());
 }
 
 // ============================================================================

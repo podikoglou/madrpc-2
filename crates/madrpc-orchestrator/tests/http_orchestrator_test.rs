@@ -4,7 +4,7 @@
 //! using mock node servers.
 
 use madrpc_orchestrator::{Orchestrator, HealthCheckConfig, RetryConfig};
-use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError, InfoResponse};
 use serde_json::json;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -390,10 +390,10 @@ async fn test_orchestrator_get_metrics() {
         let _ = orchestrator.forward_request_jsonrpc(req).await;
     }
 
-    // Get metrics
+    // Get metrics - now returns MetricsResponse (MetricsSnapshot)
     let metrics = orchestrator.get_metrics().await.unwrap();
-    assert!(metrics["nodes"].is_array());
-    assert!(metrics["metrics"].is_object());
+    assert!(metrics.nodes.is_some());
+    assert!(!metrics.methods.is_empty());
 }
 
 #[tokio::test]
@@ -402,11 +402,16 @@ async fn test_orchestrator_get_info() {
     let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
 
     let info = orchestrator.get_info().await.unwrap();
-    assert_eq!(info["server_type"], "orchestrator");
-    assert_eq!(info["total_nodes"], 1);
-    assert_eq!(info["enabled_nodes"], 1);
-    assert_eq!(info["disabled_nodes"], 0);
-    assert!(info["nodes"].is_array());
-    assert!(info["uptime_ms"].is_number());
-    assert!(info["version"].is_string());
+    // Match on the enum variant
+    match info {
+        InfoResponse::Orchestrator(orch_info) => {
+            assert_eq!(orch_info.total_nodes, 1);
+            assert_eq!(orch_info.enabled_nodes, 1);
+            assert_eq!(orch_info.disabled_nodes, 0);
+            assert_eq!(orch_info.nodes.len(), 1);
+            assert!(orch_info.uptime_ms > 0);
+            assert!(!orch_info.version.is_empty());
+        }
+        InfoResponse::Node(_) => panic!("Expected Orchestrator variant"),
+    }
 }
