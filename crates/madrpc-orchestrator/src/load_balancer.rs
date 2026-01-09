@@ -124,7 +124,7 @@ impl LoadBalancer {
                 // Skip nodes with open circuits (fail fast)
                 if node.circuit_state != CircuitBreakerState::Open {
                     node.request_count += 1;
-                    node.last_request_time = Some(Instant::now());
+                    node.last_request_time = Some(std::time::SystemTime::now());
                     return Some(self.enabled_nodes[idx].clone());
                 }
             }
@@ -505,7 +505,7 @@ impl LoadBalancer {
         self.nodes.values().map(|node| {
             let last_request_ms = node.last_request_time
                 .and_then(|instant| {
-                    instant.checked_duration_since(UNIX_EPOCH.start)
+                    instant.duration_since(UNIX_EPOCH).ok()
                 })
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
