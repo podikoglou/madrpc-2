@@ -302,7 +302,7 @@ impl HealthChecker {
             let failures = lb.consecutive_failures(&update.node_addr);
             if lb.auto_disable_node(&update.node_addr) {
                 warn!(
-                    "Node {} disabled after {} consecutive health check failures: {}",
+                    "Node {} disabled after {} failed health checks: {}",
                     update.node_addr,
                     failures,
                     error_msg.unwrap_or_else(|| "unknown error".to_string())

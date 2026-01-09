@@ -252,8 +252,11 @@ async fn main() -> Result<()> {
 
     // Initialize tracing only for non-call commands (to keep output clean for unix tool usage)
     if !matches!(cli.command, Commands::Call(_)) {
+        // Set default log level to INFO, but allow RUST_LOG env var to override
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
         tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(env_filter)
             .init();
     }
 
@@ -299,10 +302,6 @@ async fn main() -> Result<()> {
                 };
                 madrpc_orchestrator::Orchestrator::with_config(args.nodes, config).await?
             } else {
-                tracing::info!("Health check interval: {}s", args.health_check_interval_secs);
-                tracing::info!("Health check timeout: {}ms", args.health_check_timeout_ms);
-                tracing::info!("Health check failure threshold: {}", args.health_check_failure_threshold);
-
                 let config = madrpc_orchestrator::HealthCheckConfig {
                     interval: std::time::Duration::from_secs(args.health_check_interval_secs),
                     timeout: std::time::Duration::from_millis(args.health_check_timeout_ms),
