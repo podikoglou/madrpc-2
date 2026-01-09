@@ -395,9 +395,11 @@ async fn test_orchestrator_get_info() {
     let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
 
     let info = orchestrator.get_info().await.unwrap();
-    assert_eq!(info["type"], "orchestrator");
+    assert_eq!(info["server_type"], "orchestrator");
     assert_eq!(info["total_nodes"], 1);
     assert_eq!(info["enabled_nodes"], 1);
     assert_eq!(info["disabled_nodes"], 0);
     assert!(info["nodes"].is_array());
+    assert!(info["uptime_ms"].is_number());
+    assert!(info["version"].is_string());
 }
