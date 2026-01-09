@@ -208,6 +208,7 @@ impl Node {
             // Block on the async call_rpc_async using a new runtime
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_time()
+                .enable_io()
                 .build()
                 .unwrap();
 

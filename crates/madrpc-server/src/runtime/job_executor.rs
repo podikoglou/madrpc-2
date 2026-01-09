@@ -187,6 +187,7 @@ impl JobExecutor for TokioJobExecutor {
                     // Create a new runtime for the blocking operation
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_time()
+                        .enable_io()
                         .build()
                         .unwrap();
 
@@ -199,6 +200,7 @@ impl JobExecutor for TokioJobExecutor {
             // Create a new runtime and block on it
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_time()
+                .enable_io()
                 .build()
                 .unwrap();
 
@@ -209,6 +211,7 @@ impl JobExecutor for TokioJobExecutor {
         // No current runtime, create a new one
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            .enable_io()
             .build()
             .unwrap();
 
