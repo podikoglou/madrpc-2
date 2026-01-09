@@ -13,6 +13,17 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // ============================================================================
+// Mock Node Server State
+// ============================================================================
+
+/// Combined state for the mock node server
+#[derive(Clone)]
+struct MockNodeState {
+    handlers: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    healthy: Arc<AtomicBool>,
+}
+
+// ============================================================================
 // Mock Node Server
 // ============================================================================
 
@@ -20,10 +31,8 @@ use tokio::sync::Mutex;
 struct MockNodeServer {
     /// Server address
     addr: SocketAddr,
-    /// Method handlers mapping
-    handlers: Arc<Mutex<HashMap<String, serde_json::Value>>>,
-    /// Whether the server is healthy
-    healthy: Arc<AtomicBool>,
+    /// Combined state
+    state: MockNodeState,
     /// Tokio server handle
     _handle: tokio::task::JoinHandle<()>,
 }
@@ -40,7 +49,7 @@ impl MockNodeServer {
         use axum::{
             extract::State,
             http::StatusCode,
-            response::{IntoResponse, Response},
+            response::IntoResponse,
             routing::{get, post},
             Router,
         };
@@ -50,18 +59,18 @@ impl MockNodeServer {
         let handlers: Arc<Mutex<HashMap<String, serde_json::Value>>> = Arc::new(Mutex::new(HashMap::new()));
         let healthy = Arc::new(AtomicBool::new(true));
 
-        // Clone for move into handler
-        let handlers_clone = handlers.clone();
-        let healthy_clone = healthy.clone();
+        let state = MockNodeState {
+            handlers: handlers.clone(),
+            healthy: healthy.clone(),
+        };
 
         // JSON-RPC handler
         async fn handle_jsonrpc(
-            State(handlers): State<Arc<Mutex<HashMap<String, serde_json::Value>>>>,
-            State(healthy): State<Arc<AtomicBool>>,
+            State(state): State<MockNodeState>,
             body: Bytes,
         ) -> impl IntoResponse {
             // Check if healthy
-            if !healthy.load(Ordering::Relaxed) {
+            if !state.healthy.load(Ordering::Relaxed) {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "Node unhealthy".to_string(),
@@ -74,13 +83,13 @@ impl MockNodeServer {
                 Err(_) => {
                     let error = JsonRpcError::parse_error();
                     let resp = JsonRpcResponse::error(json!(null), error);
-                    return (StatusCode::OK, serde_json::to_vec(&resp).unwrap());
+                    return (StatusCode::OK, serde_json::to_string(&resp).unwrap());
                 }
             };
 
             // Get handler response
             let result = {
-                let handlers = handlers.lock().await;
+                let handlers = state.handlers.lock().await;
                 handlers.get(&req.method).cloned()
             };
 
@@ -92,14 +101,14 @@ impl MockNodeServer {
                 }
             };
 
-            (StatusCode::OK, serde_json::to_vec(&response).unwrap())
+            (StatusCode::OK, serde_json::to_string(&response).unwrap())
         }
 
         // Health check handler
         async fn handle_health(
-            State(healthy): State<Arc<AtomicBool>>,
+            State(state): State<MockNodeState>,
         ) -> impl IntoResponse {
-            if healthy.load(Ordering::Relaxed) {
+            if state.healthy.load(Ordering::Relaxed) {
                 (StatusCode::OK, "OK")
             } else {
                 (StatusCode::SERVICE_UNAVAILABLE, "Unhealthy")
@@ -110,8 +119,7 @@ impl MockNodeServer {
         let app = Router::new()
             .route("/", post(handle_jsonrpc))
             .route("/__health", get(handle_health))
-            .with_state(handlers_clone)
-            .with_state(healthy_clone);
+            .with_state(state.clone());
 
         // Bind and spawn server
         let listener = tokio::net::TcpListener::bind(addr)
@@ -129,8 +137,7 @@ impl MockNodeServer {
 
         Self {
             addr,
-            handlers,
-            healthy,
+            state,
             _handle: handle,
         }
     }
@@ -142,13 +149,13 @@ impl MockNodeServer {
 
     /// Registers a handler for a method.
     async fn register_handler(&self, method: &str, response: serde_json::Value) {
-        let mut handlers = self.handlers.lock().await;
+        let mut handlers = self.state.handlers.lock().await;
         handlers.insert(method.to_string(), response);
     }
 
     /// Sets the health status of the node.
     fn set_healthy(&self, healthy: bool) {
-        self.healthy.store(healthy, Ordering::Relaxed);
+        self.state.healthy.store(healthy, Ordering::Relaxed);
     }
 }
 
