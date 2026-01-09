@@ -171,7 +171,7 @@ pub struct Node {
     /// Total number of requests forwarded to this node
     pub request_count: u64,
     /// Timestamp of the last request to this node
-    pub last_request_time: Option<Instant>,
+    pub last_request_time: Option<SystemTime>,
 }
 
 impl Node {
