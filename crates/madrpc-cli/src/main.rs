@@ -250,8 +250,10 @@ struct CallArgs {
 async fn main() -> Result<()> {
     let cli: Cli = argh::from_env();
 
-    // Initialize tracing only for non-call commands (to keep output clean for unix tool usage)
-    if !matches!(cli.command, Commands::Call(_)) {
+    // Initialize tracing only for non-call and non-top commands
+    // - call: keep output clean for unix tool usage (piping to jq, etc.)
+    // - top: prevent logs from messing up the TUI (errors are shown in the UI instead)
+    if !matches!(cli.command, Commands::Call(_) | Commands::Top(_)) {
         // Set default log level to INFO, but allow RUST_LOG env var to override
         let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
