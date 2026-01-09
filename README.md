@@ -78,12 +78,12 @@ cargo run -r -- orchestrator \
 ```bash
 # Terminal 2
 cargo run -r -- node \
-  -s examples/monte-carlo-pi/scripts/pi.js \
+  -s examples/monte-carlo-pi.js \
   -b 0.0.0.0:9001
 
 # Terminal 3
 cargo run -r -- node \
-  -s examples/monte-carlo-pi/scripts/pi.js \
+  -s examples/monte-carlo-pi.js \
   -b 0.0.0.0:9002
 ```
 
