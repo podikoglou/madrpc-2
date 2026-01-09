@@ -485,58 +485,23 @@ impl Orchestrator {
         node_addr: &str,
         req: &madrpc_common::protocol::JsonRpcRequest,
     ) -> Result<serde_json::Value> {
-        use hyper::Request;
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-        use http_body_util::Full;
-        use hyper::body::Bytes;
+        use madrpc_client::MadrpcClient;
 
-        // Build HTTP request
-        // Strip http:// or https:// prefix if present (node_addrs may include scheme)
-        let clean_addr = node_addr.strip_prefix("http://")
-            .or_else(|| node_addr.strip_prefix("https://"))
-            .unwrap_or(node_addr);
-        let url = format!("http://{}/", clean_addr);
-        let body = serde_json::to_vec(req)
-            .map_err(|e| MadrpcError::JsonSerialization(e))?;
+        // Normalize address - ensure it has http:// prefix if missing
+        let base_url = if node_addr.starts_with("http://") || node_addr.starts_with("https://") {
+            node_addr.to_string()
+        } else {
+            format!("http://{}", node_addr)
+        };
 
-        let http_request = Request::builder()
-            .method("POST")
-            .uri(&url)
-            .header("Content-Type", "application/json")
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|e| MadrpcError::Transport(format!("Failed to build request: {}", e)))?;
+        // Create client for this request
+        let client = MadrpcClient::new(&base_url).await
+            .map_err(|e| MadrpcError::Transport(format!("Failed to create RPC client: {}", e)))?;
 
-        // Create HTTP client
-        let client = Client::builder(TokioExecutor::new()).build_http();
+        // Call the method with params
+        let result = client.call(&req.method, req.params.clone()).await?;
 
-        // Send request with timeout
-        let timeout = Duration::from_secs(30);
-        let response_future = client.request(http_request);
-        let response = tokio::time::timeout(timeout, response_future)
-            .await
-            .map_err(|_| MadrpcError::Timeout(timeout.as_millis() as u64))?
-            .map_err(|e| MadrpcError::Transport(format!("HTTP request failed: {}", e)))?;
-
-        // Read response body
-        let body_bytes = response.into_body();
-        let body_bytes = axum::body::to_bytes(axum::body::Body::new(body_bytes), usize::MAX)
-            .await
-            .map_err(|e| MadrpcError::Transport(format!("Failed to read response: {}", e)))?;
-
-        // Parse JSON-RPC response
-        let jsonrpc_response: madrpc_common::protocol::JsonRpcResponse =
-            serde_json::from_slice(&body_bytes)
-                .map_err(|e| MadrpcError::JsonSerialization(e))?;
-
-        // Extract result or error
-        if let Some(error) = jsonrpc_response.error {
-            return Err(MadrpcError::JavaScriptExecution(error.message));
-        }
-
-        jsonrpc_response.result.ok_or_else(|| {
-            MadrpcError::Transport("Response missing result".to_string())
-        })
+        Ok(result)
     }
 
     /// Gets orchestrator metrics as a JSON value.
