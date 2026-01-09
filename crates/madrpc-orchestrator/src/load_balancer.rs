@@ -120,9 +120,11 @@ impl LoadBalancer {
             let idx = self.round_robin_index % self.enabled_nodes.len();
             self.round_robin_index = self.round_robin_index.wrapping_add(1) % self.enabled_nodes.len();
 
-            if let Some(node) = self.nodes.get(&self.enabled_nodes[idx]) {
+            if let Some(node) = self.nodes.get_mut(&self.enabled_nodes[idx]) {
                 // Skip nodes with open circuits (fail fast)
                 if node.circuit_state != CircuitBreakerState::Open {
+                    node.request_count += 1;
+                    node.last_request_time = Some(Instant::now());
                     return Some(self.enabled_nodes[idx].clone());
                 }
             }
@@ -491,6 +493,30 @@ impl LoadBalancer {
         if let Some(node) = self.nodes.get_mut(addr) {
             f(node);
         }
+    }
+
+    /// Gets per-node metrics for all nodes.
+    ///
+    /// Returns a HashMap of node address to NodeMetrics, including
+    /// request counts and last request times converted to Unix timestamps.
+    pub fn node_metrics(&self) -> std::collections::HashMap<String, madrpc_metrics::NodeMetrics> {
+        use std::time::UNIX_EPOCH;
+
+        self.nodes.values().map(|node| {
+            let last_request_ms = node.last_request_time
+                .and_then(|instant| {
+                    instant.checked_duration_since(UNIX_EPOCH.start)
+                })
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+
+            let metrics = madrpc_metrics::NodeMetrics {
+                node_addr: node.addr.clone(),
+                request_count: node.request_count,
+                last_request_ms,
+            };
+            (node.addr.clone(), metrics)
+        }).collect()
     }
 }
 
@@ -1098,5 +1124,94 @@ mod tests {
             lb.circuit_state("node1"),
             Some(CircuitBreakerState::Open)
         );
+    }
+
+    // ============================================================================
+    // Request Tracking Tests
+    // ============================================================================
+
+    #[test]
+    fn test_request_count_increments_on_selection() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string(), "node2".to_string()]);
+
+        // Select nodes multiple times
+        lb.next_node();
+        lb.next_node();
+        lb.next_node();
+
+        let nodes = lb.all_nodes();
+        let node1 = nodes.iter().find(|n| n.addr == "node1").unwrap();
+        let node2 = nodes.iter().find(|n| n.addr == "node2").unwrap();
+
+        // Each node should have been selected at least once
+        assert_eq!(node1.request_count + node2.request_count, 3);
+    }
+
+    #[test]
+    fn test_last_request_time_updated_on_selection() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+
+        // Initially no request time
+        let nodes = lb.all_nodes();
+        assert!(nodes[0].last_request_time.is_none());
+
+        // Select node
+        lb.next_node();
+
+        // Should have request time set
+        let nodes = lb.all_nodes();
+        assert!(nodes[0].last_request_time.is_some());
+        assert_eq!(nodes[0].request_count, 1);
+    }
+
+    #[test]
+    fn test_node_metrics_conversion() {
+        let mut lb = LoadBalancer::new(vec!["node1".to_string()]);
+
+        // Make some requests
+        lb.next_node();
+        lb.next_node();
+
+        let metrics = lb.node_metrics();
+        assert_eq!(metrics.len(), 1);
+
+        let node1_metrics = metrics.get("node1").unwrap();
+        assert_eq!(node1_metrics.node_addr, "node1");
+        assert_eq!(node1_metrics.request_count, 2);
+        assert!(node1_metrics.last_request_ms > 0);
+    }
+
+    #[test]
+    fn test_node_metrics_for_multiple_nodes() {
+        let mut lb = LoadBalancer::new(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ]);
+
+        // Make requests
+        for _ in 0..6 {
+            lb.next_node();
+        }
+
+        let metrics = lb.node_metrics();
+        assert_eq!(metrics.len(), 3);
+
+        // Each node should have 2 requests (round-robin)
+        assert_eq!(metrics["node1"].request_count, 2);
+        assert_eq!(metrics["node2"].request_count, 2);
+        assert_eq!(metrics["node3"].request_count, 2);
+    }
+
+    #[test]
+    fn test_node_metrics_unselected_nodes() {
+        let lb = LoadBalancer::new(vec!["node1".to_string()]);
+
+        let metrics = lb.node_metrics();
+        let node1_metrics = metrics.get("node1").unwrap();
+
+        // Unselected node should have 0 requests and 0 timestamp
+        assert_eq!(node1_metrics.request_count, 0);
+        assert_eq!(node1_metrics.last_request_ms, 0);
     }
 }

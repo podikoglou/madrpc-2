@@ -545,27 +545,15 @@ impl Orchestrator {
     /// - `Ok(Value)` - Metrics data
     /// - `Err(MadrpcError)` - Error if metrics collection fails
     pub async fn get_metrics(&self) -> Result<serde_json::Value> {
-        let nodes = self.nodes_with_status().await;
-        let snapshot = self.metrics_collector.snapshot();
+        let mut snapshot = self.metrics_collector.snapshot();
 
-        let nodes_data: Vec<serde_json::Value> = nodes
-            .into_iter()
-            .map(|node| {
-                serde_json::json!({
-                    "addr": node.addr,
-                    "enabled": node.enabled,
-                    "circuit_state": format!("{:?}", node.circuit_state),
-                    "consecutive_failures": node.consecutive_failures,
-                    "last_health_check": node.last_health_check_status
-                        .map(|s| format!("{:?}", s))
-                })
-            })
-            .collect();
+        // Populate per-node metrics from the load balancer
+        let lb = self.load_balancer.read().await;
+        snapshot.nodes = Some(lb.node_metrics());
+        drop(lb);
 
-        Ok(serde_json::json!({
-            "nodes": nodes_data,
-            "metrics": serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null)
-        }))
+        serde_json::to_value(snapshot)
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize metrics: {}", e)))
     }
 
     /// Gets orchestrator information as a JSON value.

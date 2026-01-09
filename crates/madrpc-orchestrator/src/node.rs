@@ -168,6 +168,10 @@ pub struct Node {
     /// Used to determine when the circuit should transition from Open to HalfOpen
     /// based on exponential backoff.
     pub circuit_opened_at: Option<SystemTime>,
+    /// Total number of requests forwarded to this node
+    pub request_count: u64,
+    /// Timestamp of the last request to this node
+    pub last_request_time: Option<Instant>,
 }
 
 impl Node {
@@ -193,6 +197,8 @@ impl Node {
             last_health_check_status: None,
             circuit_state: CircuitBreakerState::Closed,
             circuit_opened_at: None,
+            request_count: 0,
+            last_request_time: None,
         }
     }
 
@@ -264,6 +270,8 @@ mod tests {
         assert!(node.last_health_check_status.is_none());
         assert_eq!(node.circuit_state, CircuitBreakerState::Closed);
         assert!(node.circuit_opened_at.is_none());
+        assert_eq!(node.request_count, 0);
+        assert!(node.last_request_time.is_none());
     }
 
     #[test]
