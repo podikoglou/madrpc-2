@@ -79,12 +79,14 @@ cargo run -r -- orchestrator \
 # Terminal 2
 cargo run -r -- node \
   -s examples/monte-carlo-pi.js \
-  -b 127.0.0.1:9001
+  -b 127.0.0.1:9001 \
+  --orchestrator http://127.0.0.1:8080
 
 # Terminal 3
 cargo run -r -- node \
   -s examples/monte-carlo-pi.js \
-  -b 127.0.0.1:9002
+  -b 127.0.0.1:9002 \
+  --orchestrator http://127.0.0.1:8080
 ```
 
 **3. Make RPC calls** via the CLI:
@@ -96,7 +98,7 @@ cargo run -r -- call http://127.0.0.1:8080 aggregate
 **4. Monitor with the TUI** (optional):
 
 ```bash
-cargo run -r -- top 127.0.0.1:8080
+cargo run -r -- top http://127.0.0.1:8080
 ```
 
 ## Writing RPCs
@@ -117,7 +119,7 @@ madrpc.register('add', (args) => {
 Call it via the CLI:
 
 ```bash
-cargo run -r -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
+cargo run -r -- call http://127.0.0.1:8080 add '{"a": 5, "b": 3}'
 # Output: {"result":8}
 ```
 
@@ -176,7 +178,7 @@ madrpc.register('parallel_sum', async (args) => {
 The client makes a single call, and JavaScript handles the parallel orchestration:
 
 ```bash
-cargo run -r -- call 127.0.0.1:8080 parallel_sum '{"numNodes": 50, "value": 10}'
+cargo run -r -- call http://127.0.0.1:8080 parallel_sum '{"numNodes": 50, "value": 10}'
 # JavaScript fans out to 50 parallel RPC calls
 ```
 
@@ -310,7 +312,7 @@ cargo run -r -- call <ORCHESTRATOR_ADDR> <METHOD> <ARGS_JSON>
 **Example:**
 
 ```bash
-cargo run -r -- call 127.0.0.1:8080 add '{"a": 5, "b": 3}'
+cargo run -r -- call http://127.0.0.1:8080 add '{"a": 5, "b": 3}'
 ```
 
 ## Wire Protocol
