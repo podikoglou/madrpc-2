@@ -285,26 +285,26 @@ impl TopApp {
         let title = Line::from(vec![
             Span::styled(
                 "MaDRPC ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{}", server_type_str),
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" | "),
             Span::styled(
                 format!("{}", self.server_address),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(Color::White),
             ),
             Span::raw(" | "),
             Span::styled(
                 format!("Refresh: {}ms", self.interval_ms),
-                Style::default().fg(Color::Blue),
+                Style::default().fg(Color::White),
             ),
             Span::raw(" | "),
             Span::styled(
                 "Press 'q' to quit",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
         ]);
 
@@ -312,7 +312,7 @@ impl TopApp {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
+                    .border_style(Style::default().fg(Color::DarkGray))
             )
             .alignment(Alignment::Center);
 
@@ -344,44 +344,44 @@ impl TopApp {
 
         let text = vec![
             Line::from(vec![
-                Span::styled("Total Requests: ", Style::default().fg(Color::Cyan)),
+                Span::styled("Total Requests: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}", metrics.total_requests),
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled("Success: ", Style::default().fg(Color::Green)),
+                Span::styled("Success: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}", metrics.successful_requests),
                     Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled("Failed: ", Style::default().fg(Color::Red)),
+                Span::styled("Failed: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}", metrics.failed_requests),
                     Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled("Success Rate: ", Style::default().fg(Color::Cyan)),
+                Span::styled("Success Rate: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}%", success_rate),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Active Connections: ", Style::default().fg(Color::Cyan)),
+                Span::styled("Active Connections: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}", metrics.active_connections),
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled("Uptime: ", Style::default().fg(Color::Cyan)),
+                Span::styled("Uptime: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     uptime_str,
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled("Methods: ", Style::default().fg(Color::Cyan)),
+                Span::styled("Methods: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}", metrics.methods.len()),
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -393,9 +393,9 @@ impl TopApp {
             .block(
                 Block::default()
                     .title(" Summary ")
-                    .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                    .title_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
+                    .border_style(Style::default().fg(Color::DarkGray))
             )
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Center);
@@ -414,7 +414,7 @@ impl TopApp {
                 Span::styled(error, Style::default().fg(Color::Red)),
             ]),
             Line::from(vec![
-                Span::styled("Will keep trying to connect...", Style::default().fg(Color::Yellow)),
+                Span::styled("Will keep trying to connect...", Style::default().fg(Color::DarkGray)),
             ]),
         ];
 
@@ -424,7 +424,7 @@ impl TopApp {
                     .title(" Status ")
                     .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Red))
+                    .border_style(Style::default().fg(Color::DarkGray))
             )
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Center);
@@ -439,7 +439,7 @@ impl TopApp {
     fn draw_loading(&self, f: &mut Frame<'_>, area: Rect) {
         let text = vec![
             Line::from(vec![
-                Span::styled("Connecting to server...", Style::default().fg(Color::Yellow)),
+                Span::styled("Connecting to server...", Style::default().fg(Color::White)),
             ]),
         ];
 
@@ -447,9 +447,9 @@ impl TopApp {
             .block(
                 Block::default()
                     .title(" Status ")
-                    .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    .title_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow))
+                    .border_style(Style::default().fg(Color::DarkGray))
             )
             .wrap(Wrap { trim: true })
             .alignment(Alignment::Center);
@@ -501,13 +501,13 @@ impl TopApp {
         .block(
             Block::default()
                 .title(" Node Distribution ")
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                .title_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(Color::DarkGray))
         )
         .header(
             Row::new(vec!["Node Address", "Requests", "Last Request"])
-                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
         )
         .widths([
             Constraint::Percentage(40),
@@ -558,13 +558,13 @@ impl TopApp {
         .block(
             Block::default()
                 .title(" Method Metrics ")
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                .title_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(Color::DarkGray))
         )
         .header(
             Row::new(vec!["Method", "Calls", "Success", "Failed", "P50", "P95", "P99"])
-                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
         )
         .widths([
             Constraint::Percentage(25),
