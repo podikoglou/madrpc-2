@@ -1,4 +1,4 @@
-use madrpc_common::protocol::{Request, Response};
+use madrpc_common::protocol::{Request, Response, MetricsResponse, InfoResponse, NodeInfo};
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use crate::runtime::MadrpcContext;
 use madrpc_metrics::{MetricsCollector, NodeMetricsCollector};
@@ -232,31 +232,27 @@ impl Node {
     ///
     /// # Returns
     ///
-    /// A `Result` containing the metrics snapshot as a JSON Value
+    /// A `Result` containing the metrics snapshot
     ///
     /// # Errors
     ///
     /// Returns an error if metrics collection fails
-    pub async fn get_metrics(&self) -> Result<serde_json::Value> {
-        let snapshot = self.metrics_collector.snapshot();
-        serde_json::to_value(snapshot)
-            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize metrics: {}", e)))
+    pub async fn get_metrics(&self) -> Result<MetricsResponse> {
+        Ok(self.metrics_collector.snapshot())
     }
 
     /// Gets server information.
     ///
     /// # Returns
     ///
-    /// A `Result` containing the server info as a JSON Value
+    /// A `Result` containing the server info
     ///
     /// # Errors
     ///
     /// Returns an error if info collection fails
-    pub async fn get_info(&self) -> Result<serde_json::Value> {
+    pub async fn get_info(&self) -> Result<InfoResponse> {
         let uptime_ms = self.metrics_collector.snapshot().uptime_ms;
-        let info = madrpc_metrics::ServerInfo::new(madrpc_metrics::ServerType::Node, uptime_ms);
-        serde_json::to_value(info)
-            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize info: {}", e)))
+        Ok(InfoResponse::Node(NodeInfo::new(uptime_ms)))
     }
 }
 

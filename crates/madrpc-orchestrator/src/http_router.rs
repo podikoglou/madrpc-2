@@ -72,7 +72,10 @@ impl OrchestratorRouter {
     /// A JSON-RPC response with metrics or error
     async fn handle_metrics(&self, req: JsonRpcRequest) -> JsonRpcResponse {
         match self.orchestrator.get_metrics().await {
-            Ok(metrics) => JsonRpcResponse::success(req.id, metrics),
+            Ok(metrics) => {
+                let value = serde_json::to_value(metrics).unwrap();
+                JsonRpcResponse::success(req.id, value)
+            }
             Err(e) => {
                 let error = JsonRpcError::server_error(&e.to_string());
                 JsonRpcResponse::error(req.id, error)
@@ -94,7 +97,10 @@ impl OrchestratorRouter {
     /// A JSON-RPC response with info or error
     async fn handle_info(&self, req: JsonRpcRequest) -> JsonRpcResponse {
         match self.orchestrator.get_info().await {
-            Ok(info) => JsonRpcResponse::success(req.id, info),
+            Ok(info) => {
+                let value = serde_json::to_value(info).unwrap();
+                JsonRpcResponse::success(req.id, value)
+            }
             Err(e) => {
                 let error = JsonRpcError::server_error(&e.to_string());
                 JsonRpcResponse::error(req.id, error)

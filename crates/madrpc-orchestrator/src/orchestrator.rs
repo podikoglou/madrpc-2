@@ -1,7 +1,6 @@
-use madrpc_common::protocol::{Request, Response};
+use madrpc_common::protocol::{Request, Response, MetricsResponse, InfoResponse, OrchestratorInfo, OrchestratorNodeInfo, ServerType};
 use madrpc_common::protocol::error::{MadrpcError, Result};
 use madrpc_metrics::{MetricsCollector, OrchestratorMetricsCollector};
-use serde_json::json;
 use crate::load_balancer::LoadBalancer;
 use crate::node::Node;
 use crate::health_checker::{HealthChecker, HealthCheckConfig};
@@ -504,7 +503,7 @@ impl Orchestrator {
         Ok(result)
     }
 
-    /// Gets orchestrator metrics as a JSON value.
+    /// Gets orchestrator metrics as a typed response.
     ///
     /// Returns metrics including:
     /// - Request counts per node
@@ -512,9 +511,9 @@ impl Orchestrator {
     /// - Node health status
     ///
     /// # Returns
-    /// - `Ok(Value)` - Metrics data
+    /// - `Ok(MetricsResponse)` - Metrics data
     /// - `Err(MadrpcError)` - Error if metrics collection fails
-    pub async fn get_metrics(&self) -> Result<serde_json::Value> {
+    pub async fn get_metrics(&self) -> Result<MetricsResponse> {
         let mut snapshot = self.metrics_collector.snapshot();
 
         // Populate per-node metrics from the load balancer
@@ -522,11 +521,10 @@ impl Orchestrator {
         snapshot.nodes = Some(lb.node_metrics());
         drop(lb);
 
-        serde_json::to_value(snapshot)
-            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize metrics: {}", e)))
+        Ok(snapshot)
     }
 
-    /// Gets orchestrator information as a JSON value.
+    /// Gets orchestrator information as a typed response.
     ///
     /// Returns information including:
     /// - Server type (Orchestrator)
@@ -536,40 +534,37 @@ impl Orchestrator {
     /// - Circuit breaker states
     ///
     /// # Returns
-    /// - `Ok(Value)` - Info data with ServerInfo base + orchestrator-specific fields
+    /// - `Ok(InfoResponse)` - Info data with orchestrator-specific fields
     /// - `Err(MadrpcError)` - Error if info collection fails
-    pub async fn get_info(&self) -> Result<serde_json::Value> {
+    pub async fn get_info(&self) -> Result<InfoResponse> {
         let nodes = self.nodes_with_status().await;
         let enabled_nodes: Vec<&Node> = nodes.iter().filter(|n| n.enabled).collect();
 
         let uptime_ms = self.metrics_collector.snapshot().uptime_ms;
-        let base_info = madrpc_metrics::ServerInfo::new(madrpc_metrics::ServerType::Orchestrator, uptime_ms);
 
-        let nodes_data: Vec<serde_json::Value> = nodes
+        let nodes_data: Vec<OrchestratorNodeInfo> = nodes
             .iter()
             .map(|node| {
-                serde_json::json!({
-                    "addr": node.addr,
-                    "enabled": node.enabled,
-                    "disable_reason": node.disable_reason.map(|r| format!("{:?}", r)),
-                    "circuit_state": format!("{:?}", node.circuit_state),
-                    "consecutive_failures": node.consecutive_failures,
-                })
+                OrchestratorNodeInfo {
+                    addr: node.addr.clone(),
+                    enabled: node.enabled,
+                    disable_reason: node.disable_reason.as_ref().map(|r| format!("{:?}", r)),
+                    circuit_state: format!("{:?}", node.circuit_state),
+                    consecutive_failures: node.consecutive_failures,
+                }
             })
             .collect();
 
-        let mut info = serde_json::to_value(base_info)
-            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize server info: {}", e)))?;
+        let info = OrchestratorInfo {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            uptime_ms,
+            total_nodes: nodes.len(),
+            enabled_nodes: enabled_nodes.len(),
+            disabled_nodes: nodes.len() - enabled_nodes.len(),
+            nodes: nodes_data,
+        };
 
-        // Add orchestrator-specific fields
-        if let Some(obj) = info.as_object_mut() {
-            obj.insert("total_nodes".to_string(), json!(nodes.len()));
-            obj.insert("enabled_nodes".to_string(), json!(enabled_nodes.len()));
-            obj.insert("disabled_nodes".to_string(), json!(nodes.len() - enabled_nodes.len()));
-            obj.insert("nodes".to_string(), json!(nodes_data));
-        }
-
-        Ok(info)
+        Ok(InfoResponse::Orchestrator(info))
     }
 }
 

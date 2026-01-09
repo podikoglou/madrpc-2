@@ -22,7 +22,7 @@
 //! let router = NodeRouter::new(node);
 //! ```
 
-use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError, HealthResponse};
 use madrpc_common::protocol::error::MadrpcError;
 use crate::node::Node;
 use std::sync::Arc;
@@ -82,17 +82,18 @@ impl NodeRouter {
         match req.method.as_str() {
             "_health" => {
                 // Health check endpoint - returns success if node is running
-                Ok(JsonRpcResponse::success(id, serde_json::json!({"status": "healthy"})))
+                let health = HealthResponse::healthy();
+                Ok(JsonRpcResponse::success(id, serde_json::to_value(health).unwrap()))
             }
             "_metrics" => {
                 match self.node.get_metrics().await {
-                    Ok(metrics) => Ok(JsonRpcResponse::success(id, metrics)),
+                    Ok(metrics) => Ok(JsonRpcResponse::success(id, serde_json::to_value(metrics).unwrap())),
                     Err(e) => Ok(JsonRpcResponse::error(id, JsonRpcError::internal_error(&e.to_string()))),
                 }
             }
             "_info" => {
                 match self.node.get_info().await {
-                    Ok(info) => Ok(JsonRpcResponse::success(id, info)),
+                    Ok(info) => Ok(JsonRpcResponse::success(id, serde_json::to_value(info).unwrap())),
                     Err(e) => Ok(JsonRpcResponse::error(id, JsonRpcError::internal_error(&e.to_string()))),
                 }
             }
