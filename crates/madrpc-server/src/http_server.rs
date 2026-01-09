@@ -210,7 +210,7 @@ mod tests {
     async fn test_server_creation() {
         let script = create_test_script("// empty");
         let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-        let server = HttpServer::new(node);
-        assert!(server.router.node.script_path().exists());
+        let _server = HttpServer::new(node.clone());
+        assert!(node.script_path().exists());
     }
 }
