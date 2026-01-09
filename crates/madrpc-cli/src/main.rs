@@ -9,6 +9,9 @@
 //! # Start a node
 //! madrpc node -s script.js -b 0.0.0.0:9001
 //!
+//! # Start a node with orchestrator support
+//! madrpc node -s script.js -b 0.0.0.0:9001 --orchestrator http://127.0.0.1:8080
+//!
 //! # Start an orchestrator
 //! madrpc orchestrator -b 0.0.0.0:8080 -n http://127.0.0.1:9001 -n http://127.0.0.1:9002
 //!
@@ -18,10 +21,43 @@
 //! # Make an RPC call (outputs raw JSON)
 //! madrpc call http://127.0.0.1:8080 method_name '{"arg": "value"}'
 //! ```
+//!
+//! ## URL Format
+//!
+//! All URLs must include the `http://` or `https://` prefix:
+//! - ✅ `http://127.0.0.1:8080`
+//! - ✅ `https://example.com:8080`
+//! - ❌ `127.0.0.1:8080`
 
 use argh::FromArgs;
 use anyhow::Result;
 use std::net::SocketAddr;
+
+/// Validates that a URL string starts with http:// or https://
+///
+/// # Arguments
+///
+/// * `url` - The URL string to validate
+/// * `description` - Human-readable description of what the URL is for (e.g., "node address")
+///
+/// # Returns
+///
+/// `Ok(())` if the URL is valid, `Err` otherwise
+///
+/// # Errors
+///
+/// Returns an error if the URL doesn't start with http:// or https://
+fn validate_http_url(url: &str, description: &str) -> Result<()> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Invalid {}: '{}' must start with http:// or https://",
+            description,
+            url
+        ))
+    }
+}
 
 /// Main CLI structure parsed from command-line arguments.
 ///
@@ -84,6 +120,7 @@ struct NodeArgs {
     ///
     /// If provided, the node will register itself with the orchestrator
     /// for automatic discovery. Otherwise, the node operates standalone.
+    /// Must include the http:// or https:// prefix (e.g., http://127.0.0.1:8080).
     #[argh(option, long = "orchestrator")]
     orchestrator: Option<String>,
 }
@@ -125,6 +162,7 @@ struct OrchestratorArgs {
     /// Can be specified multiple times to add multiple nodes. Requests are
     /// distributed using round-robin load balancing. At least one node is
     /// recommended for useful operation.
+    /// Must include the http:// or https:// prefix (e.g., http://127.0.0.1:8081).
     #[argh(option, short = 'n', long = "node")]
     nodes: Vec<String>,
 
@@ -173,10 +211,10 @@ struct OrchestratorArgs {
 ///
 /// ```bash
 /// # Monitor orchestrator (shows node distribution)
-/// madrpc top 127.0.0.1:8080
+/// madrpc top http://127.0.0.1:8080
 ///
 /// # Monitor node with slower refresh
-/// madrpc top --interval 1000 127.0.0.1:9001
+/// madrpc top --interval 1000 http://127.0.0.1:9001
 /// ```
 #[derive(FromArgs)]
 #[argh(subcommand, name = "top")]
@@ -186,6 +224,7 @@ struct TopArgs {
     ///
     /// Can be an orchestrator or a standalone node. The TUI automatically
     /// detects the server type and adjusts the display accordingly.
+    /// Must include the http:// or https:// prefix (e.g., http://127.0.0.1:8080).
     #[argh(positional)]
     server_address: String,
 
@@ -213,13 +252,13 @@ struct TopArgs {
 ///
 /// ```bash
 /// # Call a method with no arguments
-/// madrpc call 127.0.0.1:8080 get_status
+/// madrpc call http://127.0.0.1:8080 get_status
 ///
 /// # Call with arguments
-/// madrpc call 127.0.0.1:8080 monte_carlo '{"samples": 1000000}'
+/// madrpc call http://127.0.0.1:8080 monte_carlo '{"samples": 1000000}'
 ///
 /// # Pipe output to jq for processing
-/// madrpc call 127.0.0.1:8080 get_stats | jq '.pi_estimate'
+/// madrpc call http://127.0.0.1:8080 get_stats | jq '.pi_estimate'
 /// ```
 #[derive(FromArgs)]
 #[argh(subcommand, name = "call")]
@@ -228,6 +267,7 @@ struct CallArgs {
     /// address of the server to call
     ///
     /// Can be an orchestrator (which load balances) or a specific node.
+    /// Must include the http:// or https:// prefix (e.g., http://127.0.0.1:8080).
     #[argh(positional)]
     server_address: String,
 
@@ -267,8 +307,13 @@ async fn main() -> Result<()> {
             tracing::info!("Starting MaDRPC node with script: {}", args.script);
             tracing::info!("Binding to: {}", args.bind);
 
-            let node = if let Some(orch_addr) = &args.orchestrator {
+            // Validate orchestrator URL if provided
+            if let Some(orch_addr) = &args.orchestrator {
+                validate_http_url(orch_addr, "orchestrator address")?;
                 tracing::info!("Configured with orchestrator: {}", orch_addr);
+            }
+
+            let node = if let Some(orch_addr) = &args.orchestrator {
                 madrpc_server::Node::with_orchestrator(
                     std::path::PathBuf::from(&args.script),
                     orch_addr.clone(),
@@ -289,6 +334,11 @@ async fn main() -> Result<()> {
             tracing::info!("Starting MaDRPC orchestrator");
             tracing::info!("Binding to: {}", args.bind);
             tracing::info!("Nodes: {:?}", args.nodes);
+
+            // Validate all node URLs
+            for node_addr in &args.nodes {
+                validate_http_url(node_addr, "node address")?;
+            }
 
             if args.nodes.is_empty() {
                 tracing::warn!("No nodes specified! Use --node <addr> to add nodes.");
@@ -322,6 +372,8 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Top(args) => {
+            // Validate server address
+            validate_http_url(&args.server_address, "server address")?;
             madrpc_cli::top::run_top(args.server_address, args.interval_ms).await
         }
         Commands::Call(args) => {
@@ -348,6 +400,9 @@ async fn main() -> Result<()> {
 /// - The connection to the server fails
 /// - The RPC call itself fails
 async fn run_call(args: CallArgs) -> Result<()> {
+    // Validate server address
+    validate_http_url(&args.server_address, "server address")?;
+
     // Parse args JSON string
     let args_value: serde_json::Value = serde_json::from_str(&args.args)
         .map_err(|e| anyhow::anyhow!("Invalid JSON in args: {}", e))?;
