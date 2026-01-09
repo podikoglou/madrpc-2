@@ -3,9 +3,10 @@ name = "madrpc-integration-tests"
 version.workspace = true
 edition.workspace = true
 
-[[test]]
-name = "integration"
-path = "integration_test.rs"
+# NOTE: integration_test.rs does not exist yet, commented out to prevent build errors
+# [[test]]
+# name = "integration"
+# path = "integration_test.rs"
 
 [[test]]
 name = "dangerous_code_paths"
