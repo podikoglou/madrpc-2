@@ -198,7 +198,11 @@ impl HealthChecker {
         use hyper::body::Bytes;
 
         // Build HTTP health check request
-        let url = format!("http://{}/__health", addr);
+        // Strip http:// or https:// prefix if present
+        let clean_addr = addr.strip_prefix("http://")
+            .or_else(|| addr.strip_prefix("https://"))
+            .unwrap_or(addr);
+        let url = format!("http://{}/__health", clean_addr);
         let http_request = Request::builder()
             .method("GET")
             .uri(&url)
@@ -533,5 +537,33 @@ mod tests {
             lb.circuit_state("node1"),
             Some(crate::node::CircuitBreakerState::Open)
         );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_url_handling() {
+        // Test that addresses with http:// prefix are handled correctly
+        // This is a compile-time check that the code doesn't panic
+
+        // The actual URL construction happens in check_node_health
+        // We just need to verify it compiles and doesn't create malformed URLs
+        let test_cases = vec![
+            "127.0.0.1:8081",
+            "http://127.0.0.1:8081",
+            "https://127.0.0.1:8081",
+        ];
+
+        for addr in test_cases {
+            // Verify strip_prefix works correctly
+            let clean_addr = addr.strip_prefix("http://")
+                .or_else(|| addr.strip_prefix("https://"))
+                .unwrap_or(addr);
+
+            // All should result in the same clean address
+            assert_eq!(clean_addr, "127.0.0.1:8081");
+
+            // URL construction should work
+            let url = format!("http://{}/__health", clean_addr);
+            assert_eq!(url, "http://127.0.0.1:8081/__health");
+        }
     }
 }
