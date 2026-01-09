@@ -371,7 +371,7 @@ mod tests {
         // Verify register function exists
         let madrpc_obj = madrpc.as_object().unwrap();
         let register_fn = madrpc_obj.get(js_string!("register"), &mut ctx).unwrap();
-        assert!(register_fn.is_function(), "register should be a function");
+        assert!(register_fn.is_callable(), "register should be a function");
 
         // Verify call function does NOT exist (no client)
         let call_fn = madrpc_obj.get(js_string!("call"), &mut ctx).unwrap();
@@ -428,7 +428,7 @@ mod tests {
         let registry_obj = registry.as_object().unwrap();
 
         let test_fn = registry_obj.get(js_string!("test"), &mut ctx).unwrap();
-        assert!(test_fn.is_function(), "Registered function should exist");
+        assert!(test_fn.is_callable(), "Registered function should exist");
     }
 
     /// Test that register validates arguments
@@ -461,10 +461,10 @@ mod tests {
         let rt2 = get_blocking_runtime();
         assert!(rt2.is_ok(), "Second call should return existing runtime");
 
-        // They should be the same pointer
+        // They should be the same pointer (using reference equality)
         assert_eq!(
-            rt1.unwrap().as_ptr(),
-            rt2.unwrap().as_ptr(),
+            std::ptr::eq(rt1.unwrap(), rt2.unwrap()),
+            true,
             "Should return the same runtime instance"
         );
     }
@@ -485,19 +485,18 @@ mod tests {
         let props = madrpc_obj.own_property_keys(&mut ctx).unwrap();
 
         for prop in props {
-            if let Some(prop_str) = prop.as_string() {
-                let prop_name = prop_str.to_std_string().unwrap();
-                if prop_name.contains("ptr") || prop_name.contains("pointer") {
-                    panic!("Found property with 'ptr' in name: {} (pointer-as-number storage detected)", prop_name);
-                }
+            // PropertyKey can be String, Symbol, or Index - to_string() returns String
+            let prop_str = prop.to_string();
+            if prop_str.contains("ptr") || prop_str.contains("pointer") {
+                panic!("Found property with 'ptr' in name: {} (pointer-as-number storage detected)", prop_str);
+            }
 
-                let value = madrpc_obj.get(prop, &mut ctx).unwrap();
-                if value.is_number() {
-                    let num = value.as_number().unwrap();
-                    // Check if it looks like a pointer (very large number)
-                    if num > 1_000_000_000.0 {
-                        panic!("Found large number property {} = {} (might be a pointer)", prop_name, num);
-                    }
+            let value = madrpc_obj.get(prop, &mut ctx).unwrap();
+            if value.is_number() {
+                let num = value.as_number().unwrap();
+                // Check if it looks like a pointer (very large number)
+                if num > 1_000_000_000.0 {
+                    panic!("Found large number property {} = {} (might be a pointer)", prop_str, num);
                 }
             }
         }
