@@ -492,7 +492,11 @@ impl Orchestrator {
         use hyper::body::Bytes;
 
         // Build HTTP request
-        let url = format!("http://{}/", node_addr);
+        // Strip http:// or https:// prefix if present (node_addrs may include scheme)
+        let clean_addr = node_addr.strip_prefix("http://")
+            .or_else(|| node_addr.strip_prefix("https://"))
+            .unwrap_or(node_addr);
+        let url = format!("http://{}/", clean_addr);
         let body = serde_json::to_vec(req)
             .map_err(|e| MadrpcError::JsonSerialization(e))?;
 
