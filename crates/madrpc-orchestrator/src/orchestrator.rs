@@ -1,6 +1,7 @@
 use madrpc_common::protocol::{Request, Response};
 use madrpc_common::protocol::error::{MadrpcError, Result};
 use madrpc_metrics::{MetricsCollector, OrchestratorMetricsCollector};
+use serde_json::json;
 use crate::load_balancer::LoadBalancer;
 use crate::node::Node;
 use crate::health_checker::{HealthChecker, HealthCheckConfig};
@@ -559,16 +560,21 @@ impl Orchestrator {
     /// Gets orchestrator information as a JSON value.
     ///
     /// Returns information including:
+    /// - Server type (Orchestrator)
+    /// - Version and uptime
     /// - Node count and addresses
     /// - Load balancer state
     /// - Circuit breaker states
     ///
     /// # Returns
-    /// - `Ok(Value)` - Info data
+    /// - `Ok(Value)` - Info data with ServerInfo base + orchestrator-specific fields
     /// - `Err(MadrpcError)` - Error if info collection fails
     pub async fn get_info(&self) -> Result<serde_json::Value> {
         let nodes = self.nodes_with_status().await;
         let enabled_nodes: Vec<&Node> = nodes.iter().filter(|n| n.enabled).collect();
+
+        let uptime_ms = self.metrics_collector.snapshot().uptime_ms;
+        let base_info = madrpc_metrics::ServerInfo::new(madrpc_metrics::ServerType::Orchestrator, uptime_ms);
 
         let nodes_data: Vec<serde_json::Value> = nodes
             .iter()
@@ -583,14 +589,18 @@ impl Orchestrator {
             })
             .collect();
 
-        Ok(serde_json::json!({
-            "type": "orchestrator",
-            "version": env!("CARGO_PKG_VERSION"),
-            "total_nodes": nodes.len(),
-            "enabled_nodes": enabled_nodes.len(),
-            "disabled_nodes": nodes.len() - enabled_nodes.len(),
-            "nodes": nodes_data,
-        }))
+        let mut info = serde_json::to_value(base_info)
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to serialize server info: {}", e)))?;
+
+        // Add orchestrator-specific fields
+        if let Some(obj) = info.as_object_mut() {
+            obj.insert("total_nodes".to_string(), json!(nodes.len()));
+            obj.insert("enabled_nodes".to_string(), json!(enabled_nodes.len()));
+            obj.insert("disabled_nodes".to_string(), json!(nodes.len() - enabled_nodes.len()));
+            obj.insert("nodes".to_string(), json!(nodes_data));
+        }
+
+        Ok(info)
     }
 }
 
