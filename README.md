@@ -90,7 +90,7 @@ cargo run -r -- node \
 **3. Make RPC calls** via the CLI:
 
 ```bash
-cargo run -r -- call 127.0.0.1:8080 monte_carlo '{"samples": 1000000}'
+cargo run -r -- call http://127.0.0.1:8080 aggregate
 ```
 
 **4. Monitor with the TUI** (optional):
