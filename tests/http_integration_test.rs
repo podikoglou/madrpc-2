@@ -353,8 +353,38 @@ async fn test_monte_carlo_pi() {
 #[tokio::test]
 async fn test_monte_carlo_aggregate() {
     let script = create_monte_carlo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+
+    // Start multiple nodes with the same script
+    let mut node_addrs = vec![];
+    for _ in 0..3 {
+        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+        let (addr, _handle) = start_node_server(node).await;
+        node_addrs.push(format!("http://{}", addr));
+    }
+
+    // Start orchestrator with all nodes
+    let orch = Arc::new(
+        Orchestrator::with_config(
+            node_addrs.clone(),
+            HealthCheckConfig {
+                interval: Duration::from_secs(10),
+                timeout: Duration::from_millis(500),
+                failure_threshold: 3,
+            },
+        )
+        .await
+        .unwrap(),
+    );
+
+    let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
+
+    // Create a node with orchestrator support for distributed RPC
+    let node_with_orch = Arc::new(
+        Node::with_orchestrator(script.path().to_path_buf(), format!("http://{}", orch_addr))
+            .await
+            .unwrap(),
+    );
+    let (node_addr, _handle) = start_node_server(node_with_orch).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
         .await
@@ -517,8 +547,38 @@ async fn test_metrics_endpoints() {
 async fn test_distributed_rpc() {
     // This tests the aggregate function which uses madrpc.call internally
     let script = create_monte_carlo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+
+    // Start multiple nodes with the same script
+    let mut node_addrs = vec![];
+    for _ in 0..2 {
+        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+        let (addr, _handle) = start_node_server(node).await;
+        node_addrs.push(format!("http://{}", addr));
+    }
+
+    // Start orchestrator with all nodes
+    let orch = Arc::new(
+        Orchestrator::with_config(
+            node_addrs.clone(),
+            HealthCheckConfig {
+                interval: Duration::from_secs(10),
+                timeout: Duration::from_millis(500),
+                failure_threshold: 3,
+            },
+        )
+        .await
+        .unwrap(),
+    );
+
+    let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
+
+    // Create a node with orchestrator support for distributed RPC
+    let node_with_orch = Arc::new(
+        Node::with_orchestrator(script.path().to_path_buf(), format!("http://{}", orch_addr))
+            .await
+            .unwrap(),
+    );
+    let (node_addr, _handle) = start_node_server(node_with_orch).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
         .await
