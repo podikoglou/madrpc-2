@@ -13,6 +13,52 @@ const LATENCY_BUFFER_SIZE: usize = 1000;
 /// The counter uses monotonically increasing values as a fallback timestamp.
 static TIMESTAMP_FALLBACK: AtomicU64 = AtomicU64::new(1);
 
+/// Tracks the last issued timestamp to ensure monotonicity.
+///
+/// Since SystemTime::now() can return the same millisecond value for
+/// consecutive calls, we use this to ensure each timestamp is strictly
+/// greater than the previous one. This is critical for correct LRU eviction.
+static LAST_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
+
+/// Generates a monotonically increasing timestamp in milliseconds.
+///
+/// This function ensures that each call returns a timestamp strictly greater
+/// than all previous timestamps. This is critical for correct LRU eviction
+/// behavior, as we need to guarantee a total ordering of access times.
+///
+/// # Implementation
+///
+/// 1. Get the current system time in milliseconds
+/// 2. Compare with the last issued timestamp
+/// 3. Return the greater of the two, ensuring monotonicity
+/// 4. Update LAST_TIMESTAMP to the returned value
+///
+/// Uses `Ordering::SeqCst` to ensure that the timestamp is globally visible
+/// and that concurrent calls result in strictly increasing values.
+fn get_monotonic_timestamp() -> u64 {
+    let system_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
+
+    // Use a compare-and-swap loop to ensure we return a timestamp
+    // that is strictly greater than all previously issued timestamps.
+    loop {
+        let last = LAST_TIMESTAMP.load(Ordering::Acquire);
+        let new_timestamp = system_time.max(last + 1);
+
+        match LAST_TIMESTAMP.compare_exchange_weak(
+            last,
+            new_timestamp,
+            Ordering::SeqCst,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return new_timestamp,
+            Err(_) => continue, // Another thread updated the timestamp, retry
+        }
+    }
+}
+
 /// Configuration for metrics cleanup and size limits.
 ///
 /// Controls memory usage and entry lifetime for both method and node metrics.
@@ -217,10 +263,7 @@ struct MethodStats {
 impl MethodStats {
     /// Creates a new method stats struct with current timestamp.
     fn new() -> Self {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
+        let now = get_monotonic_timestamp();
         Self {
             call_count: AtomicU64::new(0),
             success_count: AtomicU64::new(0),
@@ -232,8 +275,8 @@ impl MethodStats {
 
     /// Updates the last access timestamp to the current time.
     ///
-    /// Uses either `SystemTime` or the fallback counter if the system clock
-    /// is unavailable. This timestamp is used for TTL-based cleanup.
+    /// Uses `get_monotonic_timestamp()` to ensure strictly increasing timestamps,
+    /// which is critical for correct LRU eviction behavior.
     ///
     /// # Memory Ordering
     ///
@@ -242,10 +285,7 @@ impl MethodStats {
     /// - Small timing variations don't affect correctness
     /// - The RwLock provides synchronization for entry access
     fn update_last_access(&self) {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
+        let now = get_monotonic_timestamp();
         // Relaxed ordering is safe for timestamp because:
         // - Timestamps are used for approximate TTL checking, not precise ordering
         // - Small timing variations don't affect correctness
@@ -382,10 +422,7 @@ impl NodeStats {
     fn record_request(&self) {
         // Relaxed ordering is safe for counters (see MethodStats::increment_call comment)
         self.request_count.fetch_add(1, Ordering::Relaxed);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
+        let now = get_monotonic_timestamp();
         // Relaxed ordering is safe for timestamp (see MethodStats::update_last_access comment)
         self.last_request_ms.store(now, Ordering::Relaxed);
     }
@@ -715,10 +752,7 @@ impl MetricsRegistry {
     ///
     /// The cleanup is performed separately for methods and nodes.
     fn cleanup_stale_entries(&self) {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or_else(|_| TIMESTAMP_FALLBACK.fetch_add(1, Ordering::SeqCst));
+        let now = get_monotonic_timestamp();
 
         // Clean up stale methods
         {
