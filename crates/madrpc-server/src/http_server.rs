@@ -150,7 +150,7 @@ impl HttpServer {
         if req.method() != hyper::Method::POST {
             return Ok(HttpTransport::to_http_error(
                 json!(null),
-                JsonRpcError::invalid_params("Only POST requests are supported")
+                JsonRpcError::invalid_request()
             ));
         }
 

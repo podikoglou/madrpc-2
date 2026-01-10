@@ -33,12 +33,9 @@ fn create_test_script_with_register() -> tempfile::NamedTempFile {
         });
 
         madrpc.register('async_func', async function(args) {
-            // Simulate async work
-            return new Promise((resolve) => {
-                setTimeout(() => {
-                    resolve({ result: args.value * 2 });
-                }, 10);
-            });
+            // Simulate async work with a Promise
+            // Note: setTimeout is not available in Boa, so we use Promise directly
+            return Promise.resolve({ result: args.value * 2 });
         });
     "#;
     fs::write(file.path(), content).unwrap();
@@ -59,12 +56,28 @@ async fn start_test_server(node: std::sync::Arc<Node>) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
+    // Channel to signal when server is ready
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
     tokio::spawn(async move {
+        // Drop the listener to release the port
+        drop(listener);
+
+        // Small delay to ensure port is released
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Signal that we're about to start the server
+        let _ = ready_tx.send(());
+
         server.run(addr).await.unwrap();
     });
 
-    // Wait for server to start
+    // Wait for server to be ready to start
+    let _ = ready_rx.await;
+
+    // Additional wait for server to actually bind and start listening
     tokio::time::sleep(Duration::from_millis(100)).await;
+
     addr
 }
 
