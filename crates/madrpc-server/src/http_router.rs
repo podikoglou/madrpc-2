@@ -18,7 +18,9 @@
 //! use madrpc_server::Node;
 //! use std::sync::Arc;
 //!
-//! let node = Arc::new(Node::new(script_path).unwrap());
+//! # let script = tempfile::NamedTempFile::new().unwrap();
+//! # std::fs::write(script.path(), "// empty").unwrap();
+//! let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
 //! let router = NodeRouter::new(node);
 //! ```
 
@@ -54,7 +56,9 @@ impl NodeRouter {
     /// use madrpc_server::Node;
     /// use std::sync::Arc;
     ///
-    /// let node = Arc::new(Node::new(script_path).unwrap());
+    /// # let script = tempfile::NamedTempFile::new().unwrap();
+    /// # std::fs::write(script.path(), "// empty").unwrap();
+    /// let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
     /// let router = NodeRouter::new(node);
     /// ```
     pub fn new(node: Arc<Node>) -> Self {

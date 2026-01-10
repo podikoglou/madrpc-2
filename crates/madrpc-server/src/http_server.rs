@@ -22,7 +22,9 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let node = Arc::new(Node::new(script_path).unwrap());
+//! #    let script = tempfile::NamedTempFile::new().unwrap();
+//! #    std::fs::write(script.path(), "// empty").unwrap();
+//!     let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
 //!     let server = HttpServer::new(node);
 //!     server.run("127.0.0.1:8080".parse().unwrap()).await.unwrap();
 //! }
@@ -70,7 +72,9 @@ impl HttpServer {
     /// use madrpc_server::Node;
     /// use std::sync::Arc;
     ///
-    /// let node = Arc::new(Node::new(script_path).unwrap());
+    /// # let script = tempfile::NamedTempFile::new().unwrap();
+    /// # std::fs::write(script.path(), "// empty").unwrap();
+    /// let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
     /// let server = HttpServer::new(node);
     /// ```
     pub fn new(node: Arc<Node>) -> Self {
@@ -97,7 +101,9 @@ impl HttpServer {
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let node = Arc::new(Node::new(script_path).unwrap());
+    /// #    let script = tempfile::NamedTempFile::new().unwrap();
+    /// #    std::fs::write(script.path(), "// empty").unwrap();
+    ///     let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
     ///     let server = HttpServer::new(node);
     ///     server.run("127.0.0.1:8080".parse().unwrap()).await.unwrap();
     /// }
