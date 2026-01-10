@@ -59,5 +59,5 @@ mod registry;
 mod snapshot;
 
 pub use collector::{MetricsCollector, NodeMetricsCollector, OrchestratorMetricsCollector};
-pub use registry::MetricsRegistry;
+pub use registry::{MetricsConfig, MetricsRegistry};
 pub use snapshot::{MethodMetrics, MetricsSnapshot, NodeMetrics, ServerInfo, ServerType};
