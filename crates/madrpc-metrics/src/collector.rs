@@ -83,8 +83,11 @@ pub trait MetricsCollector: Send + Sync {
     /// * `success` - `true` if the call succeeded, `false` if it failed
     ///
     /// # Example
-    /// ```rust
+    /// ```
+    /// use madrpc_metrics::{NodeMetricsCollector, MetricsCollector};
     /// use std::time::Instant;
+    ///
+    /// let collector = NodeMetricsCollector::new();
     /// let start = Instant::now();
     /// // ... execute RPC call ...
     /// let success = true; // or false if it failed
@@ -157,7 +160,7 @@ impl NodeMetricsCollector {
     /// * `config` - The metrics configuration controlling limits and TTLs
     ///
     /// # Example
-    /// ```rust
+    /// ```
     /// use madrpc_metrics::{NodeMetricsCollector, MetricsConfig};
     ///
     /// let config = MetricsConfig {
@@ -166,7 +169,7 @@ impl NodeMetricsCollector {
     ///     method_ttl_secs: 300,  // 5 minutes
     ///     node_ttl_secs: 300,
     /// };
-    /// let collector = NodeMetricsCollector::with_config(config);
+    /// let _collector = NodeMetricsCollector::with_config(config);
     /// ```
     pub fn with_config(config: MetricsConfig) -> Self {
         Self {
@@ -228,8 +231,8 @@ impl MetricsCollector for NodeMetricsCollector {
 ///
 /// # Example
 ///
-/// ```rust
-/// use madrpc_metrics::OrchestratorMetricsCollector;
+/// ```
+/// use madrpc_metrics::{OrchestratorMetricsCollector, MetricsCollector};
 ///
 /// let collector = OrchestratorMetricsCollector::new();
 ///
@@ -298,10 +301,14 @@ impl OrchestratorMetricsCollector {
     /// * `node_addr` - The address of the node that received the request
     ///
     /// # Example
-    /// ```rust
+    /// ```
+    /// use madrpc_metrics::OrchestratorMetricsCollector;
+    ///
+    /// let collector = OrchestratorMetricsCollector::new();
+    ///
     /// // In orchestrator request handling
-    /// let selected_node = load_balancer.next_node();
-    /// collector.record_node_request(&selected_node.addr);
+    /// let selected_node_addr = "127.0.0.1:9001";
+    /// collector.record_node_request(selected_node_addr);
     /// // ... forward request to selected_node ...
     /// ```
     pub fn record_node_request(&self, node_addr: &str) {
