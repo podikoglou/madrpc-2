@@ -104,8 +104,8 @@ impl NodeRouter {
                     Err(e) => {
                         // Convert MadrpcError to appropriate JSON-RPC error
                         match e {
-                            MadrpcError::InvalidRequest(msg) => {
-                                Ok(JsonRpcResponse::error(id, JsonRpcError::invalid_params(&msg)))
+                            MadrpcError::InvalidRequest(_msg) => {
+                                Ok(JsonRpcResponse::error(id, JsonRpcError::method_not_found()))
                             }
                             MadrpcError::JavaScriptExecution(msg) => {
                                 Ok(JsonRpcResponse::error(id, JsonRpcError::server_error(&msg)))
