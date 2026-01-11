@@ -1,4 +1,4 @@
-use madrpc_common::protocol::{Request, Response, MetricsResponse, InfoResponse, OrchestratorInfo, OrchestratorNodeInfo, ServerType};
+use madrpc_common::protocol::{Request, Response, MetricsResponse, InfoResponse, OrchestratorInfo, OrchestratorNodeInfo};
 use madrpc_common::protocol::error::{MadrpcError, Result};
 use madrpc_metrics::{MetricsCollector, OrchestratorMetricsCollector};
 use crate::load_balancer::LoadBalancer;
@@ -398,15 +398,16 @@ impl Orchestrator {
     /// Forwards a JSON-RPC request to a node via HTTP.
     ///
     /// This is the HTTP/JSON-RPC version of `forward_request` that:
-    /// 1. Uses the load balancer to select the next node
-    /// 2. Makes an HTTP POST request to the node
-    /// 3. Returns the result as a serde_json::Value
+    /// 1. Handles built-in methods (_metrics, _info) locally
+    /// 2. Uses the load balancer to select the next node for other methods
+    /// 3. Makes an HTTP POST request to the node
+    /// 4. Returns the result as a serde_json::Value
     ///
     /// # Arguments
     /// * `req` - JSON-RPC request to forward
     ///
     /// # Returns
-    /// - `Ok(Value)` - Result from the node
+    /// - `Ok(Value)` - Result from the node or built-in method
     /// - `Err(MadrpcError)` - Error if forwarding fails
     pub async fn forward_request_jsonrpc(
         &self,
@@ -414,6 +415,27 @@ impl Orchestrator {
     ) -> Result<serde_json::Value> {
         let start_time = Instant::now();
         let method = req.method.clone();
+
+        // Handle built-in methods locally (do NOT forward these)
+        if self.metrics_collector.is_metrics_request(&method) {
+            // Convert req.id (Value) to u64
+            let id_u64 = match req.id {
+                serde_json::Value::Number(n) => n.as_u64().unwrap_or(0),
+                serde_json::Value::String(ref s) => s.parse::<u64>().unwrap_or(0),
+                serde_json::Value::Null => 0,
+                _ => 0,
+            };
+            let response = self.metrics_collector.handle_metrics_request(&method, id_u64)?;
+            // Convert Response to serde_json::Value
+            if let Some(result) = response.result {
+                return Ok(result);
+            } else {
+                return Err(MadrpcError::InvalidRequest(
+                    response.error.map(|e| e.to_string()).unwrap_or_else(|| "Unknown error".to_string())
+                ));
+            }
+        }
+
         let mut backoff_ms = self.retry_config.initial_backoff_ms;
 
         // Retry loop with exponential backoff
