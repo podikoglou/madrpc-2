@@ -54,7 +54,7 @@ pub struct NodeContainer {
 impl NodeContainer {
     /// Start a new node container with the given script content.
     pub async fn start(script_content: String) -> anyhow::Result<Self> {
-        let image = GenericImage::new("madrpc:test", "")
+        let image = GenericImage::new("madrpc", "test")
             .with_exposed_port(9001.tcp())
             .with_wait_for(WaitFor::message_on_stdout("Server listening on"))
             .with_copy_to("/app/script.js", CopyDataSource::Data(script_content.into_bytes()))
