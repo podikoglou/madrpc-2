@@ -31,20 +31,21 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 1: Immediate Critical Fixes (Week 1)
 
-### Status: Pending
+### Status: In Progress (1/6 complete)
 **Goal**: Eliminate all critical issues that could cause data corruption, DoS, or system failure
 
-#### 1.1 Fix Request ID Generation Bug
+#### 1.1 Fix Request ID Generation Bug ✅
 **Crate**: `madrpc-common`
 **Location**: `src/protocol/requests.rs:165-178`
 **Impact**: Request ID collisions leading to data corruption
 **Effort**: 1-2 hours
+**Completed**: 2026-01-11
 
-- Change timestamp from nanoseconds to seconds (60+ bits → 32 bits)
-- Update mask to properly shift timestamp to upper 32 bits
-- Change atomic ordering from `SeqCst` to `Relaxed`
-- Add test verifying no collisions under high concurrency
-- Document the 32-bit second validity (until 2106)
+- [x] Change timestamp from nanoseconds to seconds (60+ bits → 32 bits)
+- [x] Update mask to properly shift timestamp to upper 32 bits
+- [x] Change atomic ordering from `SeqCst` to `Relaxed`
+- [x] Add test verifying no collisions under high concurrency
+- [x] Document the 32-bit second validity (until 2106)
 
 #### 1.2 Add Request Size Limits
 **Crate**: `madrpc-server`
@@ -413,7 +414,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 ## Quick Reference
 
 ### Critical Bugs (Phase 1)
-- [ ] Request ID generation (madrpc-common)
+- [x] Request ID generation (madrpc-common) - Completed 2026-01-11
 - [ ] Request size limits (madrpc-server)
 - [ ] Connection limiting (madrpc-server)
 - [ ] Promise polling timeout (madrpc-server)
