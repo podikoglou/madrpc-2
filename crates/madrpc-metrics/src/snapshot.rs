@@ -5,13 +5,7 @@ pub use madrpc_common::protocol::builtin::{
     MethodMetrics,
     NodeMetrics,
     MetricsSnapshot,
-    MetricsResponse,
     ServerBase,
-    NodeInfo,
-    OrchestratorNodeInfo,
-    OrchestratorInfo,
-    InfoResponse,
-    HealthResponse,
 };
 
 // Legacy re-exports for backward compatibility
