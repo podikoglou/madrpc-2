@@ -41,9 +41,15 @@ use serde_json::json;
 
 use crate::http_router::NodeRouter;
 use crate::node::Node;
-use madrpc_common::protocol::{JsonRpcError};
+use madrpc_common::protocol::JsonRpcError;
 use madrpc_common::protocol::error::MadrpcError;
 use madrpc_common::transport::{HttpTransport, HyperRequest, HyperResponse};
+
+/// Maximum request body size (10 MB)
+///
+/// This limit prevents memory exhaustion DoS attacks by rejecting requests
+/// with overly large payloads before they can cause significant memory allocation.
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 /// HTTP server for MaDRPC node.
 ///
@@ -173,6 +179,19 @@ impl HttpServer {
             }
         };
 
+        // Check request body size to prevent DoS attacks
+        if body.len() > MAX_BODY_SIZE {
+            tracing::error!(
+                "Request body too large: {} bytes (max {} bytes)",
+                body.len(),
+                MAX_BODY_SIZE
+            );
+            return Ok(HttpTransport::to_http_error(
+                json!(null),
+                JsonRpcError::request_too_large(MAX_BODY_SIZE)
+            ));
+        }
+
         // Parse the JSON-RPC request
         let jsonrpc_req = match HttpTransport::parse_jsonrpc(body) {
             Ok(req) => req,
@@ -205,6 +224,7 @@ impl HttpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use madrpc_common::protocol::REQUEST_TOO_LARGE;
 
     fn create_test_script(content: &str) -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -231,5 +251,20 @@ mod tests {
         // We can't easily test this without making an actual HTTP request,
         // but the test_server_creation test ensures the server initializes correctly
         assert!(node.script_path().exists());
+    }
+
+    #[test]
+    fn test_max_body_size_constant() {
+        // Verify the constant is set to 10 MB
+        assert_eq!(MAX_BODY_SIZE, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_request_too_large_error() {
+        // Test that the request_too_large error is created correctly
+        let error = JsonRpcError::request_too_large(1024);
+        assert_eq!(error.code, REQUEST_TOO_LARGE);
+        assert!(error.message.contains("1024"));
+        assert!(error.message.contains("too large"));
     }
 }

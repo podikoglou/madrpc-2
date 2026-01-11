@@ -110,6 +110,8 @@ pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 /// Internal JSON-RPC error
 pub const INTERNAL_ERROR: i32 = -32603;
+/// Request entity too large
+pub const REQUEST_TOO_LARGE: i32 = -32001;
 
 impl JsonRpcError {
     /// Create a parse error (-32700)
@@ -174,6 +176,17 @@ impl JsonRpcError {
         Self {
             code: -32000,
             message: msg.into(),
+            data: None,
+        }
+    }
+
+    /// Create a request too large error (-32001)
+    ///
+    /// Used when the request body exceeds the maximum allowed size.
+    pub fn request_too_large(limit: usize) -> Self {
+        Self {
+            code: REQUEST_TOO_LARGE,
+            message: format!("Request body too large (max {} bytes)", limit),
             data: None,
         }
     }
@@ -299,5 +312,15 @@ mod tests {
         assert!(res.error.is_some());
         assert_eq!(res.error.unwrap().code, -32601);
         assert_eq!(res.id, json!(1));
+    }
+
+    #[test]
+    fn test_request_too_large_error() {
+        let error = JsonRpcError::request_too_large(1024);
+        assert_eq!(error.code, REQUEST_TOO_LARGE);
+        assert_eq!(error.code, -32001);
+        assert!(error.message.contains("1024"));
+        assert!(error.message.contains("too large"));
+        assert_eq!(error.data, None);
     }
 }

@@ -311,3 +311,65 @@ async fn test_single_node_only_post_allowed() {
     let response: serde_json::Value = res.json().await.unwrap();
     assert_eq!(response["error"]["code"], -32600); // Invalid request
 }
+
+// ============================================================================
+// Request Size Limit Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_request_size_limit_enforcement() {
+    let script = create_test_script_empty();
+    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+    let addr = start_test_server(node).await;
+
+    let client = Client::new();
+
+    // Create a request with a body that exceeds 10 MB
+    // Use a large JSON object to exceed the limit
+    let large_data = "x".repeat(11 * 1024 * 1024); // 11 MB
+    let body = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        method: "_info".into(),
+        params: json!({ "data": large_data }),
+        id: json!(1),
+    };
+
+    let res = client
+        .post(format!("http://{}", addr))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+
+    let response: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(response["error"]["code"], -32001); // REQUEST_TOO_LARGE
+    assert!(response["error"]["message"].as_str().unwrap().contains("too large"));
+}
+
+#[tokio::test]
+async fn test_request_within_size_limit() {
+    let script = create_test_script_empty();
+    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+    let addr = start_test_server(node).await;
+
+    let client = Client::new();
+
+    // Create a request with a body that is well within the limit
+    let body = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        method: "_info".into(),
+        params: json!({}),
+        id: json!(1),
+    };
+
+    let res = client
+        .post(format!("http://{}", addr))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+
+    let response: serde_json::Value = res.json().await.unwrap();
+    // Should not get a REQUEST_TOO_LARGE error
+    assert_ne!(response["error"]["code"], -32001);
+}

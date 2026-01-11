@@ -50,6 +50,9 @@ mod tests;
 
 pub use builtin::*;
 pub use error::{MadrpcError, Result};
-pub use jsonrpc::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+pub use jsonrpc::{
+    JsonRpcRequest, JsonRpcResponse, JsonRpcError,
+    PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR, REQUEST_TOO_LARGE
+};
 pub use requests::{Request, RequestId, MethodName, RpcArgs};
 pub use responses::{Response, RpcResult};
