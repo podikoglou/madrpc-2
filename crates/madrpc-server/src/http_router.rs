@@ -133,7 +133,7 @@ mod tests {
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn create_test_script(content: &str) -> tempfile::NamedTempFile {
-        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let _id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let file = tempfile::NamedTempFile::new().unwrap();
         fs::write(file.path(), content).unwrap();
         file
