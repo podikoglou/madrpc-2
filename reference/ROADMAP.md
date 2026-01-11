@@ -117,20 +117,21 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: Not Started
+### Status: In Progress (1/8 complete)
 **Goal**: Address all high-severity issues and expand test coverage
 
-#### 2.1 Add RetryConfig Validation
+#### 2.1 Add RetryConfig Validation ✅
 **Crate**: `madrpc-client`
 **Location**: `src/client.rs:85`
 **Effort**: 2-3 hours
+**Completed**: 2026-01-11
 
-- Add validation method to `RetryConfig`
-- Reject `max_attempts = 0`
-- Reject negative multipliers
-- Reject negative timeout values
-- Add tests for validation logic
-- Document valid ranges
+- [x] Add validation method to `RetryConfig`
+- [x] Reject `max_attempts = 0`
+- [x] Reject negative multipliers
+- [x] Reject negative timeout values
+- [x] Add tests for validation logic
+- [x] Document valid ranges
 
 #### 2.2 Fix Atomic Ordering Performance
 **Crate**: `madrpc-client`, `madrpc-common`
@@ -428,7 +429,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Integration test compilation (madrpc-client) - Completed 2026-01-11
 
 ### High Priority (Phase 2)
-- [ ] RetryConfig validation (madrpc-client)
+- [x] RetryConfig validation (madrpc-client) - Completed 2026-01-11
 - [ ] Atomic ordering fixes (madrpc-client, madrpc-common)
 - [ ] Error classification fix (madrpc-client)
 - [ ] Payload size limits (madrpc-common)
