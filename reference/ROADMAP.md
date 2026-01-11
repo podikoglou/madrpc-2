@@ -232,7 +232,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 3: Security & Performance (Month 2)
 
-### Status: In Progress (3/8 complete)
+### Status: In Progress (4/8 complete)
 **Goal**: Production-ready security and performance characteristics
 
 #### 3.1 Authentication Layer ✅
@@ -267,15 +267,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Document resource limit behavior
 - [x] Add tests for limit enforcement
 
-#### 3.4 Fix Promise Polling Busy Waiting
+#### 3.4 Fix Promise Polling Busy Waiting ✅
 **Crate**: `madrpc-server`
 **Effort**: 3-4 days
+**Completed**: 2026-01-11
 
-- Replace sleep loop with event-driven approach
-- Use condition variables or channels
-- Reduce CPU usage during async operations
-- Benchmark improvement
-- Document new polling mechanism
+- [x] Replace sleep loop with event-driven approach
+- [x] Use condition variables or channels
+- [x] Reduce CPU usage during async operations
+- [x] Benchmark improvement
+- [x] Document new polling mechanism
 
 #### 3.5 Optimize String Allocations
 **Crate**: `madrpc-metrics`
