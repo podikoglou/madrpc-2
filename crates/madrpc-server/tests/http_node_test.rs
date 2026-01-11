@@ -230,7 +230,7 @@ async fn test_single_node_concurrent_requests() {
     // Wait for all requests to complete
     let mut results = vec![];
     for handle in handles {
-        let response = handle.await.unwrap();
+        let response: serde_json::Value = handle.await.unwrap();
         results.push(response);
     }
 
