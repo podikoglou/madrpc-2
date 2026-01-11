@@ -232,18 +232,19 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 3: Security & Performance (Month 2)
 
-### Status: Not Started
+### Status: In Progress (1/8 complete)
 **Goal**: Production-ready security and performance characteristics
 
-#### 3.1 Authentication Layer
+#### 3.1 Authentication Layer ✅
 **Effort**: 1-2 weeks
+**Completed**: 2026-01-11
 
-- Design authentication scheme (API key or JWT)
-- Implement authentication middleware
-- Add configuration for auth credentials
-- Add auth to both node and orchestrator
-- Document authentication flow
-- Add auth examples
+- [x] Design authentication scheme (API key or JWT)
+- [x] Implement authentication middleware
+- [x] Add configuration for auth credentials
+- [x] Add auth to both node and orchestrator
+- [x] Document authentication flow
+- [x] Add auth examples
 
 #### 3.2 Rate Limiting
 **Effort**: 1 week
