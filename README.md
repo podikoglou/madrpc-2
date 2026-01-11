@@ -432,6 +432,49 @@ cargo test -- --nocapture
 cargo test --test integration_test
 ```
 
+### Running Benchmarks
+
+MaDRPC uses Criterion for performance benchmarking. Benchmarks are available for key components:
+
+```bash
+# Run all benchmarks
+cargo bench
+
+# Run benchmarks for specific crate
+cargo bench -p madrpc-common
+cargo bench -p madrpc-metrics
+cargo bench -p madrpc-orchestrator
+
+# Save baseline for comparison
+cargo bench -- --save-baseline main
+
+# Compare against baseline
+cargo bench -- --baseline main
+
+# Generate HTML reports with plots
+cargo bench
+# Report available in target/criterion/report/index.html
+```
+
+**Available Benchmarks:**
+
+- **madrpc-common**: Protocol layer performance
+  - Request/response creation and serialization
+  - JSON serialization/deserialization
+  - Request cloning performance
+
+- **madrpc-metrics**: Metrics collection performance
+  - Single and batch call recording
+  - Snapshot generation
+  - Concurrent recording
+  - Node request tracking
+
+- **madrpc-orchestrator**: Load balancer performance
+  - Round-robin node selection
+  - Enable/disable operations
+  - Health status updates
+  - Concurrent access patterns
+
 ### Building for Release
 
 ```bash
