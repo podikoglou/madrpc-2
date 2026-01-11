@@ -31,7 +31,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 1: Immediate Critical Fixes (Week 1)
 
-### Status: In Progress (4/6 complete)
+### Status: In Progress (5/6 complete)
 **Goal**: Eliminate all critical issues that could cause data corruption, DoS, or system failure
 
 #### 1.1 Fix Request ID Generation Bug ✅
@@ -87,16 +87,17 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Add test for promise resolution timeout
 - [x] Document timeout behavior
 
-#### 1.5 Fix fetch_min Bug in Metrics
+#### 1.5 Fix fetch_min Bug in Metrics ✅
 **Crate**: `madrpc-metrics`
 **Location**: `src/registry.rs:179`
 **Impact**: Prevents unbounded latency buffer growth
 **Effort**: 1 hour
+**Completed**: 2026-01-11
 
-- Replace `fetch_min` with `fetch_update`
-- Implement proper capping logic using `x.min(LATENCY_BUFFER_SIZE)`
-- Add test verifying count caps at buffer size
-- Document capping behavior
+- [x] Replace `fetch_min` with `fetch_update`
+- [x] Implement proper capping logic using `x.min(LATENCY_BUFFER_SIZE)`
+- [x] Add test verifying count caps at buffer size
+- [x] Document capping behavior
 
 #### 1.6 Fix Client Integration Test Compilation
 **Crate**: `madrpc-client`
@@ -421,7 +422,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Request size limits (madrpc-server) - Completed 2026-01-11
 - [x] Connection limiting (madrpc-server) - Completed 2026-01-11
 - [x] Promise polling timeout (madrpc-server) - Completed 2026-01-11
-- [ ] fetch_min bug (madrpc-metrics)
+- [x] fetch_min bug (madrpc-metrics) - Completed 2026-01-11
 - [ ] Integration test compilation (madrpc-client)
 
 ### High Priority (Phase 2)
