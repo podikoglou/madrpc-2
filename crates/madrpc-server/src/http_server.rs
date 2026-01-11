@@ -33,7 +33,8 @@
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -42,6 +43,7 @@ use serde_json::json;
 
 use crate::http_router::NodeRouter;
 use crate::node::Node;
+use madrpc_common::auth::AuthConfig;
 use madrpc_common::protocol::JsonRpcError;
 use madrpc_common::protocol::error::MadrpcError;
 use madrpc_common::transport::{HttpTransport, HyperRequest, HyperResponse};
@@ -69,11 +71,19 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 1000;
 /// The server enforces a maximum number of concurrent connections to prevent
 /// resource exhaustion DoS attacks. When the limit is reached, new connections
 /// will wait until an existing connection completes before being processed.
+///
+/// # Authentication
+///
+/// The server supports optional API key authentication via the `X-API-Key` header.
+/// When authentication is configured, requests without a valid API key will be
+/// rejected with HTTP 401 Unauthorized.
 pub struct HttpServer {
     /// The router for handling JSON-RPC requests
     router: Arc<NodeRouter>,
     /// Semaphore for limiting concurrent connections
     connection_semaphore: Arc<Semaphore>,
+    /// Authentication configuration
+    auth_config: AuthConfig,
 }
 
 impl HttpServer {
@@ -85,7 +95,7 @@ impl HttpServer {
     ///
     /// # Returns
     ///
-    /// A new `HttpServer` instance
+    /// A new `HttpServer` instance with authentication disabled
     ///
     /// # Example
     ///
@@ -102,7 +112,40 @@ impl HttpServer {
     pub fn new(node: Arc<Node>) -> Self {
         let router = Arc::new(NodeRouter::new(node));
         let connection_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
-        Self { router, connection_semaphore }
+        Self {
+            router,
+            connection_semaphore,
+            auth_config: AuthConfig::default(),
+        }
+    }
+
+    /// Sets the authentication configuration for the server.
+    ///
+    /// # Arguments
+    ///
+    /// * `auth_config` - The authentication configuration to use
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use madrpc_server::http_server::HttpServer;
+    /// use madrpc_server::Node;
+    /// use madrpc_common::auth::AuthConfig;
+    /// use std::sync::Arc;
+    ///
+    /// # let script = tempfile::NamedTempFile::new().unwrap();
+    /// # std::fs::write(script.path(), "// empty").unwrap();
+    /// let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+    /// let server = HttpServer::new(node)
+    ///     .with_auth(AuthConfig::with_api_key("my-secret-key"));
+    /// ```
+    pub fn with_auth(mut self, auth_config: AuthConfig) -> Self {
+        self.auth_config = auth_config;
+        self
     }
 
     /// Runs the HTTP server on the specified address.
@@ -137,6 +180,7 @@ impl HttpServer {
 
         tracing::info!("HTTP server listening on {}", listener.local_addr()
             .map_err(|e| MadrpcError::Transport(format!("Failed to get local address: {}", e)))?);
+        tracing::info!("Authentication: {}", self.auth_config);
 
         loop {
             let (stream, _) = listener.accept().await
@@ -150,11 +194,13 @@ impl HttpServer {
 
             let io = TokioIo::new(stream);
             let router = self.router.clone();
+            let auth_config = self.auth_config.clone();
 
             tokio::task::spawn(async move {
                 let service = service_fn(move |req| {
                     let router = router.clone();
-                    async move { Self::handle_request(router, req).await }
+                    let auth_config = auth_config.clone();
+                    async move { Self::handle_request(router, req, auth_config).await }
                 });
 
                 if let Err(err) = http1::Builder::new()
@@ -176,6 +222,7 @@ impl HttpServer {
     ///
     /// * `router` - The router to handle the JSON-RPC request
     /// * `req` - The incoming HTTP request
+    /// * `auth_config` - The authentication configuration
     ///
     /// # Returns
     ///
@@ -183,7 +230,20 @@ impl HttpServer {
     async fn handle_request(
         router: Arc<NodeRouter>,
         req: HyperRequest,
+        auth_config: AuthConfig,
     ) -> Result<HyperResponse, MadrpcError> {
+        // Check authentication if enabled
+        if auth_config.requires_auth() {
+            let headers = req.headers();
+            let api_key = headers.get("x-api-key")
+                .and_then(|v| v.to_str().ok());
+
+            if !auth_config.validate_api_key(api_key.unwrap_or("")) {
+                tracing::warn!("Authentication failed: invalid or missing API key");
+                return Ok(Self::unauthorized_response());
+            }
+        }
+
         // Only accept POST requests for JSON-RPC
         if req.method() != hyper::Method::POST {
             return Ok(HttpTransport::to_http_error(
@@ -245,6 +305,20 @@ impl HttpServer {
 
         Ok(HttpTransport::to_http_response(jsonrpc_res))
     }
+
+    /// Creates an HTTP 401 Unauthorized response.
+    ///
+    /// # Returns
+    ///
+    /// A hyper response with 401 status and appropriate error message
+    fn unauthorized_response() -> HyperResponse {
+        use hyper::{Response, StatusCode};
+        Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(r#"{"jsonrpc":"2.0","error":{"code":-401,"message":"Unauthorized: Invalid or missing API key"},"id":null}"#)))
+            .unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +341,22 @@ mod tests {
 
         // Verify the semaphore is initialized with the correct number of permits
         assert_eq!(server.connection_semaphore.available_permits(), MAX_CONCURRENT_CONNECTIONS);
+
+        // Verify authentication is disabled by default
+        assert!(!server.auth_config.requires_auth());
+    }
+
+    #[tokio::test]
+    async fn test_server_with_auth() {
+        let script = create_test_script("// empty");
+        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+        let server = HttpServer::new(node.clone())
+            .with_auth(AuthConfig::with_api_key("test-key"));
+
+        // Verify authentication is enabled
+        assert!(server.auth_config.requires_auth());
+        assert!(server.auth_config.validate_api_key("test-key"));
+        assert!(!server.auth_config.validate_api_key("wrong-key"));
     }
 
     #[tokio::test]

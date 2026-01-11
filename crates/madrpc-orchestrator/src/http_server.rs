@@ -17,6 +17,7 @@ use tracing::info;
 
 use crate::http_router::OrchestratorRouter;
 use crate::orchestrator::Orchestrator;
+use madrpc_common::auth::AuthConfig;
 use madrpc_common::protocol::error::MadrpcError;
 use madrpc_common::transport::HttpTransport;
 
@@ -26,9 +27,12 @@ use madrpc_common::transport::HttpTransport;
 /// - Handles JSON-RPC POST requests at `/`
 /// - Provides a health check endpoint at `/__health`
 /// - Uses the orchestrator router for request routing
+/// - Supports optional API key authentication
 pub struct HttpServer {
     /// Orchestrator router for handling requests
     router: Arc<OrchestratorRouter>,
+    /// Authentication configuration
+    auth_config: AuthConfig,
 }
 
 impl HttpServer {
@@ -38,10 +42,25 @@ impl HttpServer {
     /// * `orchestrator` - Arc-wrapped orchestrator instance
     ///
     /// # Returns
-    /// A new HTTP server instance
+    /// A new HTTP server instance with authentication disabled
     pub fn new(orchestrator: Arc<Orchestrator>) -> Self {
         let router = Arc::new(OrchestratorRouter::new(orchestrator));
-        Self { router }
+        Self {
+            router,
+            auth_config: AuthConfig::default(),
+        }
+    }
+
+    /// Sets the authentication configuration for the server.
+    ///
+    /// # Arguments
+    /// * `auth_config` - The authentication configuration to use
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_auth(mut self, auth_config: AuthConfig) -> Self {
+        self.auth_config = auth_config;
+        self
     }
 
     /// Runs the HTTP server.
@@ -58,12 +77,15 @@ impl HttpServer {
     /// - Logs the listening address
     /// - Runs indefinitely until shutdown
     pub async fn run(self, addr: SocketAddr) -> Result<(), MadrpcError> {
+        // Log authentication configuration
+        info!("Authentication: {}", self.auth_config);
+
         // Build axum app with CORS support
         let app = axum::Router::new()
             .route("/", axum::routing::post(handle_jsonrpc))
             .route("/__health", axum::routing::get(health_check))
             .layer(CorsLayer::permissive())
-            .with_state(self.router);
+            .with_state((self.router, self.auth_config));
 
         // Bind to address
         let listener = TcpListener::bind(addr)
@@ -85,17 +107,28 @@ impl HttpServer {
 /// Handles JSON-RPC POST requests.
 ///
 /// # Arguments
-/// * `State(router)` - Orchestrator router
-/// * `headers` - Request headers (for Content-Type validation)
+/// * `State((router, auth_config))` - Orchestrator router and auth config
+/// * `headers` - Request headers (for Content-Type validation and auth)
 /// * `body` - Request body bytes
 ///
 /// # Returns
 /// A JSON-RPC response or an HTTP error
 async fn handle_jsonrpc(
-    State(router): State<Arc<OrchestratorRouter>>,
+    State((router, auth_config)): State<(Arc<OrchestratorRouter>, AuthConfig)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // Check authentication if enabled
+    if auth_config.requires_auth() {
+        let api_key = headers.get("x-api-key")
+            .and_then(|v| v.to_str().ok());
+
+        if !auth_config.validate_api_key(api_key.unwrap_or("")) {
+            tracing::warn!("Authentication failed: invalid or missing API key");
+            return unauthorized_response();
+        }
+    }
+
     // Validate Content-Type
     if let Some(content_type) = headers.get("content-type") {
         if !content_type.to_str().unwrap_or("").contains("application/json") {
@@ -137,6 +170,15 @@ async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
 
+/// Creates an HTTP 401 Unauthorized response.
+///
+/// # Returns
+/// A response with 401 status and appropriate error message
+fn unauthorized_response() -> Response {
+    let body = r#"{"jsonrpc":"2.0","error":{"code":-401,"message":"Unauthorized: Invalid or missing API key"},"id":null}"#;
+    (StatusCode::UNAUTHORIZED, body).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +199,30 @@ mod tests {
 
         let server = HttpServer::new(orchestrator);
         assert!(Arc::strong_count(&server.router) >= 1);
+
+        // Verify authentication is disabled by default
+        assert!(!server.auth_config.requires_auth());
+    }
+
+    #[tokio::test]
+    async fn test_http_server_with_auth() {
+        let orchestrator = Arc::new(
+            Orchestrator::with_retry_config(
+                vec![],
+                HealthCheckConfig::default(),
+                RetryConfig::default(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let server = HttpServer::new(orchestrator)
+            .with_auth(AuthConfig::with_api_key("test-key"));
+
+        // Verify authentication is enabled
+        assert!(server.auth_config.requires_auth());
+        assert!(server.auth_config.validate_api_key("test-key"));
+        assert!(!server.auth_config.validate_api_key("wrong-key"));
     }
 
     #[tokio::test]

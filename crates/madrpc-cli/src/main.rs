@@ -123,6 +123,13 @@ struct NodeArgs {
     /// Must include the http:// or https:// prefix (e.g., http://127.0.0.1:8080).
     #[argh(option, long = "orchestrator")]
     orchestrator: Option<String>,
+
+    /// optional API key for authentication
+    ///
+    /// If provided, all requests must include this key in the X-API-Key header.
+    /// Authentication is disabled by default for backward compatibility.
+    #[argh(option, long = "api-key")]
+    api_key: Option<String>,
 }
 
 /// Arguments for starting a MaDRPC orchestrator.
@@ -195,6 +202,13 @@ struct OrchestratorArgs {
     /// Useful for testing or environments with unreliable networks.
     #[argh(switch, long = "disable-health-check")]
     disable_health_check: bool,
+
+    /// optional API key for authentication
+    ///
+    /// If provided, all requests must include this key in the X-API-Key header.
+    /// Authentication is disabled by default for backward compatibility.
+    #[argh(option, long = "api-key")]
+    api_key: Option<String>,
 }
 
 /// Arguments for the real-time metrics monitoring TUI.
@@ -323,7 +337,14 @@ async fn main() -> Result<()> {
             };
             tracing::info!("Node created successfully from script");
 
-            let server = madrpc_server::HttpServer::new(std::sync::Arc::new(node));
+            let mut server = madrpc_server::HttpServer::new(std::sync::Arc::new(node));
+
+            // Configure authentication if API key is provided
+            if let Some(api_key) = &args.api_key {
+                tracing::info!("API key authentication enabled");
+                server = server.with_auth(madrpc_common::auth::AuthConfig::with_api_key(api_key));
+            }
+
             let addr: SocketAddr = args.bind.parse()
                 .map_err(|e| anyhow::anyhow!("Invalid bind address {}: {}", args.bind, e))?;
             server.run(addr).await?;
@@ -364,7 +385,14 @@ async fn main() -> Result<()> {
 
             tracing::info!("Orchestrator created with {} nodes", orch.node_count().await);
 
-            let server = madrpc_orchestrator::HttpServer::new(std::sync::Arc::new(orch));
+            let mut server = madrpc_orchestrator::HttpServer::new(std::sync::Arc::new(orch));
+
+            // Configure authentication if API key is provided
+            if let Some(api_key) = &args.api_key {
+                tracing::info!("API key authentication enabled");
+                server = server.with_auth(madrpc_common::auth::AuthConfig::with_api_key(api_key));
+            }
+
             let addr: SocketAddr = args.bind.parse()
                 .map_err(|e| anyhow::anyhow!("Invalid bind address {}: {}", args.bind, e))?;
             server.run(addr).await?;
@@ -430,10 +458,11 @@ mod tests {
     fn test_cli_parse_node() {
         let args: Cli = Cli::from_args(&["madrpc"], &["node", "-s", "test.js", "-b", "0.0.0.0:9001"]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert!(orchestrator.is_none());
+                assert!(api_key.is_none());
             }
             _ => panic!("Expected Node command"),
         }
@@ -448,10 +477,30 @@ mod tests {
             "--orchestrator", "127.0.0.1:8080",
         ]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert_eq!(orchestrator, Some("127.0.0.1:8080".to_string()));
+                assert!(api_key.is_none());
+            }
+            _ => panic!("Expected Node command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_node_with_api_key() {
+        let args: Cli = Cli::from_args(&["madrpc"], &[
+            "node",
+            "-s", "test.js",
+            "-b", "0.0.0.0:9001",
+            "--api-key", "my-secret-key",
+        ]).unwrap();
+        match args.command {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key }) => {
+                assert_eq!(script, "test.js");
+                assert_eq!(bind, "0.0.0.0:9001");
+                assert!(orchestrator.is_none());
+                assert_eq!(api_key, Some("my-secret-key".to_string()));
             }
             _ => panic!("Expected Node command"),
         }
@@ -507,8 +556,25 @@ mod tests {
             "--bind", "0.0.0.0:9000",
         ]).unwrap();
         match args.command {
-            Commands::Orchestrator(OrchestratorArgs { bind, .. }) => {
+            Commands::Orchestrator(OrchestratorArgs { bind, api_key, .. }) => {
                 assert_eq!(bind, "0.0.0.0:9000");
+                assert!(api_key.is_none());
+            }
+            _ => panic!("Expected Orchestrator command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_orchestrator_with_api_key() {
+        let args: Cli = Cli::from_args(&["madrpc"], &[
+            "orchestrator",
+            "--bind", "0.0.0.0:9000",
+            "--api-key", "my-secret-key",
+        ]).unwrap();
+        match args.command {
+            Commands::Orchestrator(OrchestratorArgs { bind, api_key, .. }) => {
+                assert_eq!(bind, "0.0.0.0:9000");
+                assert_eq!(api_key, Some("my-secret-key".to_string()));
             }
             _ => panic!("Expected Orchestrator command"),
         }

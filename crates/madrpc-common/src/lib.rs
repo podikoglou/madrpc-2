@@ -39,7 +39,9 @@
 //! let response = Response::success(request.id, json!({"result": 42}));
 //! ```
 
+pub mod auth;
 pub mod protocol;
 pub mod transport;
 
+pub use auth::*;
 pub use protocol::*;
