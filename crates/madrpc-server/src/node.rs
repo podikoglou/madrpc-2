@@ -214,7 +214,6 @@ impl Node {
         }
 
         let start_time = Instant::now();
-        let method = request.method.clone();
 
         // Create a fresh Boa context for this request from the cached script source
         // This enables true parallelism as each request has its own context
@@ -229,18 +228,18 @@ impl Node {
             MadrpcContext::from_source(&self.script_source)?
         };
 
-        // Call the RPC function
-        tracing::debug!("Calling RPC method: {}", method);
-        let result = ctx.call_rpc(&method, request.args.clone());
+        // Call the RPC function (pass by reference to avoid cloning)
+        tracing::debug!("Calling RPC method: {}", request.method);
+        let result = ctx.call_rpc(&request.method, &request.args);
         tracing::debug!("RPC call completed");
 
         match result {
             Ok(result) => {
-                self.metrics_collector.record_call(&method, start_time, true);
+                self.metrics_collector.record_call(&request.method, start_time, true);
                 Ok(Response::success(request.id, result))
             }
             Err(e) => {
-                self.metrics_collector.record_call(&method, start_time, false);
+                self.metrics_collector.record_call(&request.method, start_time, false);
                 Ok(Response::error(request.id, e.to_string()))
             }
         }
@@ -279,7 +278,6 @@ impl Node {
         // This is necessary because MadrpcContext is !Send (Boa's Context has thread affinity)
         let script_source = self.script_source.clone();
         let method = method.to_string();
-        let method_for_metrics = method.clone();
         let orchestrator_client = self.orchestrator_client.clone();
         let metrics_collector = self.metrics_collector.clone();
 
@@ -327,8 +325,8 @@ impl Node {
 
         // Record metrics
         match &result {
-            Ok(_) => metrics_collector.record_call(&method_for_metrics, start_time, true),
-            Err(_) => metrics_collector.record_call(&method_for_metrics, start_time, false),
+            Ok(_) => metrics_collector.record_call(&method, start_time, true),
+            Err(_) => metrics_collector.record_call(&method, start_time, false),
         }
 
         result
