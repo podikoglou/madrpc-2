@@ -21,7 +21,7 @@ static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Helper to create a test script with a registered function
 fn create_test_script_with_register() -> tempfile::NamedTempFile {
-    let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let _id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     let file = tempfile::NamedTempFile::new().unwrap();
     let content = r#"
         madrpc.register('echo', function(args) {
@@ -44,7 +44,7 @@ fn create_test_script_with_register() -> tempfile::NamedTempFile {
 
 /// Helper to create an empty test script
 fn create_test_script_empty() -> tempfile::NamedTempFile {
-    let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let _id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     let file = tempfile::NamedTempFile::new().unwrap();
     fs::write(file.path(), "// empty").unwrap();
     file
