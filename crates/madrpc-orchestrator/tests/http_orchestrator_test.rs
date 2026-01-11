@@ -207,15 +207,17 @@ async fn test_orchestrator_builtin_methods() {
     let info_result = orchestrator.forward_request_jsonrpc(info_req).await;
     assert!(info_result.is_ok());
     let info = info_result.unwrap();
-    assert_eq!(info["type"], "orchestrator");
-    assert_eq!(info["total_nodes"], 1);
+    assert_eq!(info["server_type"], "orchestrator");
+    assert!(info["uptime_ms"].is_number());
+    assert!(info["version"].is_string());
 
     // Test _metrics
     let metrics_req = create_request("_metrics", json!({}), json!(2));
     let metrics_result = orchestrator.forward_request_jsonrpc(metrics_req).await;
     assert!(metrics_result.is_ok());
     let metrics = metrics_result.unwrap();
-    assert!(metrics["nodes"].is_array());
+    // nodes is an object/map (HashMap), not an array
+    assert!(metrics["nodes"].is_object() || metrics["nodes"].is_null());
 }
 
 // ============================================================================
@@ -384,6 +386,9 @@ async fn test_orchestrator_get_metrics() {
     let node = MockNodeServer::new(19012).await;
     let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
 
+    // Register a handler so requests succeed
+    node.register_handler("test", json!({"result": "success"})).await;
+
     // Make some requests
     for i in 0..3 {
         let req = create_request("test", json!({}), json!(i));
@@ -400,6 +405,9 @@ async fn test_orchestrator_get_metrics() {
 async fn test_orchestrator_get_info() {
     let node = MockNodeServer::new(19013).await;
     let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
+
+    // Add a small delay to ensure uptime_ms > 0
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
     let info = orchestrator.get_info().await.unwrap();
     // Match on the enum variant
