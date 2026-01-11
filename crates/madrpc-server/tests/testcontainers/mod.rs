@@ -58,6 +58,7 @@ impl NodeContainer {
             .with_exposed_port(9001.tcp())
             .with_wait_for(WaitFor::message_on_stdout("Server listening on"))
             .with_copy_to("/app/script.js", CopyDataSource::Data(script_content.into_bytes()))
+            .with_entrypoint("/usr/local/bin/madrpc")
             .with_cmd(["node", "-s", "/app/script.js", "-b", "0.0.0.0:9001"]);
 
         let container = image.start().await?;
