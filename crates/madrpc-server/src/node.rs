@@ -450,7 +450,7 @@ mod tests {
         let script = create_test_script("// empty");
         // Note: This test will fail if there's no orchestrator running at the address
         // In a real integration test, you'd start a test orchestrator first
-        let result = Node::with_orchestrator(script, "127.0.0.1:9999".to_string()).await;
+        let result = Node::with_orchestrator(script, "127.0.0.1:9999".to_string());
         // We expect this to fail with a connection error since no orchestrator is running
         // But it validates that the constructor logic works (script loading, etc.)
         match result {
