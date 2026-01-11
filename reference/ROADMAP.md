@@ -232,7 +232,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 3: Security & Performance (Month 2)
 
-### Status: In Progress (1/8 complete)
+### Status: In Progress (2/8 complete)
 **Goal**: Production-ready security and performance characteristics
 
 #### 3.1 Authentication Layer ✅
@@ -246,14 +246,15 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Document authentication flow
 - [x] Add auth examples
 
-#### 3.2 Rate Limiting
+#### 3.2 Rate Limiting ✅
 **Effort**: 1 week
+**Completed**: 2026-01-11
 
-- Implement request rate limiter
-- Add per-IP and per-key limits
-- Configurable rate limit thresholds
-- Document rate limiting behavior
-- Add metrics for rate limiting
+- [x] Implement request rate limiter
+- [x] Add per-IP and per-key limits
+- [x] Configurable rate limit thresholds
+- [x] Document rate limiting behavior
+- [x] Add metrics for rate limiting
 
 #### 3.3 JavaScript Resource Limits
 **Effort**: 1-2 weeks
