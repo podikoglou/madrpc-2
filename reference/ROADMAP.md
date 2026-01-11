@@ -117,7 +117,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: In Progress (4/8 complete)
+### Status: In Progress (5/8 complete)
 **Goal**: Address all high-severity issues and expand test coverage
 
 #### 2.1 Add RetryConfig Validation ✅
@@ -168,14 +168,15 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Add tests for size limits
 - [x] Document limits
 
-#### 2.5 Remove Unused Dependencies
+#### 2.5 Remove Unused Dependencies ✅
 **Crate**: `madrpc-cli`
 **Location**: `Cargo.toml:24`
 **Effort**: 30 minutes
+**Completed**: 2026-01-11
 
-- Remove `num_cpus` dependency
-- Verify no build warnings
-- Run full test suite
+- [x] Remove `num_cpus` dependency
+- [x] Verify no build warnings
+- [x] Run full test suite
 
 #### 2.6 Update Boa Version
 **Crate**: `madrpc-server`
@@ -436,7 +437,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Atomic ordering fixes (madrpc-client, madrpc-common) - Completed 2026-01-11
 - [x] Error classification fix (madrpc-client) - Completed 2026-01-11
 - [x] Payload size limits (madrpc-common) - Completed 2026-01-11
-- [ ] Remove unused dependencies (madrpc-cli)
+- [x] Remove unused dependencies (madrpc-cli) - Completed 2026-01-11
 - [ ] Update Boa version (madrpc-server)
 - [ ] CLI integration tests (madrpc-cli)
 - [ ] Error path tests (multiple crates)
