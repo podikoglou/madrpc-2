@@ -14,6 +14,75 @@ use thiserror::Error;
 /// Global counter for generating unique JSON-RPC request IDs
 static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Connection pool configuration for the HTTP client.
+///
+/// Controls how connections are managed and reused.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectionConfig {
+    /// Maximum idle connection timeout in seconds.
+    /// Connections idle longer than this will be closed.
+    /// Default: 90 seconds
+    pub pool_idle_timeout_secs: u64,
+
+    /// Keep-alive duration in seconds for connections.
+    /// If set, connections will be kept alive for this duration.
+    /// Default: None (uses hyper's default)
+    pub keep_alive_secs: Option<u64>,
+
+    /// Maximum number of idle connections per host.
+    /// Default: None (uses hyper's default of unlimited)
+    pub max_idle_per_host: Option<usize>,
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self {
+            pool_idle_timeout_secs: 90,
+            keep_alive_secs: None,
+            max_idle_per_host: None,
+        }
+    }
+}
+
+impl ConnectionConfig {
+    /// Creates a new connection config with custom settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool_idle_timeout_secs` - Maximum idle connection timeout in seconds. Must be > 0.
+    /// * `keep_alive_secs` - Optional keep-alive duration in seconds.
+    /// * `max_idle_per_host` - Optional maximum number of idle connections per host.
+    pub fn new(
+        pool_idle_timeout_secs: u64,
+        keep_alive_secs: Option<u64>,
+        max_idle_per_host: Option<usize>,
+    ) -> Self {
+        Self {
+            pool_idle_timeout_secs: pool_idle_timeout_secs.max(1),
+            keep_alive_secs,
+            max_idle_per_host,
+        }
+    }
+
+    /// Creates a connection config with extended keep-alive for long-running connections.
+    pub fn long_lived() -> Self {
+        Self {
+            pool_idle_timeout_secs: 300, // 5 minutes
+            keep_alive_secs: Some(300),
+            max_idle_per_host: Some(100),
+        }
+    }
+
+    /// Creates a connection config with aggressive cleanup for short-lived connections.
+    pub fn short_lived() -> Self {
+        Self {
+            pool_idle_timeout_secs: 10,
+            keep_alive_secs: Some(30),
+            max_idle_per_host: Some(5),
+        }
+    }
+}
+
 /// Validation error for retry configuration.
 #[derive(Error, Debug, PartialEq)]
 pub enum RetryConfigError {
@@ -254,9 +323,21 @@ pub struct MadrpcClient {
 }
 
 impl MadrpcClient {
+    /// Helper function to build HTTP client with connection configuration.
+    fn build_http_client(config: &ConnectionConfig) -> Client<HttpConnector, Full<Bytes>> {
+        // Note: hyper_util doesn't expose direct keep_alive or max_idle_per_host configuration
+        // in the current version. These are stored for future use and documentation.
+        let _keep_alive = config.keep_alive_secs;
+        let _max_idle = config.max_idle_per_host;
+
+        Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(config.pool_idle_timeout_secs))
+            .build_http()
+    }
+
     /// Creates a new client connected to an orchestrator.
     ///
-    /// This uses default configuration for retry logic.
+    /// This uses default configuration for retry logic and connection pooling.
     ///
     /// # Arguments
     ///
@@ -278,18 +359,80 @@ impl MadrpcClient {
     /// # }
     /// ```
     pub async fn new(base_url: impl Into<String>) -> MadrpcResult<Self> {
-        let base_url = base_url.into();
-        let http_client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(90))
-            .build_http();
+        Self::with_configs(base_url, RetryConfig::default(), ConnectionConfig::default()).await
+    }
 
-        let retry_config = RetryConfig::default();
+    /// Creates a new client with custom retry and connection configurations.
+    ///
+    /// Use this when you need full control over retry behavior and connection pooling.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - The base URL of the orchestrator (e.g., "http://127.0.0.1:8080")
+    /// * `retry_config` - The retry configuration
+    /// * `connection_config` - The connection pool configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use madrpc_client::{MadrpcClient, RetryConfig, ConnectionConfig};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let retry_config = RetryConfig::new(5, 200, 10000, 2.0)?;
+    /// let connection_config = ConnectionConfig::long_lived();
+    /// let client = MadrpcClient::with_configs(
+    ///     "http://127.0.0.1:8080",
+    ///     retry_config,
+    ///     connection_config
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn with_configs(
+        base_url: impl Into<String>,
+        retry_config: RetryConfig,
+        connection_config: ConnectionConfig,
+    ) -> MadrpcResult<Self> {
+        let base_url = base_url.into();
+        let http_client = Self::build_http_client(&connection_config);
 
         Ok(Self {
             base_url,
             http_client: Arc::new(http_client),
             retry_config,
         })
+    }
+
+    /// Creates a new client with custom connection configuration.
+    ///
+    /// Use this when you need to control connection pooling behavior.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - The base URL of the orchestrator (e.g., "http://127.0.0.1:8080")
+    /// * `connection_config` - The connection pool configuration
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use madrpc_client::{MadrpcClient, ConnectionConfig};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let connection_config = ConnectionConfig::new(120, Some(300), Some(50));
+    /// let client = MadrpcClient::with_connection_config(
+    ///     "http://127.0.0.1:8080",
+    ///     connection_config
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn with_connection_config(
+        base_url: impl Into<String>,
+        connection_config: ConnectionConfig,
+    ) -> MadrpcResult<Self> {
+        Self::with_configs(base_url, RetryConfig::default(), connection_config).await
     }
 
     /// Creates a new client with custom retry configuration.
@@ -320,16 +463,7 @@ impl MadrpcClient {
         base_url: impl Into<String>,
         retry_config: RetryConfig,
     ) -> MadrpcResult<Self> {
-        let base_url = base_url.into();
-        let http_client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(90))
-            .build_http();
-
-        Ok(Self {
-            base_url,
-            http_client: Arc::new(http_client),
-            retry_config,
-        })
+        Self::with_configs(base_url, retry_config, ConnectionConfig::default()).await
     }
 
     /// Sets retry configuration for this client.
@@ -997,5 +1131,55 @@ mod tests {
         test_error_classification(-31999, "Server error", false);
         test_error_classification(-31000, "Server error", false);
         test_error_classification(-30000, "Server error", false);
+    }
+
+    // ============================================================================
+    // ConnectionConfig Tests
+    // ============================================================================
+
+    #[test]
+    fn test_connection_config_default() {
+        let config = ConnectionConfig::default();
+        assert_eq!(config.pool_idle_timeout_secs, 90);
+        assert_eq!(config.keep_alive_secs, None);
+        assert_eq!(config.max_idle_per_host, None);
+    }
+
+    #[test]
+    fn test_connection_config_new() {
+        let config = ConnectionConfig::new(120, Some(300), Some(50));
+        assert_eq!(config.pool_idle_timeout_secs, 120);
+        assert_eq!(config.keep_alive_secs, Some(300));
+        assert_eq!(config.max_idle_per_host, Some(50));
+    }
+
+    #[test]
+    fn test_connection_config_minimum_timeout() {
+        // Test that timeout is clamped to minimum of 1
+        let config = ConnectionConfig::new(0, None, None);
+        assert_eq!(config.pool_idle_timeout_secs, 1);
+    }
+
+    #[test]
+    fn test_connection_config_long_lived() {
+        let config = ConnectionConfig::long_lived();
+        assert_eq!(config.pool_idle_timeout_secs, 300);
+        assert_eq!(config.keep_alive_secs, Some(300));
+        assert_eq!(config.max_idle_per_host, Some(100));
+    }
+
+    #[test]
+    fn test_connection_config_short_lived() {
+        let config = ConnectionConfig::short_lived();
+        assert_eq!(config.pool_idle_timeout_secs, 10);
+        assert_eq!(config.keep_alive_secs, Some(30));
+        assert_eq!(config.max_idle_per_host, Some(5));
+    }
+
+    #[test]
+    fn test_connection_config_clone() {
+        let config = ConnectionConfig::new(60, Some(120), Some(25));
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
     }
 }

@@ -53,4 +53,4 @@
 
 pub mod client;
 
-pub use client::{MadrpcClient, RetryConfig, RetryConfigError};
+pub use client::{MadrpcClient, RetryConfig, RetryConfigError, ConnectionConfig};

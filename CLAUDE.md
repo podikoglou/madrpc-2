@@ -33,7 +33,7 @@ cargo run -p simple-test
 
 ## Project Roadmap
 
-**Location**: [`reference/ROADMAP.md`](reference/ROADMAP.md)
+**Location**: @reference/ROADMAP.md
 
 ### What is the Roadmap?
 
