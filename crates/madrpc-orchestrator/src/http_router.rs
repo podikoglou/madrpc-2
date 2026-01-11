@@ -4,7 +4,7 @@
 //! It handles built-in methods (_metrics, _info) locally and forwards
 //! all other methods to nodes via the fallback handler.
 
-use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError, NodeRegistrationRequest};
 use std::sync::Arc;
 
 use crate::orchestrator::Orchestrator;
@@ -12,7 +12,7 @@ use crate::orchestrator::Orchestrator;
 /// Orchestrator HTTP router with built-in methods and fallback forwarding.
 ///
 /// This router:
-/// 1. Handles built-in methods (_metrics, _info) locally
+/// 1. Handles built-in methods (_metrics, _info, _register) locally
 /// 2. Forwards all other methods to nodes via the fallback handler
 ///
 /// # Design
@@ -41,7 +41,7 @@ impl OrchestratorRouter {
     /// Handles an incoming JSON-RPC request.
     ///
     /// This method routes the request to the appropriate handler:
-    /// - Built-in methods (_metrics, _info) are handled locally
+    /// - Built-in methods (_metrics, _info, _register) are handled locally
     /// - Other methods are forwarded to nodes via HTTP
     ///
     /// # Arguments
@@ -54,6 +54,7 @@ impl OrchestratorRouter {
         match req.method.as_str() {
             "_metrics" => self.handle_metrics(req).await,
             "_info" => self.handle_info(req).await,
+            "_register" => self.handle_register(req).await,
             _ => self.forward_to_node(req).await,
         }
     }
@@ -127,6 +128,34 @@ impl OrchestratorRouter {
             Err(e) => {
                 let error = JsonRpcError::server_error(&e.to_string());
                 JsonRpcResponse::error(id, error)
+            }
+        }
+    }
+
+    /// Handles _register requests locally.
+    ///
+    /// Registers a new node with the orchestrator. The request must contain
+    /// a `node_url` parameter with the URL where the node is accessible.
+    ///
+    /// # Arguments
+    /// * `req` - JSON-RPC request
+    ///
+    /// # Returns
+    /// A JSON-RPC response with registration result or error
+    async fn handle_register(&self, req: JsonRpcRequest) -> JsonRpcResponse {
+        let registration: NodeRegistrationRequest = match serde_json::from_value(req.params) {
+            Ok(r) => r,
+            Err(e) => {
+                return JsonRpcResponse::error(req.id, JsonRpcError::invalid_params(&format!("Invalid registration params: {}", e)));
+            }
+        };
+
+        match self.orchestrator.register_node(registration.node_url).await {
+            Ok(response) => {
+                JsonRpcResponse::success(req.id, serde_json::to_value(response).unwrap())
+            }
+            Err(e) => {
+                JsonRpcResponse::error(req.id, JsonRpcError::node_registration_error(&e.to_string()))
             }
         }
     }
