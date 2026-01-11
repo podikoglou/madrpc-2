@@ -164,7 +164,7 @@ impl MockNodeServer {
 // ============================================================================
 
 /// Creates a test orchestrator with the given nodes.
-async fn create_test_orchestrator(node_addrs: Vec<String>) -> Orchestrator {
+fn create_test_orchestrator(node_addrs: Vec<String>) -> Orchestrator {
     Orchestrator::with_retry_config(
         node_addrs,
         HealthCheckConfig {
@@ -179,7 +179,6 @@ async fn create_test_orchestrator(node_addrs: Vec<String>) -> Orchestrator {
             backoff_multiplier: 2.0,
         },
     )
-    .await
     .unwrap()
 }
 
@@ -200,7 +199,7 @@ fn create_request(method: &str, params: serde_json::Value, id: serde_json::Value
 #[tokio::test]
 async fn test_orchestrator_builtin_methods() {
     let node = MockNodeServer::new(19001).await;
-    let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
+    let orchestrator = create_test_orchestrator(vec![node.addr()]);
 
     // Test _info
     let info_req = create_request("_info", json!({}), json!(1));
@@ -229,7 +228,7 @@ async fn test_orchestrator_forwards_to_node() {
     let node = MockNodeServer::new(19002).await;
     node.register_handler("test_method", json!({"result": "success"})).await;
 
-    let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
+    let orchestrator = create_test_orchestrator(vec![node.addr()]);
 
     let req = create_request("test_method", json!({"arg": 42}), json!(1));
     let result = orchestrator.forward_request_jsonrpc(req).await;
@@ -251,7 +250,7 @@ async fn test_orchestrator_transparency() {
     node1.register_handler("method1", json!({"node": 1})).await;
     node2.register_handler("method2", json!({"node": 2})).await;
 
-    let orchestrator = create_test_orchestrator(vec![node1.addr(), node2.addr()]).await;
+    let orchestrator = create_test_orchestrator(vec![node1.addr(), node2.addr()]);
 
     // Both methods should work (round-robin)
     let req1 = create_request("method1", json!({}), json!(1));
@@ -281,7 +280,7 @@ async fn test_orchestrator_round_robin() {
         node1.addr(),
         node2.addr(),
         node3.addr(),
-    ]).await;
+    ]);
 
     // Make multiple requests to verify round-robin
     let mut node_counts = HashMap::new();
@@ -315,7 +314,7 @@ async fn test_orchestrator_all_nodes_down() {
     node1.set_healthy(false);
     node2.set_healthy(false);
 
-    let orchestrator = create_test_orchestrator(vec![node1.addr(), node2.addr()]).await;
+    let orchestrator = create_test_orchestrator(vec![node1.addr(), node2.addr()]);
 
     // Wait for health checker to detect unhealthy nodes
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -333,7 +332,7 @@ async fn test_orchestrator_all_nodes_down() {
 #[tokio::test]
 async fn test_orchestrator_health_check() {
     let node = MockNodeServer::new(19010).await;
-    let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
+    let orchestrator = create_test_orchestrator(vec![node.addr()]);
 
     // Initially healthy
     let info_req = create_request("_info", json!({}), json!(1));
@@ -362,7 +361,7 @@ async fn test_orchestrator_method_not_found() {
     let node = MockNodeServer::new(19011).await;
     // Don't register any handler
 
-    let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
+    let orchestrator = create_test_orchestrator(vec![node.addr()]);
 
     let req = create_request("unknown_method", json!({}), json!(1));
     let result = orchestrator.forward_request_jsonrpc(req).await;
@@ -373,7 +372,7 @@ async fn test_orchestrator_method_not_found() {
 
 #[tokio::test]
 async fn test_orchestrator_with_no_nodes() {
-    let orchestrator = create_test_orchestrator(vec![]).await;
+    let orchestrator = create_test_orchestrator(vec![]);
 
     let req = create_request("test", json!({}), json!(1));
     let result = orchestrator.forward_request_jsonrpc(req).await;
@@ -384,7 +383,7 @@ async fn test_orchestrator_with_no_nodes() {
 #[tokio::test]
 async fn test_orchestrator_get_metrics() {
     let node = MockNodeServer::new(19012).await;
-    let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
+    let orchestrator = create_test_orchestrator(vec![node.addr()]);
 
     // Register a handler so requests succeed
     node.register_handler("test", json!({"result": "success"})).await;
@@ -404,7 +403,7 @@ async fn test_orchestrator_get_metrics() {
 #[tokio::test]
 async fn test_orchestrator_get_info() {
     let node = MockNodeServer::new(19013).await;
-    let orchestrator = create_test_orchestrator(vec![node.addr()]).await;
+    let orchestrator = create_test_orchestrator(vec![node.addr()]);
 
     // Add a small delay to ensure uptime_ms > 0
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
