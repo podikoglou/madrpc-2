@@ -6,6 +6,20 @@
 //! - Retry on transient errors
 //! - Not retry on permanent errors
 //! - Handle concurrent requests
+//!
+//! # URL Format Requirements
+//!
+//! All test URLs must use valid address formats:
+//! - Use `127.0.0.1` for IPv4 loopback (not `localhost` to avoid DNS resolution issues)
+//! - Use `http://127.0.0.1:PORT` format with explicit port numbers
+//! - Avoid IPv6 addresses like `[::1]:PORT` as they may not be valid on all systems
+//! - Always include the `http://` or `https://` prefix
+//!
+//! Examples:
+//! - ✅ `http://127.0.0.1:8080`
+//! - ✅ `http://127.0.0.1:19999`
+//! - ❌ `http://[::1]:8080` (IPv6 may not work on all systems)
+//! - ❌ `127.0.0.1:8080` (missing http:// prefix)
 
 use madrpc_client::MadrpcClient;
 use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};

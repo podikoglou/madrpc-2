@@ -8,6 +8,20 @@
 //! 3. Command startup and shutdown
 //! 4. Error handling for invalid arguments
 //! 5. Basic integration testing of commands
+//!
+//! # URL Format Requirements
+//!
+//! All URLs in tests must use valid address formats:
+//! - Use `127.0.0.1` for IPv4 loopback (not `localhost` to avoid DNS resolution issues)
+//! - Use `http://127.0.0.1:PORT` format with explicit port numbers
+//! - Avoid IPv6 addresses like `[::1]:PORT` as they may not be valid on all systems
+//! - Always include the `http://` or `https://` prefix
+//!
+//! Examples:
+//! - ✅ `http://127.0.0.1:8080`
+//! - ✅ `http://127.0.0.1:9001`
+//! - ❌ `http://[::1]:8080` (IPv6 may not work on all systems)
+//! - ❌ `127.0.0.1:8080` (missing http:// prefix)
 
 use std::process::Command;
 use std::path::PathBuf;
