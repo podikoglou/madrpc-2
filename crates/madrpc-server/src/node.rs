@@ -3,6 +3,7 @@ use madrpc_common::protocol::error::{Result, MadrpcError};
 use crate::runtime::MadrpcContext;
 use crate::resource_limits::ResourceLimits;
 use madrpc_metrics::{MetricsCollector, NodeMetricsCollector};
+use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -359,6 +360,78 @@ impl Node {
     pub async fn get_info(&self) -> Result<InfoResponse> {
         let uptime_ms = self.metrics_collector.snapshot().uptime_ms;
         Ok(InfoResponse::Node(NodeInfo::new(uptime_ms)))
+    }
+
+    /// Registers this node with the orchestrator.
+    ///
+    /// This method attempts to register the node with its configured orchestrator
+    /// using retry logic with exponential backoff. The registration is retried up to
+    /// 5 times with a starting delay of 500ms that doubles on each retry.
+    ///
+    /// # Arguments
+    ///
+    /// * `public_url` - The public URL where this node can be reached (e.g., "http://192.168.1.100:9001")
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if registration succeeds, or an error if all retry attempts fail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No orchestrator client is configured
+    /// - Registration fails after all retry attempts
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use madrpc_server::Node;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let node = Node::with_orchestrator(
+    ///     PathBuf::from("script.js"),
+    ///     "127.0.0.1:8080".to_string()
+    /// )?;
+    /// node.register_with_orchestrator("http://192.168.1.100:9001".to_string()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn register_with_orchestrator(&self, public_url: String) -> Result<()> {
+        let client = self.orchestrator_client.as_ref()
+            .ok_or_else(|| MadrpcError::InvalidRequest("No orchestrator client configured".into()))?;
+
+        let mut attempt = 0u32;
+        let max_attempts = 5u32;
+        let mut delay = Duration::from_millis(500);
+
+        loop {
+            attempt += 1;
+            tracing::info!(attempt = attempt, public_url = %public_url, "Attempting registration");
+
+            let params = json!({ "node_url": public_url });
+
+            match client.call("_register", params).await {
+                Ok(response) => {
+                    tracing::info!(
+                        registered_url = response.get("registered_url").and_then(|v| v.as_str()),
+                        is_new = response.get("is_new_registration").and_then(|v| v.as_bool()),
+                        "Successfully registered with orchestrator"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt >= max_attempts {
+                        return Err(MadrpcError::Transport(format!(
+                            "Failed to register after {} attempts: {}", max_attempts, e
+                        )));
+                    }
+                    tracing::warn!(attempt = attempt, error = %e, next_retry_ms = delay.as_millis(), "Registration failed, retrying");
+                    tokio::time::sleep(delay).await;
+                    delay = delay.saturating_mul(2);
+                }
+            }
+        }
     }
 }
 
