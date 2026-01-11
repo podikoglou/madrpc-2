@@ -31,9 +31,6 @@ Thumbs.db
 .github
 .gitlab-ci.yml
 
-# Tests
-tests/
-
 # Docker
 Dockerfile
 .dockerignore
