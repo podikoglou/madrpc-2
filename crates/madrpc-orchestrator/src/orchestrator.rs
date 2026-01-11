@@ -460,7 +460,7 @@ impl Orchestrator {
             self.metrics_collector.record_node_request(&node_addr);
 
             // Try to send the request via HTTP
-            let response = self.send_http_request(&node_addr, &req).await;
+            let response = self.send_http_request(&node_addr, &req.method, &req.params).await;
             let success = response.is_ok();
 
             // If request failed and we have retries left, check if it's retryable
@@ -496,7 +496,8 @@ impl Orchestrator {
     ///
     /// # Arguments
     /// * `node_addr` - Node address (e.g., "127.0.0.1:9001")
-    /// * `req` - JSON-RPC request to send
+    /// * `method` - Method name to call
+    /// * `params` - Parameters to pass (as JSON Value)
     ///
     /// # Returns
     /// - `Ok(Value)` - Result from the node
@@ -504,7 +505,8 @@ impl Orchestrator {
     async fn send_http_request(
         &self,
         node_addr: &str,
-        req: &madrpc_common::protocol::JsonRpcRequest,
+        method: &str,
+        params: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         use madrpc_client::MadrpcClient;
 
@@ -519,8 +521,8 @@ impl Orchestrator {
         let client = MadrpcClient::new(&base_url).await
             .map_err(|e| MadrpcError::Transport(format!("Failed to create RPC client: {}", e)))?;
 
-        // Call the method with params
-        let result = client.call(&req.method, req.params.clone()).await?;
+        // Call the method with params (clone only when necessary for the client)
+        let result = client.call(method, params.clone()).await?;
 
         Ok(result)
     }
