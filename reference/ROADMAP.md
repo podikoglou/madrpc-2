@@ -117,7 +117,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: In Progress (2/8 complete)
+### Status: In Progress (3/8 complete)
 **Goal**: Address all high-severity issues and expand test coverage
 
 #### 2.1 Add RetryConfig Validation ✅
@@ -145,15 +145,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Run benchmarks to verify improvement
 - [x] Document memory ordering choices
 
-#### 2.3 Fix JSON-RPC Error Classification
+#### 2.3 Fix JSON-RPC Error Classification ✅
 **Crate**: `madrpc-client`
 **Location**: `src/client.rs:462`
 **Effort**: 2-3 hours
+**Completed**: 2026-01-11
 
-- Fix incorrect range checks in error classification
-- Replace fragile string matching with proper error parsing
-- Add comprehensive error code tests
-- Document retryable vs non-retryable errors
+- [x] Fix incorrect range checks in error classification
+- [x] Replace fragile string matching with proper error parsing
+- [x] Add comprehensive error code tests
+- [x] Document retryable vs non-retryable errors
 
 #### 2.4 Add Payload Size Limits
 **Crate**: `madrpc-common`
@@ -432,7 +433,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 ### High Priority (Phase 2)
 - [x] RetryConfig validation (madrpc-client) - Completed 2026-01-11
 - [x] Atomic ordering fixes (madrpc-client, madrpc-common) - Completed 2026-01-11
-- [ ] Error classification fix (madrpc-client)
+- [x] Error classification fix (madrpc-client) - Completed 2026-01-11
 - [ ] Payload size limits (madrpc-common)
 - [ ] Remove unused dependencies (madrpc-cli)
 - [ ] Update Boa version (madrpc-server)
