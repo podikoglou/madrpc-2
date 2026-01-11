@@ -130,6 +130,14 @@ struct NodeArgs {
     /// Authentication is disabled by default for backward compatibility.
     #[argh(option, long = "api-key")]
     api_key: Option<String>,
+
+    /// optional rate limit in requests per second
+    ///
+    /// If provided, limits each IP to this many requests per second.
+    /// Burst size is automatically set to 2x the rate.
+    /// Rate limiting is disabled by default for backward compatibility.
+    #[argh(option, long = "rate-limit-rps")]
+    rate_limit_rps: Option<f64>,
 }
 
 /// Arguments for starting a MaDRPC orchestrator.
@@ -209,6 +217,14 @@ struct OrchestratorArgs {
     /// Authentication is disabled by default for backward compatibility.
     #[argh(option, long = "api-key")]
     api_key: Option<String>,
+
+    /// optional rate limit in requests per second
+    ///
+    /// If provided, limits each IP to this many requests per second.
+    /// Burst size is automatically set to 2x the rate.
+    /// Rate limiting is disabled by default for backward compatibility.
+    #[argh(option, long = "rate-limit-rps")]
+    rate_limit_rps: Option<f64>,
 }
 
 /// Arguments for the real-time metrics monitoring TUI.
@@ -345,6 +361,12 @@ async fn main() -> Result<()> {
                 server = server.with_auth(madrpc_common::auth::AuthConfig::with_api_key(api_key));
             }
 
+            // Configure rate limiting if specified
+            if let Some(rps) = &args.rate_limit_rps {
+                tracing::info!("Rate limiting enabled: {} requests per second", rps);
+                server = server.with_rate_limit(madrpc_common::rate_limit::RateLimitConfig::per_second(*rps));
+            }
+
             let addr: SocketAddr = args.bind.parse()
                 .map_err(|e| anyhow::anyhow!("Invalid bind address {}: {}", args.bind, e))?;
             server.run(addr).await?;
@@ -391,6 +413,12 @@ async fn main() -> Result<()> {
             if let Some(api_key) = &args.api_key {
                 tracing::info!("API key authentication enabled");
                 server = server.with_auth(madrpc_common::auth::AuthConfig::with_api_key(api_key));
+            }
+
+            // Configure rate limiting if specified
+            if let Some(rps) = &args.rate_limit_rps {
+                tracing::info!("Rate limiting enabled: {} requests per second", rps);
+                server = server.with_rate_limit(madrpc_common::rate_limit::RateLimitConfig::per_second(*rps));
             }
 
             let addr: SocketAddr = args.bind.parse()
@@ -458,11 +486,12 @@ mod tests {
     fn test_cli_parse_node() {
         let args: Cli = Cli::from_args(&["madrpc"], &["node", "-s", "test.js", "-b", "0.0.0.0:9001"]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert!(orchestrator.is_none());
                 assert!(api_key.is_none());
+                assert!(rate_limit_rps.is_none());
             }
             _ => panic!("Expected Node command"),
         }
@@ -477,11 +506,12 @@ mod tests {
             "--orchestrator", "127.0.0.1:8080",
         ]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert_eq!(orchestrator, Some("127.0.0.1:8080".to_string()));
                 assert!(api_key.is_none());
+                assert!(rate_limit_rps.is_none());
             }
             _ => panic!("Expected Node command"),
         }
@@ -496,11 +526,12 @@ mod tests {
             "--api-key", "my-secret-key",
         ]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert!(orchestrator.is_none());
                 assert_eq!(api_key, Some("my-secret-key".to_string()));
+                assert!(rate_limit_rps.is_none());
             }
             _ => panic!("Expected Node command"),
         }

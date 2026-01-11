@@ -41,7 +41,9 @@
 
 pub mod auth;
 pub mod protocol;
+pub mod rate_limit;
 pub mod transport;
 
 pub use auth::*;
 pub use protocol::*;
+pub use rate_limit::*;

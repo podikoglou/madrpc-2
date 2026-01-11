@@ -4,11 +4,12 @@
 //! It handles JSON-RPC requests and forwards them to the orchestrator router.
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use hyper::body::Bytes;
+use serde_json::json;
 use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -19,6 +20,7 @@ use crate::http_router::OrchestratorRouter;
 use crate::orchestrator::Orchestrator;
 use madrpc_common::auth::AuthConfig;
 use madrpc_common::protocol::error::MadrpcError;
+use madrpc_common::rate_limit::{RateLimiter, RateLimitConfig};
 use madrpc_common::transport::HttpTransport;
 
 /// HTTP server for the orchestrator.
@@ -28,11 +30,14 @@ use madrpc_common::transport::HttpTransport;
 /// - Provides a health check endpoint at `/__health`
 /// - Uses the orchestrator router for request routing
 /// - Supports optional API key authentication
+/// - Supports optional per-IP rate limiting
 pub struct HttpServer {
     /// Orchestrator router for handling requests
     router: Arc<OrchestratorRouter>,
     /// Authentication configuration
     auth_config: AuthConfig,
+    /// Rate limiter for preventing abuse
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl HttpServer {
@@ -42,12 +47,13 @@ impl HttpServer {
     /// * `orchestrator` - Arc-wrapped orchestrator instance
     ///
     /// # Returns
-    /// A new HTTP server instance with authentication disabled
+    /// A new HTTP server instance with authentication and rate limiting disabled
     pub fn new(orchestrator: Arc<Orchestrator>) -> Self {
         let router = Arc::new(OrchestratorRouter::new(orchestrator));
         Self {
             router,
             auth_config: AuthConfig::default(),
+            rate_limiter: Arc::new(RateLimiter::disabled()),
         }
     }
 
@@ -60,6 +66,18 @@ impl HttpServer {
     /// Self for method chaining
     pub fn with_auth(mut self, auth_config: AuthConfig) -> Self {
         self.auth_config = auth_config;
+        self
+    }
+
+    /// Sets the rate limiting configuration for the server.
+    ///
+    /// # Arguments
+    /// * `rate_limit_config` - The rate limit configuration to use
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_rate_limit(mut self, rate_limit_config: RateLimitConfig) -> Self {
+        self.rate_limiter = Arc::new(RateLimiter::new(rate_limit_config));
         self
     }
 
@@ -79,13 +97,16 @@ impl HttpServer {
     pub async fn run(self, addr: SocketAddr) -> Result<(), MadrpcError> {
         // Log authentication configuration
         info!("Authentication: {}", self.auth_config);
+        info!("Rate Limiting: enabled ({} req/s, burst {})",
+            self.rate_limiter.config.requests_per_second,
+            self.rate_limiter.config.burst_size);
 
         // Build axum app with CORS support
         let app = axum::Router::new()
             .route("/", axum::routing::post(handle_jsonrpc))
             .route("/__health", axum::routing::get(health_check))
             .layer(CorsLayer::permissive())
-            .with_state((self.router, self.auth_config));
+            .with_state((self.router, self.auth_config, self.rate_limiter));
 
         // Bind to address
         let listener = TcpListener::bind(addr)
@@ -107,17 +128,27 @@ impl HttpServer {
 /// Handles JSON-RPC POST requests.
 ///
 /// # Arguments
-/// * `State((router, auth_config))` - Orchestrator router and auth config
+/// * `State((router, auth_config, rate_limiter))` - Orchestrator router, auth config, and rate limiter
+/// * `ConnectInfo(remote_addr)` - Client's socket address
 /// * `headers` - Request headers (for Content-Type validation and auth)
 /// * `body` - Request body bytes
 ///
 /// # Returns
 /// A JSON-RPC response or an HTTP error
 async fn handle_jsonrpc(
-    State((router, auth_config)): State<(Arc<OrchestratorRouter>, AuthConfig)>,
+    State((router, auth_config, rate_limiter)): State<(Arc<OrchestratorRouter>, AuthConfig, Arc<RateLimiter>)>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // Check rate limit first (before expensive operations)
+    let client_ip = remote_addr.ip();
+    let rate_limit_result = rate_limiter.check_rate_limit(&client_ip).await;
+    if !rate_limit_result.is_allowed() {
+        tracing::warn!("Rate limit exceeded for IP: {}", client_ip);
+        return rate_limited_response(rate_limit_result.retry_after());
+    }
+
     // Check authentication if enabled
     if auth_config.requires_auth() {
         let api_key = headers.get("x-api-key")
@@ -177,6 +208,35 @@ async fn health_check() -> impl IntoResponse {
 fn unauthorized_response() -> Response {
     let body = r#"{"jsonrpc":"2.0","error":{"code":-401,"message":"Unauthorized: Invalid or missing API key"},"id":null}"#;
     (StatusCode::UNAUTHORIZED, body).into_response()
+}
+
+/// Creates an HTTP 429 Too Many Requests response.
+///
+/// # Arguments
+/// * `retry_after` - Optional duration until the request can be retried
+///
+/// # Returns
+/// A response with 429 status and appropriate error message
+fn rate_limited_response(retry_after: Option<std::time::Duration>) -> Response {
+    let retry_after_secs = retry_after
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|| "1".to_string());
+
+    let body = json!({
+        "jsonrpc": "2.0",
+        "error": {
+            "code": -429,
+            "message": "Too Many Requests: Rate limit exceeded",
+            "data": { "retry_after": retry_after_secs }
+        },
+        "id": null
+    });
+
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [("Retry-After", &retry_after_secs)],
+        body.to_string(),
+    ).into_response()
 }
 
 #[cfg(test)]

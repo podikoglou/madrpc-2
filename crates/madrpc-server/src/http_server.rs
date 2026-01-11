@@ -35,8 +35,10 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
-use std::net::SocketAddr;
+use hyper::{Response, StatusCode};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use serde_json::json;
@@ -46,6 +48,7 @@ use crate::node::Node;
 use madrpc_common::auth::AuthConfig;
 use madrpc_common::protocol::JsonRpcError;
 use madrpc_common::protocol::error::MadrpcError;
+use madrpc_common::rate_limit::{RateLimiter, RateLimitConfig};
 use madrpc_common::transport::{HttpTransport, HyperRequest, HyperResponse};
 
 /// Maximum request body size (10 MB)
@@ -77,6 +80,12 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 1000;
 /// The server supports optional API key authentication via the `X-API-Key` header.
 /// When authentication is configured, requests without a valid API key will be
 /// rejected with HTTP 401 Unauthorized.
+///
+/// # Rate Limiting
+///
+/// The server supports optional per-IP rate limiting using a token bucket algorithm.
+/// When rate limiting is configured, requests that exceed the configured rate will
+/// be rejected with HTTP 429 Too Many Requests.
 pub struct HttpServer {
     /// The router for handling JSON-RPC requests
     router: Arc<NodeRouter>,
@@ -84,6 +93,8 @@ pub struct HttpServer {
     connection_semaphore: Arc<Semaphore>,
     /// Authentication configuration
     auth_config: AuthConfig,
+    /// Rate limiter for preventing abuse
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl HttpServer {
@@ -116,6 +127,7 @@ impl HttpServer {
             router,
             connection_semaphore,
             auth_config: AuthConfig::default(),
+            rate_limiter: Arc::new(RateLimiter::disabled()),
         }
     }
 
@@ -145,6 +157,35 @@ impl HttpServer {
     /// ```
     pub fn with_auth(mut self, auth_config: AuthConfig) -> Self {
         self.auth_config = auth_config;
+        self
+    }
+
+    /// Sets the rate limiting configuration for the server.
+    ///
+    /// # Arguments
+    ///
+    /// * `rate_limit_config` - The rate limit configuration to use
+    ///
+    /// # Returns
+    ///
+    /// Self for method chaining
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use madrpc_server::http_server::HttpServer;
+    /// use madrpc_server::Node;
+    /// use madrpc_common::rate_limit::RateLimitConfig;
+    /// use std::sync::Arc;
+    ///
+    /// # let script = tempfile::NamedTempFile::new().unwrap();
+    /// # std::fs::write(script.path(), "// empty").unwrap();
+    /// let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+    /// let server = HttpServer::new(node)
+    ///     .with_rate_limit(RateLimitConfig::per_second(100));
+    /// ```
+    pub fn with_rate_limit(mut self, rate_limit_config: RateLimitConfig) -> Self {
+        self.rate_limiter = Arc::new(RateLimiter::new(rate_limit_config));
         self
     }
 
@@ -181,9 +222,12 @@ impl HttpServer {
         tracing::info!("HTTP server listening on {}", listener.local_addr()
             .map_err(|e| MadrpcError::Transport(format!("Failed to get local address: {}", e)))?);
         tracing::info!("Authentication: {}", self.auth_config);
+        tracing::info!("Rate Limiting: enabled ({} req/s, burst {})",
+            self.rate_limiter.config.requests_per_second,
+            self.rate_limiter.config.burst_size);
 
         loop {
-            let (stream, _) = listener.accept().await
+            let (stream, remote_addr) = listener.accept().await
                 .map_err(|e| MadrpcError::Transport(format!("Failed to accept connection: {}", e)))?;
 
             // Acquire a permit from the semaphore to limit concurrent connections
@@ -195,12 +239,16 @@ impl HttpServer {
             let io = TokioIo::new(stream);
             let router = self.router.clone();
             let auth_config = self.auth_config.clone();
+            let rate_limiter = self.rate_limiter.clone();
+            let client_ip = remote_addr.ip();
 
             tokio::task::spawn(async move {
                 let service = service_fn(move |req| {
                     let router = router.clone();
                     let auth_config = auth_config.clone();
-                    async move { Self::handle_request(router, req, auth_config).await }
+                    let rate_limiter = rate_limiter.clone();
+                    let client_ip = client_ip;
+                    async move { Self::handle_request(router, req, auth_config, rate_limiter, client_ip).await }
                 });
 
                 if let Err(err) = http1::Builder::new()
@@ -223,6 +271,8 @@ impl HttpServer {
     /// * `router` - The router to handle the JSON-RPC request
     /// * `req` - The incoming HTTP request
     /// * `auth_config` - The authentication configuration
+    /// * `rate_limiter` - The rate limiter for preventing abuse
+    /// * `client_ip` - The IP address of the client
     ///
     /// # Returns
     ///
@@ -231,7 +281,16 @@ impl HttpServer {
         router: Arc<NodeRouter>,
         req: HyperRequest,
         auth_config: AuthConfig,
+        rate_limiter: Arc<RateLimiter>,
+        client_ip: IpAddr,
     ) -> Result<HyperResponse, MadrpcError> {
+        // Check rate limit first (before expensive operations)
+        let rate_limit_result = rate_limiter.check_rate_limit(&client_ip).await;
+        if !rate_limit_result.is_allowed() {
+            tracing::warn!("Rate limit exceeded for IP: {}", client_ip);
+            return Ok(Self::rate_limited_response(rate_limit_result.retry_after()));
+        }
+
         // Check authentication if enabled
         if auth_config.requires_auth() {
             let headers = req.headers();
@@ -312,11 +371,42 @@ impl HttpServer {
     ///
     /// A hyper response with 401 status and appropriate error message
     fn unauthorized_response() -> HyperResponse {
-        use hyper::{Response, StatusCode};
         Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(r#"{"jsonrpc":"2.0","error":{"code":-401,"message":"Unauthorized: Invalid or missing API key"},"id":null}"#)))
+            .unwrap()
+    }
+
+    /// Creates an HTTP 429 Too Many Requests response.
+    ///
+    /// # Arguments
+    ///
+    /// * `retry_after` - Optional duration until the request can be retried
+    ///
+    /// # Returns
+    ///
+    /// A hyper response with 429 status and appropriate error message
+    fn rate_limited_response(retry_after: Option<Duration>) -> HyperResponse {
+        let retry_after_secs = retry_after
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_else(|| "1".to_string());
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -429,
+                "message": "Too Many Requests: Rate limit exceeded",
+                "data": { "retry_after": retry_after_secs }
+            },
+            "id": null
+        });
+
+        Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header("Content-Type", "application/json")
+            .header("Retry-After", retry_after_secs)
+            .body(Full::new(Bytes::from(body.to_string())))
             .unwrap()
     }
 }
