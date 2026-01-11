@@ -31,7 +31,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 1: Immediate Critical Fixes (Week 1)
 
-### Status: In Progress (2/6 complete)
+### Status: In Progress (3/6 complete)
 **Goal**: Eliminate all critical issues that could cause data corruption, DoS, or system failure
 
 #### 1.1 Fix Request ID Generation Bug ✅
@@ -60,17 +60,18 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Add test for oversized request rejection
 - [x] Document limit in server configuration
 
-#### 1.3 Add Connection Limiting
+#### 1.3 Add Connection Limiting ✅
 **Crate**: `madrpc-server`
 **Location**: `src/http_server.rs`
 **Impact**: Prevents resource exhaustion DoS
 **Effort**: 2-3 hours
+**Completed**: 2026-01-11
 
-- Create `Semaphore` with `MAX_CONCURRENT_CONNECTIONS` (1000)
-- Acquire permit before spawning connection handler task
-- Hold permit until task completion
-- Add test for concurrent connection limit
-- Document connection limit behavior
+- [x] Create `Semaphore` with `MAX_CONCURRENT_CONNECTIONS` (1000)
+- [x] Acquire permit before spawning connection handler task
+- [x] Hold permit until task completion
+- [x] Add test for concurrent connection limit
+- [x] Document connection limit behavior
 
 #### 1.4 Fix Promise Polling Timeout
 **Crate**: `madrpc-server`
@@ -417,7 +418,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 ### Critical Bugs (Phase 1)
 - [x] Request ID generation (madrpc-common) - Completed 2026-01-11
 - [x] Request size limits (madrpc-server) - Completed 2026-01-11
-- [ ] Connection limiting (madrpc-server)
+- [x] Connection limiting (madrpc-server) - Completed 2026-01-11
 - [ ] Promise polling timeout (madrpc-server)
 - [ ] fetch_min bug (madrpc-metrics)
 - [ ] Integration test compilation (madrpc-client)
