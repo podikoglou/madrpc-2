@@ -31,6 +31,87 @@ cargo run -p monte-carlo-pi
 cargo run -p simple-test
 ```
 
+## Project Roadmap
+
+**Location**: [`reference/ROADMAP.md`](reference/ROADMAP.md)
+
+### What is the Roadmap?
+
+The **ROADMAP.md** file is the **single entry point for planning and task management**. It describes:
+
+1. **Overall Development Process** - The workflow principles, phase structure, and how to approach different types of work
+2. **High-Level Task Overviews** - Each task organized by phase with bullet points describing:
+   - Affected crate and file locations
+   - Impact and rationale
+   - Estimated effort
+   - Implementation steps
+   - Testing requirements
+
+### When to Consult the Roadmap
+
+**BEFORE starting any work:**
+- Check if the task is already tracked in the roadmap
+- Understand the current phase and priorities
+- Review related tasks that may affect your approach
+- Identify dependencies between tasks
+
+**When planning new features:**
+- Consult the appropriate phase for context
+- Ensure the feature aligns with current priorities
+- Check for conflicting or related work
+- Add new tasks to the appropriate phase
+
+**When choosing what to work on:**
+- Start with Phase 1 (critical bugs) if not complete
+- Move to Phase 2 (high priority) after Phase 1
+- Check the "Quick Reference" section for current blockers
+- Follow the "Task Prioritization Guidelines"
+
+### When to Update the Roadmap
+
+**UPDATE the roadmap when:**
+- A task is completed (mark as completed with date)
+- New issues are discovered (add to appropriate phase)
+- Priorities change (update task order or phase)
+- New features are planned (add to appropriate phase)
+- Tasks become blocked or unblocked (update blockers section)
+- Estimates are found to be inaccurate (update with new estimates)
+
+**DO NOT update the roadmap when:**
+- Making atomic commits (update after the full task is complete)
+- Running tests or doing routine maintenance
+- Making documentation updates to existing features
+- Fixing minor typos or formatting issues
+
+### Roadmap Structure
+
+```
+reference/ROADMAP.md
+├── Overview                    # Project status and purpose
+├── Development Process         # Workflow principles and phases
+├── Phase 1 (Immediate)         # Critical bugs - Week 1
+├── Phase 2 (Short-term)        # High priority - Weeks 2-3
+├── Phase 3 (Medium-term)       # Security & performance - Month 2
+├── Phase 4 (Long-term)         # Polish & enhancements - Month 3+
+├── Cross-Cutting Initiatives   # Testing, DX, security
+├── Task Prioritization         # Guidelines for choosing work
+└── Quick Reference             # Current priorities and blockers
+```
+
+### Key Principles
+
+1. **Roadmap First** - Always check the roadmap before starting new work
+2. **One Task at a Time** - Complete a task from start to finish before starting another
+3. **Update as You Go** - Mark tasks complete immediately after finishing
+4. **Add Context** - When adding new tasks, include all required information
+5. **Keep it Living** - The roadmap evolves with the project
+
+### Related Files
+
+- [`REPORT.md`](REPORT.md) - Detailed quality analysis findings (source of roadmap tasks)
+- [`CLAUDE.md`](CLAUDE.md) - This file (development practices and architecture)
+- [`reference/ROADMAP.md`](reference/ROADMAP.md) - Task planning and prioritization
+
 ## Architecture Overview
 
 The system consists of three main components that communicate via HTTP:
