@@ -117,7 +117,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: In Progress (3/8 complete)
+### Status: In Progress (4/8 complete)
 **Goal**: Address all high-severity issues and expand test coverage
 
 #### 2.1 Add RetryConfig Validation ✅
@@ -156,16 +156,17 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Add comprehensive error code tests
 - [x] Document retryable vs non-retryable errors
 
-#### 2.4 Add Payload Size Limits
+#### 2.4 Add Payload Size Limits ✅
 **Crate**: `madrpc-common`
 **Location**: `src/transport/http.rs:81`
 **Effort**: 1-2 hours
+**Completed**: 2026-01-11
 
-- Define maximum payload size constant
-- Add validation in request construction
-- Return error if size exceeded
-- Add tests for size limits
-- Document limits
+- [x] Define maximum payload size constant
+- [x] Add validation in request construction
+- [x] Return error if size exceeded
+- [x] Add tests for size limits
+- [x] Document limits
 
 #### 2.5 Remove Unused Dependencies
 **Crate**: `madrpc-cli`
@@ -434,7 +435,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] RetryConfig validation (madrpc-client) - Completed 2026-01-11
 - [x] Atomic ordering fixes (madrpc-client, madrpc-common) - Completed 2026-01-11
 - [x] Error classification fix (madrpc-client) - Completed 2026-01-11
-- [ ] Payload size limits (madrpc-common)
+- [x] Payload size limits (madrpc-common) - Completed 2026-01-11
 - [ ] Remove unused dependencies (madrpc-cli)
 - [ ] Update Boa version (madrpc-server)
 - [ ] CLI integration tests (madrpc-cli)
