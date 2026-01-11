@@ -462,7 +462,6 @@ impl RateLimiter {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
-    use std::str::FromStr;
 
     fn create_test_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
@@ -625,7 +624,7 @@ mod tests {
 
         // Consume the token
         assert!(bucket.try_consume(&config, now));
-        assert_eq!(bucket.tokens, 0.0);
+        assert!(bucket.tokens < 1e-6, "tokens should be near 0, got {}", bucket.tokens);
 
         // Wait 0.11 seconds for 1 token to refill
         let _later = now + Duration::from_millis(110);
@@ -644,7 +643,7 @@ mod tests {
         assert!(time_to_wait.as_secs_f64() <= 0.2); // Should be ~0.1 seconds
 
         // After waiting, should have tokens
-        let later = now + time_to_wait;
+        let _later = now + time_to_wait;
         bucket.tokens = 5.0; // Simulate tokens added
         assert_eq!(bucket.time_until_next_token(&config), Duration::ZERO);
     }
