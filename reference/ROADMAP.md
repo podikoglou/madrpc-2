@@ -117,7 +117,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: In Progress (1/8 complete)
+### Status: In Progress (2/8 complete)
 **Goal**: Address all high-severity issues and expand test coverage
 
 #### 2.1 Add RetryConfig Validation ✅
@@ -133,16 +133,17 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Add tests for validation logic
 - [x] Document valid ranges
 
-#### 2.2 Fix Atomic Ordering Performance
+#### 2.2 Fix Atomic Ordering Performance ✅
 **Crate**: `madrpc-client`, `madrpc-common`
 **Location**: Multiple files
 **Effort**: 2-3 hours
+**Completed**: 2026-01-11
 
-- Audit all `SeqCst` ordering usage
-- Replace with `Relaxed` where appropriate
-- Add comments explaining ordering requirements
-- Run benchmarks to verify improvement
-- Document memory ordering choices
+- [x] Audit all `SeqCst` ordering usage
+- [x] Replace with `Relaxed` where appropriate
+- [x] Add comments explaining ordering requirements
+- [x] Run benchmarks to verify improvement
+- [x] Document memory ordering choices
 
 #### 2.3 Fix JSON-RPC Error Classification
 **Crate**: `madrpc-client`
@@ -430,7 +431,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ### High Priority (Phase 2)
 - [x] RetryConfig validation (madrpc-client) - Completed 2026-01-11
-- [ ] Atomic ordering fixes (madrpc-client, madrpc-common)
+- [x] Atomic ordering fixes (madrpc-client, madrpc-common) - Completed 2026-01-11
 - [ ] Error classification fix (madrpc-client)
 - [ ] Payload size limits (madrpc-common)
 - [ ] Remove unused dependencies (madrpc-cli)
