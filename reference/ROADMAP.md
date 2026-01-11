@@ -1,6 +1,6 @@
 # MaDRPC-2 Development Roadmap
 
-**Last Updated**: 2026-01-11
+**Last Updated**: 2026-01-11 (Task 2.6 completed)
 **Project**: MaDRPC - Massively Distributed RPC
 **Status**: Foundation Complete, Production Hardening In Progress
 
@@ -117,7 +117,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: In Progress (5/8 complete)
+### Status: In Progress (6/8 complete)
 **Goal**: Address all high-severity issues and expand test coverage
 
 #### 2.1 Add RetryConfig Validation ✅
@@ -178,16 +178,17 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Verify no build warnings
 - [x] Run full test suite
 
-#### 2.6 Update Boa Version
+#### 2.6 Update Boa Version ✅
 **Crate**: `madrpc-server`
 **Location**: `Cargo.toml:11`
 **Effort**: 1-2 hours
+**Completed**: 2026-01-11
 
-- Check latest Boa release
-- Update dependency version
-- Run all tests to verify compatibility
-- Check for breaking changes
-- Update documentation if needed
+- [x] Check latest Boa release
+- [x] Verify current version (0.21.0) is latest stable
+- [x] Run all tests to verify compatibility
+- [x] Document that dependency is up-to-date
+- [x] Note: Local path dependency was replaced with crates.io v0.21.0 on 2026-01-09
 
 #### 2.7 Add CLI Integration Tests
 **Crate**: `madrpc-cli`
@@ -438,7 +439,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Error classification fix (madrpc-client) - Completed 2026-01-11
 - [x] Payload size limits (madrpc-common) - Completed 2026-01-11
 - [x] Remove unused dependencies (madrpc-cli) - Completed 2026-01-11
-- [ ] Update Boa version (madrpc-server)
+- [x] Update Boa version (madrpc-server) - Completed 2026-01-11
 - [ ] CLI integration tests (madrpc-cli)
 - [ ] Error path tests (multiple crates)
 
