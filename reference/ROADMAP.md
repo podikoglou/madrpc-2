@@ -31,8 +31,9 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 1: Immediate Critical Fixes (Week 1)
 
-### Status: In Progress (5/6 complete)
+### Status: ✅ Complete
 **Goal**: Eliminate all critical issues that could cause data corruption, DoS, or system failure
+**Completed**: 2026-01-11
 
 #### 1.1 Fix Request ID Generation Bug ✅
 **Crate**: `madrpc-common`
@@ -99,15 +100,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Add test verifying count caps at buffer size
 - [x] Document capping behavior
 
-#### 1.6 Fix Client Integration Test Compilation
+#### 1.6 Fix Client Integration Test Compilation ✅
 **Crate**: `madrpc-client`
 **Location**: `tests/http_client_test.rs:18`
 **Impact**: Unblocks testing
 **Effort**: 30 minutes
+**Completed**: 2026-01-11
 
-- Add `server` feature to hyper dependency in Cargo.toml
-- Verify tests compile and pass
-- Ensure all integration tests run in CI
+- [x] Add `server` feature to hyper dependency in Cargo.toml
+- [x] Verify tests compile and pass
+- [x] Ensure all integration tests run in CI
 
 **Completion Criteria**: All critical bugs fixed, all tests passing, no regressions
 
@@ -423,7 +425,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Connection limiting (madrpc-server) - Completed 2026-01-11
 - [x] Promise polling timeout (madrpc-server) - Completed 2026-01-11
 - [x] fetch_min bug (madrpc-metrics) - Completed 2026-01-11
-- [ ] Integration test compilation (madrpc-client)
+- [x] Integration test compilation (madrpc-client) - Completed 2026-01-11
 
 ### High Priority (Phase 2)
 - [ ] RetryConfig validation (madrpc-client)
@@ -439,7 +441,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 None identified
 
 ### Next Sprint Focus
-Phase 1: Critical bug fixes
+Phase 2: High-priority issues and testing gaps
 
 ---
 
