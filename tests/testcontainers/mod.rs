@@ -112,8 +112,10 @@ pub struct NodeContainer {
     container: testcontainers::ContainerAsync<GenericImage>,
     /// The host port mapped to the container's port 9001.
     pub host_port: u16,
-    /// The external URL for connecting to this node.
+    /// The external URL for connecting to this node from the host.
     pub external_url: String,
+    /// The container URL for connecting to this node from other containers.
+    pub container_url: String,
 }
 
 impl NodeContainer {
@@ -131,6 +133,8 @@ impl NodeContainer {
 
         let port = container.get_host_port_ipv4(9001).await?;
         let external_url = format!("http://127.0.0.1:{}", port);
+        let bridge_ip = container.get_bridge_ip_address().await?;
+        let container_url = format!("http://{}:9001", bridge_ip);
 
         // Wait for the _info endpoint to be ready
         Self::wait_for_ready(&external_url).await?;
@@ -139,6 +143,7 @@ impl NodeContainer {
             container,
             host_port: port,
             external_url,
+            container_url,
         })
     }
 
@@ -165,6 +170,8 @@ impl NodeContainer {
 
         let port = container.get_host_port_ipv4(9001).await?;
         let external_url = format!("http://127.0.0.1:{}", port);
+        let bridge_ip = container.get_bridge_ip_address().await?;
+        let container_url = format!("http://{}:9001", bridge_ip);
 
         // Wait for the _info endpoint to be ready
         Self::wait_for_ready(&external_url).await?;
@@ -173,6 +180,7 @@ impl NodeContainer {
             container,
             host_port: port,
             external_url,
+            container_url,
         })
     }
 
@@ -224,8 +232,10 @@ pub struct OrchestratorContainer {
     container: testcontainers::ContainerAsync<GenericImage>,
     /// The host port mapped to the container's port 8080.
     pub host_port: u16,
-    /// The external URL for connecting to this orchestrator.
+    /// The external URL for connecting to this orchestrator from the host.
     pub external_url: String,
+    /// The container URL for connecting to this orchestrator from other containers.
+    pub container_url: String,
 }
 
 impl OrchestratorContainer {
@@ -245,6 +255,8 @@ impl OrchestratorContainer {
 
         let port = container.get_host_port_ipv4(8080).await?;
         let external_url = format!("http://127.0.0.1:{}", port);
+        let bridge_ip = container.get_bridge_ip_address().await?;
+        let container_url = format!("http://{}:8080", bridge_ip);
 
         // Wait for the __health endpoint to be ready
         Self::wait_for_ready(&external_url).await?;
@@ -253,6 +265,7 @@ impl OrchestratorContainer {
             container,
             host_port: port,
             external_url,
+            container_url,
         })
     }
 
