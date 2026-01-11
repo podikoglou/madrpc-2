@@ -174,9 +174,12 @@ impl LatencyBuffer {
         // - The ring buffer index wraparound is handled by modulo operation
         let idx = self.index.fetch_add(1, Ordering::Relaxed) % LATENCY_BUFFER_SIZE as u64;
         self.samples[idx as usize].store(latency_us, Ordering::Relaxed);
-        // fetch_min ensures count doesn't exceed buffer size
+        // Cap count at buffer size to prevent unbounded growth
+        // fetch_update ensures we increment but never exceed LATENCY_BUFFER_SIZE
         // Relaxed is safe: we only care about the final value, not synchronization
-        self.count.fetch_min(LATENCY_BUFFER_SIZE as u64, Ordering::Relaxed);
+        self.count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+            Some(x.saturating_add(1).min(LATENCY_BUFFER_SIZE as u64))
+        }).ok();
     }
 
     /// Calculates latency percentiles from recorded samples.
@@ -1349,6 +1352,80 @@ mod tests {
         // New methods should exist
         let snapshot = registry.snapshot(false);
         assert!(snapshot.methods.len() > 0);
+    }
+
+    // ========================================================================
+    // Latency Buffer Tests
+    // ========================================================================
+
+    #[test]
+    fn test_latency_buffer_count_capping() {
+        // Test that the latency buffer count properly caps at LATENCY_BUFFER_SIZE
+        // This prevents unbounded growth of the count counter
+        let buffer = LatencyBuffer::new();
+
+        // Record more samples than the buffer size
+        for i in 0..LATENCY_BUFFER_SIZE * 2 {
+            buffer.record(i as u64);
+        }
+
+        // The count should be capped at LATENCY_BUFFER_SIZE
+        let count = buffer.count.load(Ordering::Relaxed);
+        assert_eq!(
+            count, LATENCY_BUFFER_SIZE as u64,
+            "count should be capped at LATENCY_BUFFER_SIZE"
+        );
+    }
+
+    #[test]
+    fn test_latency_buffer_count_increments() {
+        // Test that count increments properly before reaching the cap
+        let buffer = LatencyBuffer::new();
+
+        // Record fewer samples than buffer size
+        for i in 0..500 {
+            buffer.record(i as u64);
+        }
+
+        let count = buffer.count.load(Ordering::Relaxed);
+        assert_eq!(
+            count, 500,
+            "count should increment until reaching buffer size"
+        );
+    }
+
+    #[test]
+    fn test_latency_buffer_capping_with_concurrent_writes() {
+        // Test that capping works correctly even with concurrent writes
+        use std::sync::Arc;
+        use std::thread;
+
+        let buffer = Arc::new(LatencyBuffer::new());
+        let mut handles = vec![];
+
+        // Spawn multiple threads writing to the buffer
+        for _ in 0..10 {
+            let buffer_clone = buffer.clone();
+            handles.push(thread::spawn(move || {
+                for i in 0..200 {
+                    buffer_clone.record(i as u64);
+                }
+            }));
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Total writes: 10 threads * 200 samples = 2000
+        // Buffer size: 1000
+        // Count should be capped at 1000
+        let count = buffer.count.load(Ordering::Relaxed);
+        assert_eq!(
+            count, LATENCY_BUFFER_SIZE as u64,
+            "count should be capped at LATENCY_BUFFER_SIZE even with concurrent writes"
+        );
     }
 }
 
