@@ -31,7 +31,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 1: Immediate Critical Fixes (Week 1)
 
-### Status: In Progress (3/6 complete)
+### Status: In Progress (4/6 complete)
 **Goal**: Eliminate all critical issues that could cause data corruption, DoS, or system failure
 
 #### 1.1 Fix Request ID Generation Bug ✅
@@ -73,18 +73,19 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Add test for concurrent connection limit
 - [x] Document connection limit behavior
 
-#### 1.4 Fix Promise Polling Timeout
+#### 1.4 Fix Promise Polling Timeout ✅
 **Crate**: `madrpc-server`
 **Location**: `src/runtime/context.rs:300-310`
 **Impact**: Prevents CPU exhaustion and hangs
 **Effort**: 2-3 hours
+**Completed**: 2026-01-11
 
-- Replace iteration-based loop with timeout-based loop
-- Use `Instant::now()` to track elapsed time
-- Define `MAX_PROMISE_WAIT_MS` constant (30 seconds)
-- Return timeout error when limit exceeded
-- Add test for promise resolution timeout
-- Document timeout behavior
+- [x] Replace iteration-based loop with timeout-based loop
+- [x] Use `Instant::now()` to track elapsed time
+- [x] Define `MAX_PROMISE_WAIT_MS` constant (30 seconds)
+- [x] Return timeout error when limit exceeded
+- [x] Add test for promise resolution timeout
+- [x] Document timeout behavior
 
 #### 1.5 Fix fetch_min Bug in Metrics
 **Crate**: `madrpc-metrics`
@@ -419,7 +420,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Request ID generation (madrpc-common) - Completed 2026-01-11
 - [x] Request size limits (madrpc-server) - Completed 2026-01-11
 - [x] Connection limiting (madrpc-server) - Completed 2026-01-11
-- [ ] Promise polling timeout (madrpc-server)
+- [x] Promise polling timeout (madrpc-server) - Completed 2026-01-11
 - [ ] fetch_min bug (madrpc-metrics)
 - [ ] Integration test compilation (madrpc-client)
 
