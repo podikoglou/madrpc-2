@@ -5,8 +5,9 @@
 
 use std::time::Duration;
 use testcontainers::{
-    core::{CopyDataSource, IntoContainerPort, WaitFor},
+    core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
+    CopyDataSource,
     GenericImage,
     ImageExt,
 };
