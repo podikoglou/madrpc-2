@@ -1,5 +1,5 @@
 use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse};
-use madrpc_common::protocol::error::{Result, MadrpcError};
+use madrpc_common::protocol::error::{Result as MadrpcResult, MadrpcError};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -9,9 +9,29 @@ use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 use http_body_util::{Full, BodyExt};
 use std::sync::Arc;
+use thiserror::Error;
 
 /// Global counter for generating unique JSON-RPC request IDs
 static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Validation error for retry configuration.
+#[derive(Error, Debug, PartialEq)]
+pub enum RetryConfigError {
+    #[error("max_attempts must be at least 1, got {0}")]
+    InvalidMaxAttempts(u32),
+
+    #[error("backoff_multiplier must be positive, got {0}")]
+    InvalidBackoffMultiplier(f64),
+
+    #[error("base_delay_ms must be non-negative, got {0}")]
+    InvalidBaseDelay(i64),
+
+    #[error("max_delay_ms must be non-negative, got {0}")]
+    InvalidMaxDelay(i64),
+
+    #[error("max_delay_ms ({max_delay}) must be greater than or equal to base_delay_ms ({base_delay})")]
+    InvalidDelayRange { max_delay: u64, base_delay: u64 },
+}
 
 /// Retry configuration for RPC calls.
 ///
@@ -25,6 +45,13 @@ static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// - `base_delay_ms`: Base delay in milliseconds for exponential backoff
 /// - `max_delay_ms`: Maximum delay cap in milliseconds
 /// - `backoff_multiplier`: Exponential backoff multiplier
+///
+/// # Valid Ranges
+///
+/// - `max_attempts`: Must be >= 1
+/// - `base_delay_ms`: Must be >= 0
+/// - `max_delay_ms`: Must be >= 0 and >= base_delay_ms
+/// - `backoff_multiplier`: Must be > 0
 ///
 /// # Default Configuration
 ///
@@ -40,9 +67,9 @@ static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// use madrpc_client::RetryConfig;
 ///
 /// // Custom retry configuration: up to 5 attempts with longer delays
-/// let config = RetryConfig::new(5, 200, 10000, 2.0);
+/// let config = RetryConfig::new(5, 200, 10000, 2.0).unwrap();
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (including the initial attempt)
     pub max_attempts: u32,
@@ -70,25 +97,93 @@ impl RetryConfig {
     ///
     /// # Arguments
     ///
-    /// * `max_attempts` - Maximum number of retry attempts (including initial attempt)
-    /// * `base_delay_ms` - Base delay in milliseconds for exponential backoff
-    /// * `max_delay_ms` - Maximum delay cap in milliseconds
-    /// * `backoff_multiplier` - Exponential backoff multiplier (e.g., 2.0 doubles each time)
+    /// * `max_attempts` - Maximum number of retry attempts (including initial attempt). Must be >= 1.
+    /// * `base_delay_ms` - Base delay in milliseconds for exponential backoff. Must be >= 0.
+    /// * `max_delay_ms` - Maximum delay cap in milliseconds. Must be >= 0 and >= base_delay_ms.
+    /// * `backoff_multiplier` - Exponential backoff multiplier (e.g., 2.0 doubles each time). Must be > 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `RetryConfigError` if any parameter is outside its valid range:
+    /// - `InvalidMaxAttempts` if max_attempts is 0
+    /// - `InvalidBackoffMultiplier` if backoff_multiplier is <= 0
+    /// - `InvalidBaseDelay` if base_delay_ms is negative (when passed as i64)
+    /// - `InvalidMaxDelay` if max_delay_ms is negative (when passed as i64)
+    /// - `InvalidDelayRange` if max_delay_ms < base_delay_ms
     ///
     /// # Example
     ///
     /// ```rust
     /// use madrpc_client::RetryConfig;
     ///
-    /// let config = RetryConfig::new(5, 200, 10000, 2.0);
+    /// let config = RetryConfig::new(5, 200, 10000, 2.0).unwrap();
     /// ```
-    pub fn new(max_attempts: u32, base_delay_ms: u64, max_delay_ms: u64, backoff_multiplier: f64) -> Self {
-        Self {
+    pub fn new(
+        max_attempts: u32,
+        base_delay_ms: u64,
+        max_delay_ms: u64,
+        backoff_multiplier: f64,
+    ) -> Result<Self, RetryConfigError> {
+        // Validate max_attempts
+        if max_attempts == 0 {
+            return Err(RetryConfigError::InvalidMaxAttempts(max_attempts));
+        }
+
+        // Validate backoff_multiplier
+        if backoff_multiplier <= 0.0 {
+            return Err(RetryConfigError::InvalidBackoffMultiplier(backoff_multiplier));
+        }
+
+        // Validate delay range
+        if max_delay_ms < base_delay_ms {
+            return Err(RetryConfigError::InvalidDelayRange {
+                max_delay: max_delay_ms,
+                base_delay: base_delay_ms,
+            });
+        }
+
+        Ok(Self {
             max_attempts,
             base_delay_ms,
             max_delay_ms,
             backoff_multiplier,
+        })
+    }
+
+    /// Validates the retry configuration.
+    ///
+    /// This method checks that all configuration values are within their valid ranges.
+    /// It's called automatically by `new()`, but can be called separately if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `RetryConfigError` if any parameter is outside its valid range.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use madrpc_client::RetryConfig;
+    ///
+    /// let config = RetryConfig::default();
+    /// assert!(config.validate().is_ok());
+    /// ```
+    pub fn validate(&self) -> Result<(), RetryConfigError> {
+        if self.max_attempts == 0 {
+            return Err(RetryConfigError::InvalidMaxAttempts(self.max_attempts));
         }
+
+        if self.backoff_multiplier <= 0.0 {
+            return Err(RetryConfigError::InvalidBackoffMultiplier(self.backoff_multiplier));
+        }
+
+        if self.max_delay_ms < self.base_delay_ms {
+            return Err(RetryConfigError::InvalidDelayRange {
+                max_delay: self.max_delay_ms,
+                base_delay: self.base_delay_ms,
+            });
+        }
+
+        Ok(())
     }
 
     /// Calculate delay for a given attempt using exponential backoff with jitter.
@@ -182,7 +277,7 @@ impl MadrpcClient {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn new(base_url: impl Into<String>) -> Result<Self> {
+    pub async fn new(base_url: impl Into<String>) -> MadrpcResult<Self> {
         let base_url = base_url.into();
         let http_client = Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(90))
@@ -213,7 +308,7 @@ impl MadrpcClient {
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let retry_config = RetryConfig::new(5, 200, 10000, 2.0);
+    /// let retry_config = RetryConfig::new(5, 200, 10000, 2.0)?;
     /// let client = MadrpcClient::with_retry_config(
     ///     "http://127.0.0.1:8080",
     ///     retry_config
@@ -224,7 +319,7 @@ impl MadrpcClient {
     pub async fn with_retry_config(
         base_url: impl Into<String>,
         retry_config: RetryConfig,
-    ) -> Result<Self> {
+    ) -> MadrpcResult<Self> {
         let base_url = base_url.into();
         let http_client = Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(90))
@@ -255,7 +350,7 @@ impl MadrpcClient {
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = MadrpcClient::new("http://127.0.0.1:8080")
     ///     .await?
-    ///     .with_retry(RetryConfig::new(5, 200, 10000, 2.0));
+    ///     .with_retry(RetryConfig::new(5, 200, 10000, 2.0)?);
     /// # Ok(())
     /// # }
     /// ```
@@ -320,7 +415,7 @@ impl MadrpcClient {
         &self,
         method: impl Into<String>,
         params: Value,
-    ) -> Result<Value> {
+    ) -> MadrpcResult<Value> {
         let method = method.into();
 
         // Generate unique request ID
@@ -402,7 +497,7 @@ impl MadrpcClient {
     /// # Arguments
     ///
     /// * `request` - The JSON-RPC request to execute
-    async fn try_call(&self, request: &JsonRpcRequest) -> Result<Value> {
+    async fn try_call(&self, request: &JsonRpcRequest) -> MadrpcResult<Value> {
         // Serialize the JSON-RPC request
         let body = serde_json::to_vec(request)
             .map_err(|e| MadrpcError::JsonSerialization(e))?;
@@ -546,7 +641,7 @@ mod tests {
 
     #[test]
     fn test_retry_config_custom() {
-        let config = RetryConfig::new(5, 200, 10000, 3.0);
+        let config = RetryConfig::new(5, 200, 10000, 3.0).unwrap();
         assert_eq!(config.max_attempts, 5);
         assert_eq!(config.base_delay_ms, 200);
         assert_eq!(config.max_delay_ms, 10000);
@@ -555,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_retry_delay_calculation() {
-        let config = RetryConfig::new(3, 100, 5000, 2.0);
+        let config = RetryConfig::new(3, 100, 5000, 2.0).unwrap();
 
         // Attempt 1: 100ms * 2^0 = 100ms (plus jitter)
         let delay1 = config.calculate_delay(1);
@@ -575,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_retry_delay_max_cap() {
-        let config = RetryConfig::new(10, 100, 200, 2.0);
+        let config = RetryConfig::new(10, 100, 200, 2.0).unwrap();
 
         // Even with high attempt count, delay should be capped
         let delay = config.calculate_delay(10);
@@ -603,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_client_with_retry() {
-        let retry_config = RetryConfig::new(5, 50, 1000, 1.5);
+        let retry_config = RetryConfig::new(5, 50, 1000, 1.5).unwrap();
 
         // We can't test the full client without a server, but we can test the builder
         let base_url = "http://localhost:8080";
@@ -613,5 +708,126 @@ mod tests {
             http_client: Arc::new(http_client),
             retry_config,
         };
+    }
+
+    // ============================================================================
+    // RetryConfig Validation Tests
+    // ============================================================================
+
+    #[test]
+    fn test_retry_config_validate_zero_max_attempts() {
+        let result = RetryConfig::new(0, 100, 5000, 2.0);
+        assert_eq!(result, Err(RetryConfigError::InvalidMaxAttempts(0)));
+    }
+
+    #[test]
+    fn test_retry_config_validate_negative_multiplier() {
+        let result = RetryConfig::new(3, 100, 5000, -1.0);
+        assert_eq!(result, Err(RetryConfigError::InvalidBackoffMultiplier(-1.0)));
+    }
+
+    #[test]
+    fn test_retry_config_validate_zero_multiplier() {
+        let result = RetryConfig::new(3, 100, 5000, 0.0);
+        assert_eq!(result, Err(RetryConfigError::InvalidBackoffMultiplier(0.0)));
+    }
+
+    #[test]
+    fn test_retry_config_validate_max_delay_less_than_base() {
+        let result = RetryConfig::new(3, 5000, 1000, 2.0);
+        assert_eq!(
+            result,
+            Err(RetryConfigError::InvalidDelayRange {
+                max_delay: 1000,
+                base_delay: 5000
+            })
+        );
+    }
+
+    #[test]
+    fn test_retry_config_validate_valid_with_equal_delays() {
+        let config = RetryConfig::new(3, 1000, 1000, 2.0);
+        assert!(config.is_ok());
+        let config = config.unwrap();
+        assert_eq!(config.base_delay_ms, 1000);
+        assert_eq!(config.max_delay_ms, 1000);
+    }
+
+    #[test]
+    fn test_retry_config_validate_valid_with_zero_delays() {
+        let config = RetryConfig::new(3, 0, 0, 1.0);
+        assert!(config.is_ok());
+    }
+
+    #[test]
+    fn test_retry_config_validate_method() {
+        // Test valid config
+        let config = RetryConfig::default();
+        assert!(config.validate().is_ok());
+
+        // Test invalid max_attempts
+        let invalid_config = RetryConfig {
+            max_attempts: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            invalid_config.validate(),
+            Err(RetryConfigError::InvalidMaxAttempts(0))
+        );
+
+        // Test invalid multiplier
+        let invalid_config = RetryConfig {
+            backoff_multiplier: -1.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            invalid_config.validate(),
+            Err(RetryConfigError::InvalidBackoffMultiplier(-1.0))
+        );
+
+        // Test invalid delay range
+        let invalid_config = RetryConfig {
+            base_delay_ms: 5000,
+            max_delay_ms: 1000,
+            ..Default::default()
+        };
+        assert_eq!(
+            invalid_config.validate(),
+            Err(RetryConfigError::InvalidDelayRange {
+                max_delay: 1000,
+                base_delay: 5000
+            })
+        );
+    }
+
+    #[test]
+    fn test_retry_config_error_display() {
+        assert_eq!(
+            format!("{}", RetryConfigError::InvalidMaxAttempts(0)),
+            "max_attempts must be at least 1, got 0"
+        );
+
+        assert_eq!(
+            format!("{}", RetryConfigError::InvalidBackoffMultiplier(-1.0)),
+            "backoff_multiplier must be positive, got -1"
+        );
+
+        assert_eq!(
+            format!("{}", RetryConfigError::InvalidBaseDelay(-100)),
+            "base_delay_ms must be non-negative, got -100"
+        );
+
+        assert_eq!(
+            format!("{}", RetryConfigError::InvalidMaxDelay(-200)),
+            "max_delay_ms must be non-negative, got -200"
+        );
+
+        assert_eq!(
+            format!("{}", RetryConfigError::InvalidDelayRange {
+                max_delay: 1000,
+                base_delay: 5000
+            }),
+            "max_delay_ms (1000) must be greater than or equal to base_delay_ms (5000)"
+        );
     }
 }

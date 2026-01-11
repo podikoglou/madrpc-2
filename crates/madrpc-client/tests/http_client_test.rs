@@ -387,7 +387,7 @@ async fn test_client_with_custom_retry_config() {
     let server = TestJsonRpcServer::new().await;
 
     use madrpc_client::RetryConfig;
-    let retry_config = RetryConfig::new(5, 50, 1000, 1.5);
+    let retry_config = RetryConfig::new(5, 50, 1000, 1.5).unwrap();
 
     let client = MadrpcClient::with_retry_config(&server.base_url(), retry_config).await.unwrap();
 
@@ -402,7 +402,7 @@ async fn test_client_builder_pattern() {
     let server = TestJsonRpcServer::new().await;
 
     use madrpc_client::RetryConfig;
-    let retry_config = RetryConfig::new(2, 100, 500, 2.0);
+    let retry_config = RetryConfig::new(2, 100, 500, 2.0).unwrap();
 
     let client = MadrpcClient::new(&server.base_url())
         .await
