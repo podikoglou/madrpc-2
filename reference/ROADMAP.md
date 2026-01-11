@@ -117,8 +117,9 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: In Progress (8/8 complete)
+### Status: ✅ Complete
 **Goal**: Address all high-severity issues and expand test coverage
+**Completed**: 2026-01-11
 
 #### 2.1 Add RetryConfig Validation ✅
 **Crate**: `madrpc-client`
@@ -214,15 +215,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Test malformed JSON handling
 - [x] Add negative test cases across crates
 
-#### 2.9 Fix Test Data URLs
+#### 2.9 Fix Test Data URLs ✅
 **Crate**: `madrpc-cli`
 **Location**: Test files
 **Effort**: 1 hour
+**Completed**: 2026-01-11
 
-- Replace `http://[::1]:PORT` with valid URLs
-- Use `127.0.0.1` or `localhost`
-- Ensure all tests use valid addresses
-- Document URL format requirements
+- [x] Replace `http://[::1]:PORT` with valid URLs
+- [x] Use `127.0.0.1` or `localhost`
+- [x] Ensure all tests use valid addresses
+- [x] Document URL format requirements
 
 **Completion Criteria**: All high-severity issues addressed, integration test coverage expanded
 
@@ -444,12 +446,13 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Update Boa version (madrpc-server) - Completed 2026-01-11
 - [x] CLI integration tests (madrpc-cli) - Completed 2026-01-11
 - [x] Error path tests (multiple crates) - Completed 2026-01-11
+- [x] Fix test data URLs (madrpc-cli) - Completed 2026-01-11
 
 ### Current Blockers
 None identified
 
 ### Next Sprint Focus
-Phase 2: High-priority issues and testing gaps
+Phase 3: Security & Performance
 
 ---
 
