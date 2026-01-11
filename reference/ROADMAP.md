@@ -117,7 +117,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: In Progress (6/8 complete)
+### Status: In Progress (7/8 complete)
 **Goal**: Address all high-severity issues and expand test coverage
 
 #### 2.1 Add RetryConfig Validation ✅
@@ -190,17 +190,18 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Document that dependency is up-to-date
 - [x] Note: Local path dependency was replaced with crates.io v0.21.0 on 2026-01-09
 
-#### 2.7 Add CLI Integration Tests
+#### 2.7 Add CLI Integration Tests ✅
 **Crate**: `madrpc-cli`
 **Location**: Create `tests/` directory
 **Effort**: 4-6 hours
+**Completed**: 2026-01-11
 
-- Test orchestrator command startup/shutdown
-- Test node command startup/shutdown
-- Test `top` command connection and display
-- Test error handling for invalid arguments
-- Test timeout and signal handling
-- Add test fixtures and helpers
+- [x] Test orchestrator command startup/shutdown
+- [x] Test node command startup/shutdown
+- [x] Test `top` command connection and display
+- [x] Test error handling for invalid arguments
+- [x] Test timeout and signal handling
+- [x] Add test fixtures and helpers
 
 #### 2.8 Add Error Path Tests
 **Crate**: `madrpc-cli`, `madrpc-client`
@@ -440,7 +441,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Payload size limits (madrpc-common) - Completed 2026-01-11
 - [x] Remove unused dependencies (madrpc-cli) - Completed 2026-01-11
 - [x] Update Boa version (madrpc-server) - Completed 2026-01-11
-- [ ] CLI integration tests (madrpc-cli)
+- [x] CLI integration tests (madrpc-cli) - Completed 2026-01-11
 - [ ] Error path tests (multiple crates)
 
 ### Current Blockers
