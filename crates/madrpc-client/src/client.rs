@@ -419,7 +419,8 @@ impl MadrpcClient {
         let method = method.into();
 
         // Generate unique request ID
-        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        // Relaxed ordering is sufficient since we only need uniqueness, not synchronization
+        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
 
         // Create JSON-RPC 2.0 request
         let jsonrpc_req = JsonRpcRequest {
