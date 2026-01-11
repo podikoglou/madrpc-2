@@ -414,3 +414,407 @@ async fn test_client_builder_pattern() {
 
     assert_eq!(result, params);
 }
+
+// ============================================================================
+// Error Path Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_client_connection_refused() {
+    // Try to connect to a server that doesn't exist
+    let client = MadrpcClient::new("http://127.0.0.1:19999").await.unwrap();
+
+    let result = client.call("test", json!({"key": "value"})).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // Should be a retryable error (connection or transport)
+    assert!(err.is_retryable());
+}
+
+#[tokio::test]
+#[ignore = "This test takes too long due to OS-level TCP timeouts"]
+async fn test_client_connection_timeout() {
+    // This test verifies that the client properly handles connection timeouts
+    // We use a non-routable IP address to trigger a timeout
+    // Note: This test is ignored by default because it can take a long time
+    // depending on OS TCP timeout settings
+    let client = MadrpcClient::new("http://192.0.2.1:8080").await.unwrap();
+
+    let result = client.call("test", json!({})).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // Connection errors should be retryable
+    assert!(err.is_retryable());
+}
+
+#[tokio::test]
+async fn test_client_malformed_json_response() {
+    // Server that returns malformed JSON
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let base_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+
+                tokio::spawn(async move {
+                    let service = service_fn(|_req| async move {
+                        Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Type", "application/json")
+                            .body(Full::new(Bytes::from("this is not json")))
+                            .unwrap())
+                    });
+
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let result = client.call("test", json!({})).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // Invalid response should not be retryable
+    assert!(!err.is_retryable());
+    assert!(err.to_string().contains("Invalid response") ||
+            err.to_string().contains("parse") ||
+            err.to_string().contains("JSON"));
+}
+
+#[tokio::test]
+async fn test_client_empty_response() {
+    // Server that returns empty response
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let base_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+
+                tokio::spawn(async move {
+                    let service = service_fn(|_req| async move {
+                        Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Type", "application/json")
+                            .body(Full::new(Bytes::from("")))
+                            .unwrap())
+                    });
+
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let result = client.call("test", json!({})).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // Invalid response should not be retryable
+    assert!(!err.is_retryable());
+}
+
+#[tokio::test]
+async fn test_client_invalid_jsonrpc_response() {
+    // Server that returns invalid JSON-RPC response (missing required fields)
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let base_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+
+                tokio::spawn(async move {
+                    let service = service_fn(|_req| async move {
+                        // Invalid JSON-RPC: missing jsonrpc version
+                        let invalid_response = json!({"result": "ok"});
+                        Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Type", "application/json")
+                            .body(Full::new(Bytes::from(serde_json::to_vec(&invalid_response).unwrap())))
+                            .unwrap())
+                    });
+
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let result = client.call("test", json!({})).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // Invalid response should not be retryable
+    assert!(!err.is_retryable());
+}
+
+#[tokio::test]
+async fn test_client_http_error_response() {
+    // Server that returns HTTP error status
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let base_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+
+                tokio::spawn(async move {
+                    let service = service_fn(|_req| async move {
+                        Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(Full::new(Bytes::from("Bad request")))
+                            .unwrap())
+                    });
+
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let result = client.call("test", json!({})).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // 4xx errors should not be retryable
+    assert!(!err.is_retryable());
+}
+
+#[tokio::test]
+async fn test_client_http_server_error_with_retry() {
+    // Server that returns 500 error twice, then succeeds
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let base_url = format!("http://{}", addr);
+
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let call_count_clone = call_count.clone();
+
+    tokio::spawn(async move {
+        let handler = Arc::new({
+            let call_count = call_count_clone.clone();
+            move |req: Request<Incoming>| {
+                let call_count = call_count.clone();
+                async move {
+                    let count = call_count.fetch_add(1, Ordering::SeqCst);
+
+                    // Return 500 for first two attempts
+                    if count < 2 {
+                        return Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from("Internal server error")))
+                            .unwrap());
+                    }
+
+                    // Third attempt succeeds
+                    let whole_body = req.into_body().collect().await.unwrap().to_bytes();
+                    let jsonrpc_req: JsonRpcRequest = serde_json::from_slice(&whole_body).unwrap();
+                    let response = JsonRpcResponse::success(jsonrpc_req.id, jsonrpc_req.params);
+
+                    Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", "application/json")
+                        .body(Full::new(Bytes::from(serde_json::to_vec(&response).unwrap())))
+                        .unwrap())
+                }
+            }
+        });
+
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+                let handler = handler.clone();
+
+                tokio::spawn(async move {
+                    let service = service_fn(move |req| {
+                        let handler = handler.clone();
+                        async move { handler(req).await }
+                    });
+
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let params = json!({"retry": "success"});
+    let result = client.call("test", params.clone()).await;
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), params);
+    assert_eq!(call_count.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_client_retry_exhausted() {
+    // Server that always fails
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let base_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+
+                tokio::spawn(async move {
+                    let service = service_fn(|_req| async move {
+                        Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from("Server error")))
+                            .unwrap())
+                    });
+
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let result = client.call("test", json!({})).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // Should have exhausted all retries
+    assert!(err.to_string().contains("exhausted") ||
+            err.to_string().contains("attempts") ||
+            err.to_string().contains("HTTP"));
+}
+
+#[tokio::test]
+async fn test_client_response_with_wrong_id() {
+    // Server that returns response with wrong request ID
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let base_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+
+                tokio::spawn(async move {
+                    let service = service_fn(|_req| async move {
+                        // Return response with wrong ID
+                        let response = JsonRpcResponse::success(serde_json::Value::Number(999.into()), json!({}));
+                        Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Type", "application/json")
+                            .body(Full::new(Bytes::from(serde_json::to_vec(&response).unwrap())))
+                            .unwrap())
+                    });
+
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = MadrpcClient::new(&base_url).await.unwrap();
+    // The client will accept the response even with wrong ID
+    // This test documents current behavior
+    let result = client.call("test", json!({})).await;
+
+    // Currently the client doesn't validate response IDs
+    // This test documents that behavior
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_client_truncated_response_body() {
+    // Server that returns truncated JSON
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let base_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+
+                tokio::spawn(async move {
+                    let service = service_fn(|_req| async move {
+                        // Return truncated JSON
+                        Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Type", "application/json")
+                            .body(Full::new(Bytes::from(r#"{"jsonrpc":"2.0","result":{"#)))
+                            .unwrap())
+                    });
+
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let result = client.call("test", json!({})).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // Invalid response should not be retryable
+    assert!(!err.is_retryable());
+    assert!(err.to_string().contains("Invalid response") ||
+            err.to_string().contains("parse") ||
+            err.to_string().contains("JSON"));
+}
+
+#[tokio::test]
+async fn test_client_concurrent_connection_failures() {
+    // Test multiple concurrent requests all failing
+    let client = MadrpcClient::new("http://127.0.0.1:19998").await.unwrap();
+
+    let tasks = (0..5).map(|i| {
+        let client = client.clone();
+        tokio::spawn(async move {
+            client.call(&format!("test_{}", i), json!({})).await
+        })
+    }).collect::<Vec<_>>();
+
+    let results = futures::future::join_all(tasks).await;
+
+    // All should fail
+    for result in results {
+        assert!(result.is_ok());
+        let rpc_result = result.unwrap();
+        assert!(rpc_result.is_err());
+        let err = rpc_result.unwrap_err();
+        assert!(err.is_retryable());
+    }
+}
