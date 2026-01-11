@@ -97,9 +97,14 @@ impl HttpServer {
     pub async fn run(self, addr: SocketAddr) -> Result<(), MadrpcError> {
         // Log authentication configuration
         info!("Authentication: {}", self.auth_config);
-        info!("Rate Limiting: enabled ({} req/s, burst {})",
-            self.rate_limiter.config.requests_per_second,
-            self.rate_limiter.config.burst_size);
+        // Log rate limiting configuration
+        if self.rate_limiter.is_enabled() {
+            info!("Rate Limiting: enabled ({} req/s, burst {})",
+                self.rate_limiter.config.requests_per_second,
+                self.rate_limiter.config.burst_size);
+        } else {
+            info!("Rate Limiting: disabled");
+        }
 
         // Build axum app with CORS support
         let app = axum::Router::new()
