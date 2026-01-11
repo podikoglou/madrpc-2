@@ -456,6 +456,32 @@ impl RateLimiter {
     pub async fn tracked_ip_count(&self) -> usize {
         self.buckets.read().await.len()
     }
+
+    /// Returns whether rate limiting is effectively enabled.
+    ///
+    /// Rate limiting is considered disabled if the rate is set to a very high value
+    /// (>= 1,000,000 requests per second), which means all requests will be allowed.
+    ///
+    /// # Returns
+    ///
+    /// `true` if rate limiting is enabled, `false` if disabled
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use madrpc_common::rate_limit::{RateLimiter, RateLimitConfig};
+    ///
+    /// // Disabled rate limiter (default)
+    /// let disabled = RateLimiter::disabled();
+    /// assert!(!disabled.is_enabled());
+    ///
+    /// // Enabled rate limiter
+    /// let enabled = RateLimiter::new(RateLimitConfig::per_second(10.0));
+    /// assert!(enabled.is_enabled());
+    /// ```
+    pub fn is_enabled(&self) -> bool {
+        self.config.requests_per_second < 1_000_000.0
+    }
 }
 
 #[cfg(test)]
