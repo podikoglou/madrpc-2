@@ -232,7 +232,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 3: Security & Performance (Month 2)
 
-### Status: In Progress (2/8 complete)
+### Status: In Progress (3/8 complete)
 **Goal**: Production-ready security and performance characteristics
 
 #### 3.1 Authentication Layer ✅
@@ -256,15 +256,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Document rate limiting behavior
 - [x] Add metrics for rate limiting
 
-#### 3.3 JavaScript Resource Limits
+#### 3.3 JavaScript Resource Limits ✅
 **Effort**: 1-2 weeks
+**Completed**: 2026-01-11
 
-- Add CPU time limit per request
-- Add memory limit for JavaScript execution
-- Implement termination for exceeded limits
-- Add configuration for resource limits
-- Document resource limit behavior
-- Add tests for limit enforcement
+- [x] Add CPU time limit per request
+- [x] Add memory limit for JavaScript execution
+- [x] Implement termination for exceeded limits
+- [x] Add configuration for resource limits
+- [x] Document resource limit behavior
+- [x] Add tests for limit enforcement
 
 #### 3.4 Fix Promise Polling Busy Waiting
 **Crate**: `madrpc-server`
