@@ -11,6 +11,8 @@ services:
   # Scale with: docker compose up -d --scale node=10
   node:
     image: madrpc:latest
+    environment:
+      - MADRPC_PUBLIC_URL=http://node:9001
     command: >
       node
         -s /app/examples/monte-carlo-pi.js
