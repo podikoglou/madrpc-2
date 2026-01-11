@@ -116,8 +116,8 @@ impl HttpServer {
         info!("Orchestrator HTTP server listening on {}", listener.local_addr()
             .map_err(|e| MadrpcError::Transport(format!("Failed to get local addr: {}", e)))?);
 
-        // Run server
-        axum::serve(listener, app)
+        // Run server with ConnectInfo support for rate limiting
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .await
             .map_err(|e| MadrpcError::Transport(format!("Server error: {}", e)))?;
 
