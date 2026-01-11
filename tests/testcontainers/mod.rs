@@ -122,10 +122,10 @@ impl NodeContainer {
     /// The script will be copied to `/app/script.js` in the container.
     pub async fn start(script_content: String) -> anyhow::Result<Self> {
         let image = GenericImage::new("madrpc", "test")
+            .with_entrypoint("/usr/local/bin/madrpc")
             .with_exposed_port(9001.tcp())
             .with_wait_for(WaitFor::message_on_stdout("Server listening on"))
             .with_copy_to("/app/script.js", CopyDataSource::Data(script_content.into_bytes()))
-            .with_entrypoint("/usr/local/bin/madrpc")
             .with_cmd(["node", "-s", "/app/script.js", "-b", "0.0.0.0:9001"]);
 
         let container = image.start().await?;
@@ -149,10 +149,10 @@ impl NodeContainer {
         orchestrator_url: String,
     ) -> anyhow::Result<Self> {
         let image = GenericImage::new("madrpc", "test")
+            .with_entrypoint("/usr/local/bin/madrpc")
             .with_exposed_port(9001.tcp())
             .with_wait_for(WaitFor::message_on_stdout("Server listening on"))
             .with_copy_to("/app/script.js", CopyDataSource::Data(script_content.into_bytes()))
-            .with_entrypoint("/usr/local/bin/madrpc")
             .with_cmd([
                 "node",
                 "-s",
@@ -239,9 +239,9 @@ impl OrchestratorContainer {
         }
 
         let image = GenericImage::new("madrpc", "test")
+            .with_entrypoint("/usr/local/bin/madrpc")
             .with_exposed_port(8080.tcp())
             .with_wait_for(WaitFor::message_on_stdout("Server listening on"))
-            .with_entrypoint("/usr/local/bin/madrpc")
             .with_cmd(cmd);
 
         let container = image.start().await?;
