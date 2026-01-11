@@ -88,8 +88,9 @@ pub fn json_to_js_value(json: JsonValue, ctx: &mut Context) -> Result<JsValue> {
 
             for (key, value) in obj {
                 let js_value = json_to_js_value(value, ctx)?;
+                let key_str = key.as_str();
                 js_obj.create_data_property_or_throw(
-                    js_string!(key),
+                    js_string!(key_str),
                     js_value,
                     ctx
                 )

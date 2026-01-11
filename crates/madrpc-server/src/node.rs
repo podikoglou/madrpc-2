@@ -230,7 +230,7 @@ impl Node {
 
         // Call the RPC function (pass by reference to avoid cloning)
         tracing::debug!("Calling RPC method: {}", request.method);
-        let result = ctx.call_rpc(&request.method, &request.args);
+        let result = ctx.call_rpc(&request.method, request.args.clone());
         tracing::debug!("RPC call completed");
 
         match result {
@@ -277,7 +277,7 @@ impl Node {
         // Use spawn_blocking to move JavaScript execution to a blocking thread
         // This is necessary because MadrpcContext is !Send (Boa's Context has thread affinity)
         let script_source = self.script_source.clone();
-        let method = method.to_string();
+        let method_for_closure = method.to_string();
         let orchestrator_client = self.orchestrator_client.clone();
         let metrics_collector = self.metrics_collector.clone();
 
@@ -308,7 +308,7 @@ impl Node {
                 .build()
                 .unwrap();
 
-            let method_ref = method.as_str();
+            let method_ref = method_for_closure.as_str();
             let result = runtime.block_on(ctx.call_rpc_async(method_ref, params));
 
             (result, start_time)
@@ -325,8 +325,8 @@ impl Node {
 
         // Record metrics
         match &result {
-            Ok(_) => metrics_collector.record_call(&method, start_time, true),
-            Err(_) => metrics_collector.record_call(&method, start_time, false),
+            Ok(_) => metrics_collector.record_call(method, start_time, true),
+            Err(_) => metrics_collector.record_call(method, start_time, false),
         }
 
         result
