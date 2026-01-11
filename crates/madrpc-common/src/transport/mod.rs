@@ -17,24 +17,24 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```
 //! use madrpc_common::transport::HttpTransport;
-//! use madrpc_common::protocol::JsonRpcRequest;
+//! use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse};
 //! use serde_json::json;
 //!
-//! // Create HTTP transport
-//! let transport = HttpTransport::new();
+//! // Build a JSON-RPC request
+//! let request = HttpTransport::build_request(
+//!     "compute",
+//!     json!({"n": 100}),
+//!     json!(1)
+//! );
 //!
-//! // Create JSON-RPC request
-//! let request = JsonRpcRequest {
-//!     jsonrpc: "2.0".to_string(),
-//!     method: "compute".to_string(),
-//!     params: json!({"n": 100}),
-//!     id: 1.into(),
-//! };
-//!
-//! // Send request
-//! let response = transport.send_request("127.0.0.1:8080", &request).await.unwrap();
+//! // Create an HTTP response from a JSON-RPC response
+//! let jsonrpc_response = JsonRpcResponse::success(
+//!     json!(1),
+//!     json!({"result": 42})
+//! );
+//! let http_response = HttpTransport::to_http_response(jsonrpc_response);
 //! ```
 
 pub mod http;
