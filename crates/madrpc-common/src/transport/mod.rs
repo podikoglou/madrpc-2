@@ -27,7 +27,7 @@
 //!     "compute",
 //!     json!({"n": 100}),
 //!     json!(1)
-//! );
+//! ).unwrap();
 //!
 //! // Create an HTTP response from a JSON-RPC response
 //! let jsonrpc_response = JsonRpcResponse::success(
@@ -39,4 +39,4 @@
 
 pub mod http;
 
-pub use http::{HttpTransport, HyperRequest, HyperResponse};
+pub use http::{HttpTransport, HyperRequest, HyperResponse, MAX_PAYLOAD_SIZE};

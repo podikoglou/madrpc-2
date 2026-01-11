@@ -29,7 +29,7 @@
 //!     "compute",
 //!     json!({"n": 100}),
 //!     json!(1)
-//! );
+//! ).unwrap();
 //!
 //! // Convert a JSON-RPC response to HTTP
 //! let jsonrpc_response = madrpc_common::protocol::JsonRpcResponse::success(
@@ -45,6 +45,17 @@ use hyper::body::{Bytes, Incoming};
 
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
 use crate::protocol::error::MadrpcError;
+
+/// Maximum payload size in bytes (10 MB)
+///
+/// This limit prevents memory exhaustion attacks by restricting the size
+/// of JSON-RPC request payloads. Requests exceeding this size will be
+/// rejected with a `MadrpcError::PayloadTooLarge` error.
+///
+/// The 10 MB limit is chosen to allow large practical payloads while
+/// preventing abuse. Most JSON-RPC requests are much smaller (typically
+/// under 1 MB).
+pub const MAX_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
 
 /// Type alias for Hyper incoming requests
 pub type HyperRequest = Request<Incoming>;
@@ -68,6 +79,11 @@ impl HttpTransport {
     ///
     /// A parsed `JsonRpcRequest` or a `MadrpcError` if parsing fails
     ///
+    /// # Errors
+    ///
+    /// Returns `MadrpcError::PayloadTooLarge` if the body exceeds `MAX_PAYLOAD_SIZE`
+    /// Returns `MadrpcError::JsonSerialization` if JSON parsing fails
+    ///
     /// # Example
     ///
     /// ```
@@ -79,6 +95,12 @@ impl HttpTransport {
     /// assert_eq!(request.method, "test");
     /// ```
     pub fn parse_jsonrpc(body: Bytes) -> Result<JsonRpcRequest, MadrpcError> {
+        // Validate payload size before parsing
+        let body_len = body.len();
+        if body_len > MAX_PAYLOAD_SIZE {
+            return Err(MadrpcError::PayloadTooLarge(body_len, MAX_PAYLOAD_SIZE));
+        }
+
         serde_json::from_slice(&body).map_err(|e| MadrpcError::JsonSerialization(e))
     }
 
@@ -150,6 +172,11 @@ impl HttpTransport {
     ///
     /// A properly formatted `JsonRpcRequest`
     ///
+    /// # Errors
+    ///
+    /// Returns `MadrpcError::PayloadTooLarge` if the serialized request
+    /// exceeds `MAX_PAYLOAD_SIZE`
+    ///
     /// # Example
     ///
     /// ```
@@ -160,20 +187,28 @@ impl HttpTransport {
     ///     "compute",
     ///     json!({"n": 100}),
     ///     json!(1)
-    /// );
+    /// ).unwrap();
     /// assert_eq!(request.method, "compute");
     /// ```
     pub fn build_request(
         method: &str,
         params: serde_json::Value,
         id: serde_json::Value,
-    ) -> JsonRpcRequest {
-        JsonRpcRequest {
+    ) -> Result<JsonRpcRequest, MadrpcError> {
+        let request = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             method: method.into(),
             params,
             id,
+        };
+
+        // Validate serialized size
+        let serialized = serde_json::to_vec(&request)?;
+        if serialized.len() > MAX_PAYLOAD_SIZE {
+            return Err(MadrpcError::PayloadTooLarge(serialized.len(), MAX_PAYLOAD_SIZE));
         }
+
+        Ok(request)
     }
 
     /// Create an HTTP response with a custom status code
@@ -259,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_build_request() {
-        let request = HttpTransport::build_request("compute", json!({"n": 100}), json!(1));
+        let request = HttpTransport::build_request("compute", json!({"n": 100}), json!(1)).unwrap();
         assert_eq!(request.jsonrpc, "2.0");
         assert_eq!(request.method, "compute");
         assert_eq!(request.params, json!({"n": 100}));
@@ -307,5 +342,85 @@ mod tests {
         assert!(body_str.contains(r#""error":"#));
         assert!(body_str.contains(r#""code":-32601"#));
         assert!(body_str.contains(r#""message":"Method not found""#));
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_normal_size() {
+        let body = Bytes::from(r#"{"jsonrpc":"2.0","method":"test","params":{"foo":"bar"},"id":1}"#);
+        let result = HttpTransport::parse_jsonrpc(body);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().method, "test");
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_exactly_at_limit() {
+        // Create a payload that is exactly at the limit (minus the JSON-RPC wrapper overhead)
+        // We'll create a payload that's close to but under the limit
+        let data = "x".repeat(MAX_PAYLOAD_SIZE - 100);
+        let json_str = format!(r#"{{"jsonrpc":"2.0","method":"test","params":{{"data":"{}"}},"id":1}}"#, data);
+        let body = Bytes::from(json_str);
+
+        let result = HttpTransport::parse_jsonrpc(body);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_exceeds_limit() {
+        // Create a payload that exceeds the limit
+        let data = "x".repeat(MAX_PAYLOAD_SIZE + 1);
+        let json_str = format!(r#"{{"jsonrpc":"2.0","method":"test","params":{{"data":"{}"}},"id":1}}"#, data);
+        let body = Bytes::from(json_str);
+
+        let result = HttpTransport::parse_jsonrpc(body);
+        assert!(result.is_err());
+
+        match result {
+            Err(MadrpcError::PayloadTooLarge(size, limit)) => {
+                assert!(size > limit);
+                assert_eq!(limit, MAX_PAYLOAD_SIZE);
+            }
+            _ => panic!("Expected PayloadTooLarge error"),
+        }
+    }
+
+    #[test]
+    fn test_build_request_normal_size() {
+        let result = HttpTransport::build_request("test", json!({"foo": "bar"}), json!(1));
+        assert!(result.is_ok());
+        let request = result.unwrap();
+        assert_eq!(request.method, "test");
+    }
+
+    #[test]
+    fn test_build_request_exceeds_limit() {
+        // Create params that exceed the size limit when serialized
+        let large_data = "x".repeat(MAX_PAYLOAD_SIZE);
+        let result = HttpTransport::build_request("test", json!({"data": large_data}), json!(1));
+
+        assert!(result.is_err());
+
+        match result {
+            Err(MadrpcError::PayloadTooLarge(size, limit)) => {
+                assert!(size > limit);
+                assert_eq!(limit, MAX_PAYLOAD_SIZE);
+            }
+            _ => panic!("Expected PayloadTooLarge error"),
+        }
+    }
+
+    #[test]
+    fn test_payload_too_large_error_message() {
+        let error = MadrpcError::PayloadTooLarge(15_000_000, 10_485_760);
+        let error_string = error.to_string();
+
+        assert!(error_string.contains("15000000"));
+        assert!(error_string.contains("10485760"));
+        assert!(error_string.contains("exceeds maximum allowed size"));
+    }
+
+    #[test]
+    fn test_payload_too_large_not_retryable() {
+        let error = MadrpcError::PayloadTooLarge(15_000_000, 10_485_760);
+        assert!(!error.is_retryable());
     }
 }

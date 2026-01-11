@@ -18,7 +18,7 @@ use thiserror::Error as ThisError;
 ///
 /// - **Retryable**: Transport, Timeout, NodeUnavailable, Io, Connection, PoolTimeout
 /// - **Non-retryable**: JavaScriptExecution, InvalidResponse, AllNodesFailed,
-///   InvalidRequest, PoolExhausted
+///   InvalidRequest, PoolExhausted, PayloadTooLarge
 #[derive(ThisError, Debug)]
 pub enum MadrpcError {
     /// Low-level transport error (e.g., socket read/write failures)
@@ -68,6 +68,10 @@ pub enum MadrpcError {
     /// Connection pool exhausted (all connections in use)
     #[error("Connection pool exhausted for {0}")]
     PoolExhausted(String),
+
+    /// Payload size exceeded maximum allowed size
+    #[error("Payload size {0} bytes exceeds maximum allowed size of {1} bytes")]
+    PayloadTooLarge(usize, usize),
 }
 
 impl MadrpcError {
@@ -151,5 +155,15 @@ mod tests {
     fn test_pool_timeout_is_retryable() {
         let error = MadrpcError::PoolTimeout(1000);
         assert!(error.is_retryable());
+    }
+
+    #[test]
+    fn test_payload_too_large_error() {
+        let error = MadrpcError::PayloadTooLarge(15_000_000, 10_485_760);
+        assert_eq!(
+            error.to_string(),
+            "Payload size 15000000 bytes exceeds maximum allowed size of 10485760 bytes"
+        );
+        assert!(!error.is_retryable());
     }
 }
