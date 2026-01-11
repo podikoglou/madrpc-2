@@ -62,12 +62,12 @@ async fn test_orchestrator_node_client() {
         .await
         .expect("Failed to start node container");
 
-    // Start orchestrator with the node URL
-    let orch = OrchestratorContainer::start(vec![node.url().to_string()])
+    // Start orchestrator with the node's container URL (for container-to-container communication)
+    let orch = OrchestratorContainer::start(vec![node.container_url.clone()])
         .await
         .expect("Failed to start orchestrator container");
 
-    // Client calls through orchestrator
+    // Client calls through orchestrator using external URL (host-to-container)
     let client = MadrpcClient::new(orch.url()).unwrap();
 
     let result = client.call("echo", json!({"msg": "through_orch"})).await.unwrap();
@@ -86,7 +86,7 @@ async fn test_multiple_nodes_orchestrator() {
         let node = NodeContainer::start(common_test_script())
             .await
             .expect("Failed to start node container");
-        node_addrs.push(node.url().to_string());
+        node_addrs.push(node.container_url.clone());
     }
 
     // Start orchestrator with all nodes
@@ -134,7 +134,7 @@ async fn test_monte_carlo_aggregate() {
         let node = NodeContainer::start(monte_carlo_script())
             .await
             .expect("Failed to start node container");
-        node_addrs.push(node.url().to_string());
+        node_addrs.push(node.container_url.clone());
     }
 
     // Start orchestrator with all nodes
@@ -143,9 +143,10 @@ async fn test_monte_carlo_aggregate() {
         .expect("Failed to start orchestrator container");
 
     // Create a node with orchestrator support for distributed RPC
+    // Use orchestrator's container_url for container-to-container communication
     let node_with_orch = NodeContainer::start_with_orchestrator(
         monte_carlo_script(),
-        orch.url().to_string(),
+        orch.container_url.clone(),
     )
     .await
     .expect("Failed to start node with orchestrator");
@@ -177,7 +178,8 @@ async fn test_circuit_breaker() {
         .expect("Failed to start node container");
 
     // Create orchestrator with aggressive circuit breaker
-    let orch = OrchestratorContainer::start(vec![node.url().to_string()])
+    // Use node's container_url for container-to-container communication
+    let orch = OrchestratorContainer::start(vec![node.container_url.clone()])
         .await
         .expect("Failed to start orchestrator container");
 
@@ -296,7 +298,7 @@ async fn test_distributed_rpc() {
         let node = NodeContainer::start(monte_carlo_script())
             .await
             .expect("Failed to start node container");
-        node_addrs.push(node.url().to_string());
+        node_addrs.push(node.container_url.clone());
     }
 
     // Start orchestrator with all nodes
@@ -305,9 +307,10 @@ async fn test_distributed_rpc() {
         .expect("Failed to start orchestrator container");
 
     // Create a node with orchestrator support for distributed RPC
+    // Use orchestrator's container_url for container-to-container communication
     let node_with_orch = NodeContainer::start_with_orchestrator(
         monte_carlo_script(),
-        orch.url().to_string(),
+        orch.container_url.clone(),
     )
     .await
     .expect("Failed to start node with orchestrator");
@@ -335,7 +338,8 @@ async fn test_health_checking() {
         .expect("Failed to start node container");
 
     // Create orchestrator with health checking enabled
-    let orch = OrchestratorContainer::start(vec![node.url().to_string()])
+    // Use node's container_url for container-to-container communication
+    let orch = OrchestratorContainer::start(vec![node.container_url.clone()])
         .await
         .expect("Failed to start orchestrator container");
 
