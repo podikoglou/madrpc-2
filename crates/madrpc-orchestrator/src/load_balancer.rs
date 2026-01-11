@@ -58,11 +58,10 @@ impl LoadBalancer {
     /// ]);
     /// ```
     pub fn new(node_addrs: Vec<String>) -> Self {
-        let enabled_nodes = node_addrs.clone();
-        let nodes = node_addrs.into_iter().map(|addr| (addr.clone(), Node::new(addr))).collect();
+        let nodes = node_addrs.iter().map(|addr| (addr.clone(), Node::new(addr.clone()))).collect();
         Self {
             nodes,
-            enabled_nodes,
+            enabled_nodes: node_addrs,
             round_robin_index: 0,
             circuit_config: CircuitBreakerConfig::default(),
         }
@@ -80,11 +79,10 @@ impl LoadBalancer {
     /// # Returns
     /// A new LoadBalancer instance with custom circuit breaker config
     pub fn with_config(node_addrs: Vec<String>, circuit_config: CircuitBreakerConfig) -> Self {
-        let enabled_nodes = node_addrs.clone();
-        let nodes = node_addrs.into_iter().map(|addr| (addr.clone(), Node::new(addr))).collect();
+        let nodes = node_addrs.iter().map(|addr| (addr.clone(), Node::new(addr.clone()))).collect();
         Self {
             nodes,
-            enabled_nodes,
+            enabled_nodes: node_addrs,
             round_robin_index: 0,
             circuit_config,
         }
@@ -125,6 +123,7 @@ impl LoadBalancer {
                 if node.circuit_state != CircuitBreakerState::Open {
                     node.request_count += 1;
                     node.last_request_time = Some(std::time::SystemTime::now());
+                    // Clone only when returning (unavoidable for returning owned String)
                     return Some(self.enabled_nodes[idx].clone());
                 }
             }
