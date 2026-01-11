@@ -11,3 +11,10 @@ tokio = { version = "1.0", features = ["rt-multi-thread", "net", "time", "io-uti
 tracing = "0.1"
 hyper = { version = "1.5", features = ["http1"] }
 http-body-util = "0.1"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "protocol_bench"
+harness = false
