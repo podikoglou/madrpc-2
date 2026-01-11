@@ -232,7 +232,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 3: Security & Performance (Month 2)
 
-### Status: In Progress (4/8 complete)
+### Status: In Progress (5/8 complete)
 **Goal**: Production-ready security and performance characteristics
 
 #### 3.1 Authentication Layer ✅
@@ -278,15 +278,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Benchmark improvement
 - [x] Document new polling mechanism
 
-#### 3.5 Optimize String Allocations
+#### 3.5 Optimize String Allocations ✅
 **Crate**: `madrpc-metrics`
 **Location**: `src/registry.rs:675, 713`
 **Effort**: 2-3 hours
+**Completed**: 2026-01-11
 
-- Identify hot path string allocations
-- Replace with `Cow<str>` or references where possible
-- Benchmark before/after
-- Document optimization rationale
+- [x] Identify hot path string allocations
+- [x] Replace with `Cow<str>` or references where possible
+- [x] Benchmark before/after
+- [x] Document optimization rationale
 
 #### 3.6 Add Connection Pool Configuration
 **Crate**: `madrpc-client`
