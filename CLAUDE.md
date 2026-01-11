@@ -33,13 +33,15 @@ cargo run -p simple-test
 
 ## Project Roadmap
 
-**Location**: @reference/ROADMAP.md
+**Location**: `@reference/ROADMAP.md` (optional - only used if the file exists)
+
+> **Note**: This section provides guidance for using a ROADMAP.md file if one exists in the project. If no ROADMAP.md file is present, you can safely ignore this section.
 
 ### What is the Roadmap?
 
-The **ROADMAP.md** file is the **single entry point for planning and task management**. It describes:
+When present, the **ROADMAP.md** file serves as a **single entry point for planning and task management**. It typically describes:
 
-1. **Overall Development Process** - The workflow principles, phase structure, and how to approach different types of work
+1. **Overall Development Process** - Workflow principles, phase structure, and how to approach different types of work
 2. **High-Level Task Overviews** - Each task organized by phase with bullet points describing:
    - Affected crate and file locations
    - Impact and rationale
@@ -47,7 +49,7 @@ The **ROADMAP.md** file is the **single entry point for planning and task manage
    - Implementation steps
    - Testing requirements
 
-### When to Consult the Roadmap
+### When to Consult the Roadmap (if it exists)
 
 **BEFORE starting any work:**
 - Check if the task is already tracked in the roadmap
@@ -83,7 +85,7 @@ The **ROADMAP.md** file is the **single entry point for planning and task manage
 - Making documentation updates to existing features
 - Fixing minor typos or formatting issues
 
-### Roadmap Structure
+### Roadmap Structure (when present)
 
 ```
 reference/ROADMAP.md
@@ -98,7 +100,7 @@ reference/ROADMAP.md
 └── Quick Reference             # Current priorities and blockers
 ```
 
-### Key Principles
+### Key Principles (when using a roadmap)
 
 1. **Roadmap First** - Always check the roadmap before starting new work
 2. **One Task at a Time** - Complete a task from start to finish before starting another
@@ -106,11 +108,11 @@ reference/ROADMAP.md
 4. **Add Context** - When adding new tasks, include all required information
 5. **Keep it Living** - The roadmap evolves with the project
 
-### Related Files
+### Related Files (when present)
 
 - [`REPORT.md`](REPORT.md) - Detailed quality analysis findings (source of roadmap tasks)
 - [`CLAUDE.md`](CLAUDE.md) - This file (development practices and architecture)
-- [`reference/ROADMAP.md`](reference/ROADMAP.md) - Task planning and prioritization
+- [`reference/ROADMAP.md`](reference/ROADMAP.md) - Task planning and prioritization (if it exists)
 
 ## Architecture Overview
 
