@@ -1,7 +1,8 @@
 //! HTTP/JSON-RPC Integration Tests
 //!
 //! Comprehensive integration tests for the HTTP/JSON-RPC implementation.
-//! Tests cover real components (nodes, orchestrators, clients) working together.
+//! Tests cover real components (nodes, orchestrators, clients) working together
+//! using testcontainers for isolation.
 //!
 //! Test Scenarios:
 //! 1. Real Node + Real Client (direct connection)
@@ -16,203 +17,11 @@
 //! 10. Concurrent Requests (parallel execution)
 
 use madrpc_client::MadrpcClient;
-use madrpc_orchestrator::{HealthCheckConfig, HttpServer as OrchHttpServer, Orchestrator};
-use madrpc_server::{HttpServer as NodeHttpServer, Node};
 use serde_json::json;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
 
-// ============================================================================
-// Test Helpers
-// ============================================================================
-
-/// Creates a temporary test script file with the given content.
-fn create_test_script(content: &str) -> tempfile::NamedTempFile {
-    let file = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(file.path(), content).unwrap();
-    file
-}
-
-/// Creates a simple echo script for testing.
-fn create_echo_script() -> tempfile::NamedTempFile {
-    create_test_script(
-        r#"
-        madrpc.register('echo', (args) => {
-            return args;
-        });
-
-        madrpc.register('add', (args) => {
-            return { result: args.a + args.b };
-        });
-
-        madrpc.register('sleep', (args) => {
-            const ms = args.ms || 100;
-            const start = Date.now();
-            while (Date.now() - start < ms) {
-                // Busy wait
-            }
-            return { slept: ms };
-        });
-    "#,
-    )
-}
-
-/// Creates a Monte Carlo Pi script for testing.
-fn create_monte_carlo_script() -> tempfile::NamedTempFile {
-    create_test_script(
-        r#"
-        madrpc.register('monte_carlo_sample', (args) => {
-            const samples = args.samples || 1000000;
-            const seed = args.seed || 0;
-
-            // Simple LCG for reproducible random numbers
-            let state = seed;
-            const random = () => {
-                state = (state * 1103515245 + 12345) & 0x7fffffff;
-                return state / 0x7fffffff;
-            };
-
-            let inside = 0;
-            for (let i = 0; i < samples; i++) {
-                const x = random();
-                const y = random();
-                if (x * x + y * y <= 1) {
-                    inside++;
-                }
-            }
-
-            return { inside, total: samples };
-        });
-
-        madrpc.register('aggregate', async (args) => {
-            const numNodes = args.numNodes || 2;
-            const samplesPerNode = args.samplesPerNode || 100000;
-
-            const promises = [];
-            for (let i = 0; i < numNodes; i++) {
-                promises.push(madrpc.call('monte_carlo_sample', {
-                    samples: samplesPerNode,
-                    seed: i
-                }));
-            }
-
-            const results = await Promise.all(promises);
-
-            let totalInside = 0;
-            let totalSamples = 0;
-            for (const result of results) {
-                totalInside += result.inside;
-                totalSamples += result.total;
-            }
-
-            const piEstimate = 4 * totalInside / totalSamples;
-
-            return {
-                totalInside,
-                totalSamples,
-                piEstimate
-            };
-        });
-    "#,
-    )
-}
-
-/// Starts a test HTTP server for a node on a random port.
-async fn start_node_server(node: Arc<Node>) -> (SocketAddr, JoinHandle<()>) {
-    // Bind to a random port first
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
-
-    let server = NodeHttpServer::new(node);
-    let handle = tokio::spawn(async move {
-        // Run the server on the bound address
-        let _ = server.run(addr).await;
-    });
-
-    // Wait for server to start
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Verify server is actually listening
-    let client = reqwest::Client::new();
-    let timeout = Duration::from_secs(5);
-    let start = std::time::Instant::now();
-
-    loop {
-        if start.elapsed() > timeout {
-            panic!("Server did not start within timeout");
-        }
-
-        match client.get(format!("http://{}/_info", addr)).send().await {
-            Ok(_) => break,
-            Err(_) => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-    }
-
-    (addr, handle)
-}
-
-/// Starts a test HTTP server for an orchestrator on a random port.
-async fn start_orchestrator_server(orch: Arc<Orchestrator>) -> (SocketAddr, JoinHandle<()>) {
-    // Bind to a random port first
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
-
-    let server = OrchHttpServer::new(orch);
-    let handle = tokio::spawn(async move {
-        // Run the server on the bound address
-        let _ = server.run(addr).await;
-    });
-
-    // Wait for server to start
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Verify server is actually listening
-    let client = reqwest::Client::new();
-    let timeout = Duration::from_secs(5);
-    let start = std::time::Instant::now();
-
-    loop {
-        if start.elapsed() > timeout {
-            panic!("Orchestrator server did not start within timeout");
-        }
-
-        match client.get(format!("http://{}/__health", addr)).send().await {
-            Ok(_) => break,
-            Err(_) => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-    }
-
-    (addr, handle)
-}
-
-/// Makes a raw HTTP JSON-RPC call to the given address.
-async fn http_jsonrpc_call(addr: SocketAddr, method: &str, params: serde_json::Value) -> serde_json::Value {
-    let client = reqwest::Client::new();
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": params,
-        "id": 1
-    });
-
-    let response = client
-        .post(format!("http://{}", addr))
-        .json(&request)
-        .send()
-        .await
-        .unwrap();
-
-    response.json().await.unwrap()
-}
+mod testcontainers;
+use testcontainers::{common_test_script, monte_carlo_script, OrchestratorContainer, NodeContainer};
 
 // ============================================================================
 // Scenario 1: Real Node + Real Client (Direct Connection)
@@ -220,12 +29,11 @@ async fn http_jsonrpc_call(addr: SocketAddr, method: &str, params: serde_json::V
 
 #[tokio::test]
 async fn test_real_node_client() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .unwrap();
+    let client = MadrpcClient::new(node.url()).unwrap();
 
     let result = client.call("echo", json!({"msg": "test"})).await.unwrap();
     assert_eq!(result["msg"], "test");
@@ -233,12 +41,11 @@ async fn test_real_node_client() {
 
 #[tokio::test]
 async fn test_real_node_add() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .unwrap();
+    let client = MadrpcClient::new(node.url()).unwrap();
 
     let result = client.call("add", json!({"a": 5, "b": 3})).await.unwrap();
     assert_eq!(result["result"], 8);
@@ -250,29 +57,18 @@ async fn test_real_node_add() {
 
 #[tokio::test]
 async fn test_orchestrator_node_client() {
-    // Start real node
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _node_handle) = start_node_server(node).await;
+    // Start node in container
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    // Start real orchestrator
-    let orch = Arc::new(
-        Orchestrator::with_config(
-            vec![format!("http://{}", node_addr)],
-            HealthCheckConfig {
-                interval: Duration::from_secs(10),
-                timeout: Duration::from_millis(500),
-                failure_threshold: 3,
-            },
-        )
-        .unwrap(),
-    );
-
-    let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
+    // Start orchestrator with the node URL
+    let orch = OrchestratorContainer::start(vec![node.url().to_string()])
+        .await
+        .expect("Failed to start orchestrator container");
 
     // Client calls through orchestrator
-    let client = MadrpcClient::new(format!("http://{}", orch_addr))
-        .unwrap();
+    let client = MadrpcClient::new(orch.url()).unwrap();
 
     let result = client.call("echo", json!({"msg": "through_orch"})).await.unwrap();
     assert_eq!(result["msg"], "through_orch");
@@ -284,34 +80,22 @@ async fn test_orchestrator_node_client() {
 
 #[tokio::test]
 async fn test_multiple_nodes_orchestrator() {
-    // Start multiple nodes
-    let script = create_echo_script();
+    // Start multiple nodes in containers
     let mut node_addrs = vec![];
-
     for _ in 0..3 {
-        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-        let (addr, _handle) = start_node_server(node).await;
-        node_addrs.push(format!("http://{}", addr));
+        let node = NodeContainer::start(common_test_script())
+            .await
+            .expect("Failed to start node container");
+        node_addrs.push(node.url().to_string());
     }
 
     // Start orchestrator with all nodes
-    let orch = Arc::new(
-        Orchestrator::with_config(
-            node_addrs,
-            HealthCheckConfig {
-                interval: Duration::from_secs(10),
-                timeout: Duration::from_millis(500),
-                failure_threshold: 3,
-            },
-        )
-        .unwrap(),
-    );
-
-    let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
+    let orch = OrchestratorContainer::start(node_addrs)
+        .await
+        .expect("Failed to start orchestrator container");
 
     // Make multiple calls and verify they all succeed
-    let client = MadrpcClient::new(format!("http://{}", orch_addr))
-        .unwrap();
+    let client = MadrpcClient::new(orch.url()).unwrap();
 
     for i in 0..10 {
         let result = client.call("echo", json!({"call": i})).await.unwrap();
@@ -325,12 +109,11 @@ async fn test_multiple_nodes_orchestrator() {
 
 #[tokio::test]
 async fn test_monte_carlo_pi() {
-    let script = create_monte_carlo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+    let node = NodeContainer::start(monte_carlo_script())
+        .await
+        .expect("Failed to start node container");
 
-    let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .unwrap();
+    let client = MadrpcClient::new(node.url()).unwrap();
 
     // Test single sample
     let result = client
@@ -345,40 +128,29 @@ async fn test_monte_carlo_pi() {
 
 #[tokio::test]
 async fn test_monte_carlo_aggregate() {
-    let script = create_monte_carlo_script();
-
     // Start multiple nodes with the same script
     let mut node_addrs = vec![];
     for _ in 0..3 {
-        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-        let (addr, _handle) = start_node_server(node).await;
-        node_addrs.push(format!("http://{}", addr));
+        let node = NodeContainer::start(monte_carlo_script())
+            .await
+            .expect("Failed to start node container");
+        node_addrs.push(node.url().to_string());
     }
 
     // Start orchestrator with all nodes
-    let orch = Arc::new(
-        Orchestrator::with_config(
-            node_addrs.clone(),
-            HealthCheckConfig {
-                interval: Duration::from_secs(10),
-                timeout: Duration::from_millis(500),
-                failure_threshold: 3,
-            },
-        )
-        .unwrap(),
-    );
-
-    let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
+    let orch = OrchestratorContainer::start(node_addrs)
+        .await
+        .expect("Failed to start orchestrator container");
 
     // Create a node with orchestrator support for distributed RPC
-    let node_with_orch = Arc::new(
-        Node::with_orchestrator(script.path().to_path_buf(), format!("http://{}", orch_addr))
-            .unwrap(),
-    );
-    let (node_addr, _handle) = start_node_server(node_with_orch).await;
+    let node_with_orch = NodeContainer::start_with_orchestrator(
+        monte_carlo_script(),
+        orch.url().to_string(),
+    )
+    .await
+    .expect("Failed to start node with orchestrator");
 
-    let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .unwrap();
+    let client = MadrpcClient::new(node_with_orch.url()).unwrap();
 
     // Test aggregate (distributed RPC)
     let result = client
@@ -400,27 +172,16 @@ async fn test_monte_carlo_aggregate() {
 
 #[tokio::test]
 async fn test_circuit_breaker() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _node_handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
     // Create orchestrator with aggressive circuit breaker
-    let orch = Arc::new(
-        Orchestrator::with_config(
-            vec![format!("http://{}", node_addr)],
-            HealthCheckConfig {
-                interval: Duration::from_secs(1),
-                timeout: Duration::from_millis(100),
-                failure_threshold: 2,
-            },
-        )
-        .unwrap(),
-    );
+    let orch = OrchestratorContainer::start(vec![node.url().to_string()])
+        .await
+        .expect("Failed to start orchestrator container");
 
-    let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
-
-    let client = MadrpcClient::new(format!("http://{}", orch_addr))
-        .unwrap();
+    let client = MadrpcClient::new(orch.url()).unwrap();
 
     // First call should succeed
     let result = client.call("echo", json!({"test": 1})).await.unwrap();
@@ -436,12 +197,11 @@ async fn test_circuit_breaker() {
 
 #[tokio::test]
 async fn test_error_handling_invalid_method() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .unwrap();
+    let client = MadrpcClient::new(node.url()).unwrap();
 
     // Call non-existent method
     let result = client.call("nonexistent_method", json!({})).await;
@@ -450,12 +210,11 @@ async fn test_error_handling_invalid_method() {
 
 #[tokio::test]
 async fn test_error_handling_invalid_params() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .unwrap();
+    let client = MadrpcClient::new(node.url()).unwrap();
 
     // Call add with missing params
     let result = client.call("add", json!({"a": 5})).await;
@@ -468,14 +227,11 @@ async fn test_error_handling_invalid_params() {
 
 #[tokio::test]
 async fn test_concurrent_requests() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let client = Arc::new(
-        MadrpcClient::new(format!("http://{}", node_addr))
-            .unwrap(),
-    );
+    let client = std::sync::Arc::new(MadrpcClient::new(node.url()).unwrap());
 
     // Make 10 concurrent requests
     let mut handles = vec![];
@@ -511,16 +267,20 @@ async fn test_concurrent_requests() {
 
 #[tokio::test]
 async fn test_metrics_endpoints() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
     // Test _info endpoint using JSON-RPC
-    let info_response = http_jsonrpc_call(node_addr, "_info", serde_json::json!({})).await;
+    let info_response = testcontainers::jsonrpc_call(node.url(), "_info", serde_json::json!({}))
+        .await
+        .unwrap();
     assert!(info_response["result"]["server_type"].is_string());
 
     // Test _metrics endpoint using JSON-RPC
-    let metrics_response = http_jsonrpc_call(node_addr, "_metrics", serde_json::json!({})).await;
+    let metrics_response = testcontainers::jsonrpc_call(node.url(), "_metrics", serde_json::json!({}))
+        .await
+        .unwrap();
     assert!(metrics_response["result"]["total_requests"].is_number());
 }
 
@@ -531,40 +291,28 @@ async fn test_metrics_endpoints() {
 #[tokio::test]
 async fn test_distributed_rpc() {
     // This tests the aggregate function which uses madrpc.call internally
-    let script = create_monte_carlo_script();
-
-    // Start multiple nodes with the same script
     let mut node_addrs = vec![];
     for _ in 0..2 {
-        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-        let (addr, _handle) = start_node_server(node).await;
-        node_addrs.push(format!("http://{}", addr));
+        let node = NodeContainer::start(monte_carlo_script())
+            .await
+            .expect("Failed to start node container");
+        node_addrs.push(node.url().to_string());
     }
 
     // Start orchestrator with all nodes
-    let orch = Arc::new(
-        Orchestrator::with_config(
-            node_addrs.clone(),
-            HealthCheckConfig {
-                interval: Duration::from_secs(10),
-                timeout: Duration::from_millis(500),
-                failure_threshold: 3,
-            },
-        )
-        .unwrap(),
-    );
-
-    let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
+    let orch = OrchestratorContainer::start(node_addrs)
+        .await
+        .expect("Failed to start orchestrator container");
 
     // Create a node with orchestrator support for distributed RPC
-    let node_with_orch = Arc::new(
-        Node::with_orchestrator(script.path().to_path_buf(), format!("http://{}", orch_addr))
-            .unwrap(),
-    );
-    let (node_addr, _handle) = start_node_server(node_with_orch).await;
+    let node_with_orch = NodeContainer::start_with_orchestrator(
+        monte_carlo_script(),
+        orch.url().to_string(),
+    )
+    .await
+    .expect("Failed to start node with orchestrator");
 
-    let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .unwrap();
+    let client = MadrpcClient::new(node_with_orch.url()).unwrap();
 
     // The aggregate function uses madrpc.call to make distributed RPC calls
     let result = client
@@ -582,27 +330,16 @@ async fn test_distributed_rpc() {
 
 #[tokio::test]
 async fn test_health_checking() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _node_handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
     // Create orchestrator with health checking enabled
-    let orch = Arc::new(
-        Orchestrator::with_config(
-            vec![format!("http://{}", node_addr)],
-            HealthCheckConfig {
-                interval: Duration::from_millis(500),
-                timeout: Duration::from_millis(500),
-                failure_threshold: 3,
-            },
-        )
-        .unwrap(),
-    );
+    let orch = OrchestratorContainer::start(vec![node.url().to_string()])
+        .await
+        .expect("Failed to start orchestrator container");
 
-    let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
-
-    let client = MadrpcClient::new(format!("http://{}", orch_addr))
-        .unwrap();
+    let client = MadrpcClient::new(orch.url()).unwrap();
 
     // First call should work
     let result = client.call("echo", json!({"test": "health"})).await.unwrap();
@@ -622,9 +359,9 @@ async fn test_health_checking() {
 
 #[tokio::test]
 async fn test_http_content_type_validation() {
-    let script = create_echo_script();
-    let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let (node_addr, _handle) = start_node_server(node).await;
+    let node = NodeContainer::start(common_test_script())
+        .await
+        .expect("Failed to start node container");
 
     let client = reqwest::Client::new();
 
@@ -637,7 +374,7 @@ async fn test_http_content_type_validation() {
     });
 
     let response = client
-        .post(format!("http://{}", node_addr))
+        .post(node.url())
         .header("Content-Type", "application/json")
         .json(&request)
         .send()
@@ -648,7 +385,7 @@ async fn test_http_content_type_validation() {
 
     // Test with wrong Content-Type (should still work for nodes, they're lenient)
     let response = client
-        .post(format!("http://{}", node_addr))
+        .post(node.url())
         .header("Content-Type", "text/plain")
         .json(&request)
         .send()
