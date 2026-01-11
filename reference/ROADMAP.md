@@ -117,7 +117,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 2: High-Priority Issues (Weeks 2-3)
 
-### Status: In Progress (7/8 complete)
+### Status: In Progress (8/8 complete)
 **Goal**: Address all high-severity issues and expand test coverage
 
 #### 2.1 Add RetryConfig Validation ✅
@@ -203,15 +203,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Test timeout and signal handling
 - [x] Add test fixtures and helpers
 
-#### 2.8 Add Error Path Tests
+#### 2.8 Add Error Path Tests ✅
 **Crate**: `madrpc-cli`, `madrpc-client`
 **Effort**: 3-4 hours
+**Completed**: 2026-01-11
 
-- Test connection failure scenarios
-- Test timeout handling
-- Test invalid response handling
-- Test malformed JSON handling
-- Add negative test cases across crates
+- [x] Test connection failure scenarios
+- [x] Test timeout handling
+- [x] Test invalid response handling
+- [x] Test malformed JSON handling
+- [x] Add negative test cases across crates
 
 #### 2.9 Fix Test Data URLs
 **Crate**: `madrpc-cli`
@@ -442,7 +443,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Remove unused dependencies (madrpc-cli) - Completed 2026-01-11
 - [x] Update Boa version (madrpc-server) - Completed 2026-01-11
 - [x] CLI integration tests (madrpc-cli) - Completed 2026-01-11
-- [ ] Error path tests (multiple crates)
+- [x] Error path tests (multiple crates) - Completed 2026-01-11
 
 ### Current Blockers
 None identified
