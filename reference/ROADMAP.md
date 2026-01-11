@@ -1,6 +1,6 @@
 # MaDRPC-2 Development Roadmap
 
-**Last Updated**: 2026-01-11 (Task 2.6 completed)
+**Last Updated**: 2026-01-11 (Task 3.7 completed)
 **Project**: MaDRPC - Massively Distributed RPC
 **Status**: Foundation Complete, Production Hardening In Progress
 
@@ -22,211 +22,8 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ### Phase Structure
 
-- **Phase 1 (Immediate)** - Critical bugs that block production readiness
-- **Phase 2 (Short-term)** - High-priority issues and testing gaps
 - **Phase 3 (Medium-term)** - Security hardening and performance
 - **Phase 4 (Long-term)** - Polish, documentation, and enhancements
-
----
-
-## Phase 1: Immediate Critical Fixes (Week 1)
-
-### Status: ✅ Complete
-**Goal**: Eliminate all critical issues that could cause data corruption, DoS, or system failure
-**Completed**: 2026-01-11
-
-#### 1.1 Fix Request ID Generation Bug ✅
-**Crate**: `madrpc-common`
-**Location**: `src/protocol/requests.rs:165-178`
-**Impact**: Request ID collisions leading to data corruption
-**Effort**: 1-2 hours
-**Completed**: 2026-01-11
-
-- [x] Change timestamp from nanoseconds to seconds (60+ bits → 32 bits)
-- [x] Update mask to properly shift timestamp to upper 32 bits
-- [x] Change atomic ordering from `SeqCst` to `Relaxed`
-- [x] Add test verifying no collisions under high concurrency
-- [x] Document the 32-bit second validity (until 2106)
-
-#### 1.2 Add Request Size Limits ✅
-**Crate**: `madrpc-server`
-**Location**: `src/http_server.rs:125-137`
-**Impact**: Prevents memory exhaustion DoS
-**Effort**: 1-2 hours
-**Completed**: 2026-01-11
-
-- [x] Define `MAX_BODY_SIZE` constant (10 MB default)
-- [x] Add size check after collecting request body
-- [x] Return JSON-RPC error response if size exceeded
-- [x] Add test for oversized request rejection
-- [x] Document limit in server configuration
-
-#### 1.3 Add Connection Limiting ✅
-**Crate**: `madrpc-server`
-**Location**: `src/http_server.rs`
-**Impact**: Prevents resource exhaustion DoS
-**Effort**: 2-3 hours
-**Completed**: 2026-01-11
-
-- [x] Create `Semaphore` with `MAX_CONCURRENT_CONNECTIONS` (1000)
-- [x] Acquire permit before spawning connection handler task
-- [x] Hold permit until task completion
-- [x] Add test for concurrent connection limit
-- [x] Document connection limit behavior
-
-#### 1.4 Fix Promise Polling Timeout ✅
-**Crate**: `madrpc-server`
-**Location**: `src/runtime/context.rs:300-310`
-**Impact**: Prevents CPU exhaustion and hangs
-**Effort**: 2-3 hours
-**Completed**: 2026-01-11
-
-- [x] Replace iteration-based loop with timeout-based loop
-- [x] Use `Instant::now()` to track elapsed time
-- [x] Define `MAX_PROMISE_WAIT_MS` constant (30 seconds)
-- [x] Return timeout error when limit exceeded
-- [x] Add test for promise resolution timeout
-- [x] Document timeout behavior
-
-#### 1.5 Fix fetch_min Bug in Metrics ✅
-**Crate**: `madrpc-metrics`
-**Location**: `src/registry.rs:179`
-**Impact**: Prevents unbounded latency buffer growth
-**Effort**: 1 hour
-**Completed**: 2026-01-11
-
-- [x] Replace `fetch_min` with `fetch_update`
-- [x] Implement proper capping logic using `x.min(LATENCY_BUFFER_SIZE)`
-- [x] Add test verifying count caps at buffer size
-- [x] Document capping behavior
-
-#### 1.6 Fix Client Integration Test Compilation ✅
-**Crate**: `madrpc-client`
-**Location**: `tests/http_client_test.rs:18`
-**Impact**: Unblocks testing
-**Effort**: 30 minutes
-**Completed**: 2026-01-11
-
-- [x] Add `server` feature to hyper dependency in Cargo.toml
-- [x] Verify tests compile and pass
-- [x] Ensure all integration tests run in CI
-
-**Completion Criteria**: All critical bugs fixed, all tests passing, no regressions
-
----
-
-## Phase 2: High-Priority Issues (Weeks 2-3)
-
-### Status: ✅ Complete
-**Goal**: Address all high-severity issues and expand test coverage
-**Completed**: 2026-01-11
-
-#### 2.1 Add RetryConfig Validation ✅
-**Crate**: `madrpc-client`
-**Location**: `src/client.rs:85`
-**Effort**: 2-3 hours
-**Completed**: 2026-01-11
-
-- [x] Add validation method to `RetryConfig`
-- [x] Reject `max_attempts = 0`
-- [x] Reject negative multipliers
-- [x] Reject negative timeout values
-- [x] Add tests for validation logic
-- [x] Document valid ranges
-
-#### 2.2 Fix Atomic Ordering Performance ✅
-**Crate**: `madrpc-client`, `madrpc-common`
-**Location**: Multiple files
-**Effort**: 2-3 hours
-**Completed**: 2026-01-11
-
-- [x] Audit all `SeqCst` ordering usage
-- [x] Replace with `Relaxed` where appropriate
-- [x] Add comments explaining ordering requirements
-- [x] Run benchmarks to verify improvement
-- [x] Document memory ordering choices
-
-#### 2.3 Fix JSON-RPC Error Classification ✅
-**Crate**: `madrpc-client`
-**Location**: `src/client.rs:462`
-**Effort**: 2-3 hours
-**Completed**: 2026-01-11
-
-- [x] Fix incorrect range checks in error classification
-- [x] Replace fragile string matching with proper error parsing
-- [x] Add comprehensive error code tests
-- [x] Document retryable vs non-retryable errors
-
-#### 2.4 Add Payload Size Limits ✅
-**Crate**: `madrpc-common`
-**Location**: `src/transport/http.rs:81`
-**Effort**: 1-2 hours
-**Completed**: 2026-01-11
-
-- [x] Define maximum payload size constant
-- [x] Add validation in request construction
-- [x] Return error if size exceeded
-- [x] Add tests for size limits
-- [x] Document limits
-
-#### 2.5 Remove Unused Dependencies ✅
-**Crate**: `madrpc-cli`
-**Location**: `Cargo.toml:24`
-**Effort**: 30 minutes
-**Completed**: 2026-01-11
-
-- [x] Remove `num_cpus` dependency
-- [x] Verify no build warnings
-- [x] Run full test suite
-
-#### 2.6 Update Boa Version ✅
-**Crate**: `madrpc-server`
-**Location**: `Cargo.toml:11`
-**Effort**: 1-2 hours
-**Completed**: 2026-01-11
-
-- [x] Check latest Boa release
-- [x] Verify current version (0.21.0) is latest stable
-- [x] Run all tests to verify compatibility
-- [x] Document that dependency is up-to-date
-- [x] Note: Local path dependency was replaced with crates.io v0.21.0 on 2026-01-09
-
-#### 2.7 Add CLI Integration Tests ✅
-**Crate**: `madrpc-cli`
-**Location**: Create `tests/` directory
-**Effort**: 4-6 hours
-**Completed**: 2026-01-11
-
-- [x] Test orchestrator command startup/shutdown
-- [x] Test node command startup/shutdown
-- [x] Test `top` command connection and display
-- [x] Test error handling for invalid arguments
-- [x] Test timeout and signal handling
-- [x] Add test fixtures and helpers
-
-#### 2.8 Add Error Path Tests ✅
-**Crate**: `madrpc-cli`, `madrpc-client`
-**Effort**: 3-4 hours
-**Completed**: 2026-01-11
-
-- [x] Test connection failure scenarios
-- [x] Test timeout handling
-- [x] Test invalid response handling
-- [x] Test malformed JSON handling
-- [x] Add negative test cases across crates
-
-#### 2.9 Fix Test Data URLs ✅
-**Crate**: `madrpc-cli`
-**Location**: Test files
-**Effort**: 1 hour
-**Completed**: 2026-01-11
-
-- [x] Replace `http://[::1]:PORT` with valid URLs
-- [x] Use `127.0.0.1` or `localhost`
-- [x] Ensure all tests use valid addresses
-- [x] Document URL format requirements
-
-**Completion Criteria**: All high-severity issues addressed, integration test coverage expanded
 
 ---
 
@@ -300,15 +97,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Document configuration options
 - [x] Add tests for custom configurations
 
-#### 3.7 Audit and Reduce Cloning
+#### 3.7 Audit and Reduce Cloning ✅
 **Crate**: All
 **Effort**: 1-2 days
+**Completed**: 2026-01-11
 
-- Identify excessive cloning via profiling
-- Replace with borrowing where appropriate
-- Use `Arc` for shared data
-- Run benchmarks to verify improvements
-- Document ownership changes
+- [x] Identify excessive cloning via profiling
+- [x] Replace with borrowing where appropriate
+- [x] Use `Arc` for shared data
+- [x] Run benchmarks to verify improvements
+- [x] Document ownership changes
 
 #### 3.8 API Improvements
 **Effort**: 3-4 hours
