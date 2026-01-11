@@ -31,7 +31,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 1: Immediate Critical Fixes (Week 1)
 
-### Status: In Progress (1/6 complete)
+### Status: In Progress (2/6 complete)
 **Goal**: Eliminate all critical issues that could cause data corruption, DoS, or system failure
 
 #### 1.1 Fix Request ID Generation Bug ✅
@@ -47,17 +47,18 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Add test verifying no collisions under high concurrency
 - [x] Document the 32-bit second validity (until 2106)
 
-#### 1.2 Add Request Size Limits
+#### 1.2 Add Request Size Limits ✅
 **Crate**: `madrpc-server`
 **Location**: `src/http_server.rs:125-137`
 **Impact**: Prevents memory exhaustion DoS
 **Effort**: 1-2 hours
+**Completed**: 2026-01-11
 
-- Define `MAX_BODY_SIZE` constant (10 MB default)
-- Add size check after collecting request body
-- Return JSON-RPC error response if size exceeded
-- Add test for oversized request rejection
-- Document limit in server configuration
+- [x] Define `MAX_BODY_SIZE` constant (10 MB default)
+- [x] Add size check after collecting request body
+- [x] Return JSON-RPC error response if size exceeded
+- [x] Add test for oversized request rejection
+- [x] Document limit in server configuration
 
 #### 1.3 Add Connection Limiting
 **Crate**: `madrpc-server`
@@ -415,7 +416,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ### Critical Bugs (Phase 1)
 - [x] Request ID generation (madrpc-common) - Completed 2026-01-11
-- [ ] Request size limits (madrpc-server)
+- [x] Request size limits (madrpc-server) - Completed 2026-01-11
 - [ ] Connection limiting (madrpc-server)
 - [ ] Promise polling timeout (madrpc-server)
 - [ ] fetch_min bug (madrpc-metrics)
