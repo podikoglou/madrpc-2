@@ -1,0 +1,26 @@
+services:
+  orchestrator:
+    image: madrpc:latest
+    command: orchestrator -b 0.0.0.0:8080
+    ports:
+      - "8080:8080"
+    networks:
+      - madrpc-network
+
+  # Nodes run on internal ports - no host port mapping needed
+  # Scale with: docker compose up -d --scale node=10
+  node:
+    image: madrpc:latest
+    command: >
+      node
+        -s /app/examples/monte-carlo-pi.js
+        -b 0.0.0.0:9001
+        --orchestrator http://orchestrator:8080
+    depends_on:
+      - orchestrator
+    networks:
+      - madrpc-network
+
+networks:
+  madrpc-network:
+    driver: bridge

@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Target directory
+target
+**/target
+
+# Cargo
+Cargo.lock
+
+# Documentation
+*.md
+!README.md
+docs/
+reference/
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# Tests
+tests/
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Other
+.env
+*.env
