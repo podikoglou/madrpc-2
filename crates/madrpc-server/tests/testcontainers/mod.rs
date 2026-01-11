@@ -61,10 +61,8 @@ impl NodeContainer {
 
         let container = image.start().await?;
 
-        let host_port = container.get_host_port_ipv4(9001).await?;
-        let host = host_port.host();
-        let port = host_port.port();
-        let external_url = format!("http://{}:{}", host, port);
+        let port = container.get_host_port_ipv4(9001).await?;
+        let external_url = format!("http://127.0.0.1:{}", port);
 
         // Wait for the _info endpoint to be ready
         Self::wait_for_ready(&external_url).await?;
