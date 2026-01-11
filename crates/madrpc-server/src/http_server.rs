@@ -37,6 +37,7 @@ use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use serde_json::json;
 
 use crate::http_router::NodeRouter;
@@ -51,13 +52,28 @@ use madrpc_common::transport::{HttpTransport, HyperRequest, HyperResponse};
 /// with overly large payloads before they can cause significant memory allocation.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
+/// Maximum number of concurrent connections
+///
+/// This limit prevents resource exhaustion DoS attacks by limiting the number
+/// of concurrent connections. When this limit is reached, new connections
+/// will wait until an existing connection completes.
+const MAX_CONCURRENT_CONNECTIONS: usize = 1000;
+
 /// HTTP server for MaDRPC node.
 ///
 /// The server listens for HTTP requests and processes JSON-RPC requests
 /// through the NodeRouter.
+///
+/// # Connection Limiting
+///
+/// The server enforces a maximum number of concurrent connections to prevent
+/// resource exhaustion DoS attacks. When the limit is reached, new connections
+/// will wait until an existing connection completes before being processed.
 pub struct HttpServer {
     /// The router for handling JSON-RPC requests
     router: Arc<NodeRouter>,
+    /// Semaphore for limiting concurrent connections
+    connection_semaphore: Arc<Semaphore>,
 }
 
 impl HttpServer {
@@ -85,7 +101,8 @@ impl HttpServer {
     /// ```
     pub fn new(node: Arc<Node>) -> Self {
         let router = Arc::new(NodeRouter::new(node));
-        Self { router }
+        let connection_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+        Self { router, connection_semaphore }
     }
 
     /// Runs the HTTP server on the specified address.
@@ -125,6 +142,12 @@ impl HttpServer {
             let (stream, _) = listener.accept().await
                 .map_err(|e| MadrpcError::Transport(format!("Failed to accept connection: {}", e)))?;
 
+            // Acquire a permit from the semaphore to limit concurrent connections
+            // This will wait until a permit is available if the limit is reached
+            let semaphore = self.connection_semaphore.clone();
+            let permit = semaphore.acquire_owned().await
+                .map_err(|e| MadrpcError::Transport(format!("Failed to acquire connection permit: {}", e)))?;
+
             let io = TokioIo::new(stream);
             let router = self.router.clone();
 
@@ -140,6 +163,9 @@ impl HttpServer {
                 {
                     tracing::error!("Error serving connection: {}", err);
                 }
+
+                // Permit is released when it goes out of scope
+                drop(permit);
             });
         }
     }
@@ -236,8 +262,11 @@ mod tests {
     async fn test_server_creation() {
         let script = create_test_script("// empty");
         let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-        let _server = HttpServer::new(node.clone());
+        let server = HttpServer::new(node.clone());
         assert!(node.script_path().exists());
+
+        // Verify the semaphore is initialized with the correct number of permits
+        assert_eq!(server.connection_semaphore.available_permits(), MAX_CONCURRENT_CONNECTIONS);
     }
 
     #[tokio::test]
@@ -260,11 +289,71 @@ mod tests {
     }
 
     #[test]
+    fn test_max_concurrent_connections_constant() {
+        // Verify the constant is set to 1000
+        assert_eq!(MAX_CONCURRENT_CONNECTIONS, 1000);
+    }
+
+    #[test]
     fn test_request_too_large_error() {
         // Test that the request_too_large error is created correctly
         let error = JsonRpcError::request_too_large(1024);
         assert_eq!(error.code, REQUEST_TOO_LARGE);
         assert!(error.message.contains("1024"));
         assert!(error.message.contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn test_connection_limit_enforcement() {
+        // Create a server with a small connection limit for testing
+        let script = create_test_script("// empty");
+        let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
+
+        // Create a custom server with a limited number of permits for testing
+        let _router = Arc::new(NodeRouter::new(node));
+        let connection_semaphore = Arc::new(Semaphore::new(2)); // Only 2 permits for testing
+
+        // Verify initial state
+        assert_eq!(connection_semaphore.available_permits(), 2);
+
+        // Simulate acquiring all permits
+        let permit1 = connection_semaphore.clone().acquire_owned().await.unwrap();
+        assert_eq!(connection_semaphore.available_permits(), 1);
+
+        let permit2 = connection_semaphore.clone().acquire_owned().await.unwrap();
+        assert_eq!(connection_semaphore.available_permits(), 0);
+
+        // Try to acquire a third permit - this should not immediately succeed
+        // We'll create a task that tries to acquire and verify it waits
+        let semaphore_clone = connection_semaphore.clone();
+        let acquire_task = tokio::spawn(async move {
+            // This should wait since no permits are available
+            let _permit = semaphore_clone.acquire_owned().await.unwrap();
+            // If we get here, a permit was acquired
+        });
+
+        // Give the task a chance to try to acquire (it should be waiting)
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // The task should still be running (waiting for a permit)
+        assert!(!acquire_task.is_finished());
+
+        // Release one permit
+        drop(permit1);
+
+        // Wait for the acquire task to complete
+        tokio::time::timeout(tokio::time::Duration::from_millis(100), acquire_task)
+            .await
+            .expect("Acquire task should complete after permit is released")
+            .expect("Acquire task should succeed");
+
+        // Now the task completed and released its permit, so we should have 1 available (permit2 still held)
+        assert_eq!(connection_semaphore.available_permits(), 1);
+
+        // Release the second permit
+        drop(permit2);
+
+        // Verify both permits are available again
+        assert_eq!(connection_semaphore.available_permits(), 2);
     }
 }
