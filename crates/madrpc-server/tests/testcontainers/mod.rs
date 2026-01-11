@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 use testcontainers::{
-    core::{IntoContainerPort, WaitFor},
+    core::IntoContainerPort,
     runners::AsyncRunner,
     CopyDataSource,
     GenericImage,
@@ -57,7 +57,6 @@ impl NodeContainer {
         let image = GenericImage::new("madrpc", "test")
             .with_entrypoint("/usr/local/bin/madrpc")
             .with_exposed_port(9001.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("Server listening on"))
             .with_copy_to("/app/script.js", CopyDataSource::Data(script_content.into_bytes()))
             .with_cmd(["node", "-s", "/app/script.js", "-b", "0.0.0.0:9001"]);
 
