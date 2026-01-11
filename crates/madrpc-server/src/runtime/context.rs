@@ -15,6 +15,25 @@ use crate::runtime::{bindings, conversions::{json_to_js_value, js_value_to_json}
 /// while preventing indefinite hangs.
 const MAX_PROMISE_WAIT_MS: u64 = 30_000;
 
+/// Poll interval for promise resolution in async context (in milliseconds).
+///
+/// This balances responsiveness with CPU usage. A 10ms interval means we check
+/// promise state 100 times per second, which provides sub-100ms latency for
+/// promise resolution while keeping CPU usage minimal.
+///
+/// Trade-off: Lower values = more responsive but higher CPU usage.
+///           Higher values = lower CPU but slower promise resolution.
+const PROMISE_POLL_INTERVAL_ASYNC_MS: u64 = 10;
+
+/// Poll interval for promise resolution in sync context (in milliseconds).
+///
+/// In sync context, we use a longer interval (50ms) since we're already blocking
+/// the thread. The longer interval reduces CPU usage while still providing
+/// reasonable responsiveness.
+///
+/// This is only used every 100 iterations to avoid sleeping too frequently.
+const PROMISE_POLL_INTERVAL_SYNC_MS: u64 = 50;
+
 /// Thread-local marker to ensure MadrpcContext is used on the correct thread.
 ///
 /// This is a zero-sized type that is !Send and !Sync, which prevents
@@ -250,13 +269,23 @@ impl MadrpcContext {
     /// completion before returning. It uses a loop that:
     /// 1. Runs pending promise jobs
     /// 2. Checks the promise state
-    /// 3. Continues polling until the promise settles
-    /// 4. Returns the fulfillment value or a rejection error
+    /// 3. Sleeps for 50ms to reduce CPU usage
+    /// 4. Continues polling until the promise settles
+    /// 5. Returns the fulfillment value or a rejection error
     ///
     /// The polling has a maximum timeout of 30 seconds to prevent
     /// CPU exhaustion and indefinite hangs. This timeout uses wall-clock
-    /// time measurement rather than iteration counting for more predictable
-    /// behavior.
+    /// time measurement for more predictable behavior.
+    ///
+    /// # Performance Characteristics
+    ///
+    /// The sync version uses a 50ms poll interval to balance:
+    /// - **CPU Efficiency**: Sleeping every iteration prevents CPU waste
+    /// - **Responsiveness**: 50ms provides reasonable latency for most use cases
+    /// - **Simplicity**: Avoids complex event-driven mechanisms
+    ///
+    /// For better performance in async-heavy workloads, consider using
+    /// `call_rpc_async()` which uses a more efficient 10ms poll interval.
     ///
     /// # Errors
     ///
@@ -328,12 +357,10 @@ impl MadrpcContext {
                     // Check promise state
                     match promise.state() {
                         PromiseState::Pending => {
-                            // Continue polling with small sleep to prevent CPU exhaustion
-                            // Sleep for 100 microseconds every 100 iterations
+                            // Continue polling with sleep to prevent CPU exhaustion
+                            // Sleep every iteration to reduce CPU usage (not just every 100 iterations)
                             poll_count += 1;
-                            if poll_count % 100 == 0 {
-                                std::thread::sleep(std::time::Duration::from_micros(100));
-                            }
+                            std::thread::sleep(std::time::Duration::from_millis(PROMISE_POLL_INTERVAL_SYNC_MS));
                             continue;
                         }
                         PromiseState::Fulfilled(value) => {
@@ -385,6 +412,17 @@ impl MadrpcContext {
     /// If the function returns a Promise, this method will await its resolution
     /// using `run_jobs_async()` to drive the promise to completion.
     ///
+    /// # Performance Characteristics
+    ///
+    /// The async version uses a 10ms poll interval to balance:
+    /// - **CPU Efficiency**: tokio::time::sleep yields to the runtime scheduler
+    /// - **Responsiveness**: 10ms provides ~100Hz polling for low latency
+    /// - **Concurrency**: Other tasks can run during the sleep period
+    ///
+    /// This is significantly more efficient than the sync version for
+    /// async-heavy workloads, as it doesn't block threads and uses shorter
+    /// poll intervals.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -393,6 +431,7 @@ impl MadrpcContext {
     /// - Function execution fails
     /// - Arguments cannot be converted
     /// - A promise is rejected
+    /// - A promise times out (exceeds 30 seconds)
     pub async fn call_rpc_async(&mut self, method: &str, args: JsonValue) -> Result<JsonValue> {
         tracing::debug!("call_rpc_async: calling method '{}'", method);
 
@@ -456,8 +495,9 @@ impl MadrpcContext {
 
                     match promise_clone.state() {
                         PromiseState::Pending => {
-                            // Continue polling with small sleep to prevent CPU exhaustion
-                            tokio::time::sleep(std::time::Duration::from_micros(100)).await;
+                            // Continue polling with sleep to prevent CPU exhaustion
+                            // Use 10ms interval for responsive but efficient polling
+                            tokio::time::sleep(std::time::Duration::from_millis(PROMISE_POLL_INTERVAL_ASYNC_MS)).await;
                         }
                         PromiseState::Fulfilled(value) => {
                             tracing::debug!("call_rpc_async: Promise fulfilled after {}ms", elapsed.as_millis());
