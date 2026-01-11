@@ -11,3 +11,8 @@ atomic = "0.6"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "metrics_bench"
+harness = false
