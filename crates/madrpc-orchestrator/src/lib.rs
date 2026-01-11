@@ -64,7 +64,7 @@
 //!         "http://127.0.0.1:9002".to_string(),
 //!     ],
 //!     health_config,
-//! ).await?;
+//! )?;
 //!
 //! // Forward requests (round-robin with circuit breaking)
 //! // let response = orchestrator.forward_request(&request).await?;

@@ -202,7 +202,7 @@ impl HealthChecker {
         };
 
         // Create client for this health check
-        let client = MadrpcClient::new(&base_url).await
+        let client = MadrpcClient::new(&base_url)
             .map_err(|e| MadrpcError::Transport(format!("Failed to create health check client: {}", e)))?;
 
         // Call _health with timeout

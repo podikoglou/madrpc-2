@@ -106,12 +106,13 @@ impl Node {
     /// # Arguments
     /// * `script_path` - Path to the JavaScript script file
     /// * `orchestrator_addr` - Address of the orchestrator (e.g., "127.0.0.1:8080")
-    pub async fn with_orchestrator(script_path: PathBuf, orchestrator_addr: String) -> Result<Self> {
+    #[must_use]
+    pub fn with_orchestrator(script_path: PathBuf, orchestrator_addr: String) -> Result<Self> {
         Self::with_orchestrator_and_resource_limits(
             script_path,
             orchestrator_addr,
             ResourceLimits::default()
-        ).await
+        )
     }
 
     /// Creates a new node with orchestrator support and custom resource limits.
@@ -131,7 +132,8 @@ impl Node {
     /// - The script cannot be read
     /// - The orchestrator client cannot be created
     /// - The resource limits configuration is invalid
-    pub async fn with_orchestrator_and_resource_limits(
+    #[must_use]
+    pub fn with_orchestrator_and_resource_limits(
         script_path: PathBuf,
         orchestrator_addr: String,
         resource_limits: ResourceLimits,
@@ -154,8 +156,8 @@ impl Node {
 
         let metrics_collector = Arc::new(NodeMetricsCollector::new());
 
-        // Create the orchestrator client (async)
-        let orchestrator_client = madrpc_client::MadrpcClient::new(orchestrator_addr).await
+        // Create the orchestrator client
+        let orchestrator_client = madrpc_client::MadrpcClient::new(orchestrator_addr)
             .map_err(|e| MadrpcError::InvalidRequest(format!("Failed to create orchestrator client: {}", e)))?;
 
         tracing::info!("Orchestrator client created");

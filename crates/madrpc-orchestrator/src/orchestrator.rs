@@ -114,16 +114,17 @@ impl Orchestrator {
     /// let orchestrator = Orchestrator::new(vec![
     ///     "127.0.0.1:9001".to_string(),
     ///     "127.0.0.1:9002".to_string(),
-    /// ]).await?;
+    /// ])?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn new(node_addrs: Vec<String>) -> Result<Self> {
+    #[must_use]
+    pub fn new(node_addrs: Vec<String>) -> Result<Self> {
         Self::with_retry_config(
             node_addrs,
             HealthCheckConfig::default(),
             RetryConfig::default(),
-        ).await
+        )
     }
 
     /// Creates a new orchestrator with static node list and custom health check config.
@@ -134,7 +135,8 @@ impl Orchestrator {
     /// # Arguments
     /// * `node_addrs` - List of node addresses
     /// * `health_config` - Health check configuration
-    pub async fn with_config(
+    #[must_use]
+    pub fn with_config(
         node_addrs: Vec<String>,
         health_config: HealthCheckConfig,
     ) -> Result<Self> {
@@ -142,7 +144,7 @@ impl Orchestrator {
             node_addrs,
             health_config,
             RetryConfig::default(),
-        ).await
+        )
     }
 
     /// Creates a new orchestrator with static node list and custom configs.
@@ -162,7 +164,8 @@ impl Orchestrator {
     /// - Spawns background health checker task
     /// - Initializes metrics collector
     /// - All nodes start enabled with closed circuit breakers
-    pub async fn with_retry_config(
+    #[must_use]
+    pub fn with_retry_config(
         node_addrs: Vec<String>,
         health_config: HealthCheckConfig,
         retry_config: RetryConfig,
@@ -518,7 +521,7 @@ impl Orchestrator {
         };
 
         // Create client for this request
-        let client = MadrpcClient::new(&base_url).await
+        let client = MadrpcClient::new(&base_url)
             .map_err(|e| MadrpcError::Transport(format!("Failed to create RPC client: {}", e)))?;
 
         // Call the method with params (clone only when necessary for the client)
@@ -602,20 +605,20 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_creation() {
         let nodes = vec!["localhost:9001".to_string(), "localhost:9002".to_string()];
-        let orch = Orchestrator::new(nodes).await;
+        let orch = Orchestrator::new(nodes);
         assert!(orch.is_ok());
     }
 
     #[tokio::test]
     async fn test_orchestrator_node_count() {
         let nodes = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let orch = Orchestrator::new(nodes).await.unwrap();
+        let orch = Orchestrator::new(nodes).unwrap();
         assert_eq!(orch.node_count().await, 3);
     }
 
     #[tokio::test]
     async fn test_orchestrator_add_node() {
-        let orch = Orchestrator::new(vec![]).await.unwrap();
+        let orch = Orchestrator::new(vec![]).unwrap();
         orch.add_node("new-node".to_string()).await;
         assert_eq!(orch.node_count().await, 1);
     }
@@ -623,7 +626,6 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_remove_node() {
         let orch = Orchestrator::new(vec!["node1".to_string()])
-            .await
             .unwrap();
         orch.remove_node("node1").await;
         assert_eq!(orch.node_count().await, 0);
@@ -632,7 +634,7 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_nodes() {
         let nodes = vec!["node1".to_string(), "node2".to_string()];
-        let orch = Orchestrator::new(nodes.clone()).await.unwrap();
+        let orch = Orchestrator::new(nodes.clone()).unwrap();
         let mut result = orch.nodes().await;
         result.sort(); // HashMap doesn't guarantee order
         assert_eq!(result, nodes);
@@ -641,7 +643,6 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_add_duplicate_node() {
         let orch = Orchestrator::new(vec!["node1".to_string()])
-            .await
             .unwrap();
         orch.add_node("node1".to_string()).await;
         // duplicate should not be added
@@ -650,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_empty_nodes() {
-        let orch = Orchestrator::new(vec![]).await.unwrap();
+        let orch = Orchestrator::new(vec![]).unwrap();
         assert_eq!(orch.node_count().await, 0);
         assert_eq!(orch.nodes().await, Vec::<String>::new());
     }
@@ -658,7 +659,6 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_manual_disable() {
         let orch = Orchestrator::new(vec!["node1".to_string()])
-            .await
             .unwrap();
         assert!(orch.disable_node("node1").await);
         let nodes = orch.nodes_with_status().await;
@@ -669,7 +669,6 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_manual_enable() {
         let orch = Orchestrator::new(vec!["node1".to_string()])
-            .await
             .unwrap();
         orch.disable_node("node1").await;
         assert!(orch.enable_node("node1").await);

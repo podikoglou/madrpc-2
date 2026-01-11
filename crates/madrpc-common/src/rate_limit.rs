@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_rate_limit_config_per_second() {
-        let config = RateLimitConfig::per_second(10);
+        let config = RateLimitConfig::per_second(10.0);
         assert_eq!(config.requests_per_second, 10.0);
         assert_eq!(config.burst_size, 20); // 2x rate
     }

@@ -362,7 +362,7 @@ async fn main() -> Result<()> {
                     std::path::PathBuf::from(&args.script),
                     orch_addr.clone(),
                     resource_limits,
-                ).await?
+                )?
             } else {
                 madrpc_server::Node::with_resource_limits(
                     std::path::PathBuf::from(&args.script),
@@ -413,14 +413,14 @@ async fn main() -> Result<()> {
                     timeout: std::time::Duration::from_millis(args.health_check_timeout_ms),
                     failure_threshold: args.health_check_failure_threshold,
                 };
-                madrpc_orchestrator::Orchestrator::with_config(args.nodes, config).await?
+                madrpc_orchestrator::Orchestrator::with_config(args.nodes, config)?
             } else {
                 let config = madrpc_orchestrator::HealthCheckConfig {
                     interval: std::time::Duration::from_secs(args.health_check_interval_secs),
                     timeout: std::time::Duration::from_millis(args.health_check_timeout_ms),
                     failure_threshold: args.health_check_failure_threshold,
                 };
-                madrpc_orchestrator::Orchestrator::with_config(args.nodes, config).await?
+                madrpc_orchestrator::Orchestrator::with_config(args.nodes, config)?
             };
 
             tracing::info!("Orchestrator created with {} nodes", orch.node_count().await);
@@ -482,7 +482,7 @@ async fn run_call(args: CallArgs) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Invalid JSON in args: {}", e))?;
 
     // Create client and call method
-    let client = madrpc_client::MadrpcClient::new(&args.server_address).await?;
+    let client = madrpc_client::MadrpcClient::new(&args.server_address)?;
     let result = client.call(&args.method, args_value).await?;
 
     // Output raw JSON to stdout

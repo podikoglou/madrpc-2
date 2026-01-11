@@ -354,12 +354,13 @@ impl MadrpcClient {
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
+    /// let client = MadrpcClient::new("http://127.0.0.1:8080")?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn new(base_url: impl Into<String>) -> MadrpcResult<Self> {
-        Self::with_configs(base_url, RetryConfig::default(), ConnectionConfig::default()).await
+    #[must_use]
+    pub fn new(base_url: impl Into<String>) -> MadrpcResult<Self> {
+        Self::with_configs(base_url, RetryConfig::default(), ConnectionConfig::default())
     }
 
     /// Creates a new client with custom retry and connection configurations.
@@ -385,11 +386,12 @@ impl MadrpcClient {
     ///     "http://127.0.0.1:8080",
     ///     retry_config,
     ///     connection_config
-    /// ).await?;
+    /// )?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn with_configs(
+    #[must_use]
+    pub fn with_configs(
         base_url: impl Into<String>,
         retry_config: RetryConfig,
         connection_config: ConnectionConfig,
@@ -424,15 +426,16 @@ impl MadrpcClient {
     /// let client = MadrpcClient::with_connection_config(
     ///     "http://127.0.0.1:8080",
     ///     connection_config
-    /// ).await?;
+    /// )?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn with_connection_config(
+    #[must_use]
+    pub fn with_connection_config(
         base_url: impl Into<String>,
         connection_config: ConnectionConfig,
     ) -> MadrpcResult<Self> {
-        Self::with_configs(base_url, RetryConfig::default(), connection_config).await
+        Self::with_configs(base_url, RetryConfig::default(), connection_config)
     }
 
     /// Creates a new client with custom retry configuration.
@@ -455,15 +458,16 @@ impl MadrpcClient {
     /// let client = MadrpcClient::with_retry_config(
     ///     "http://127.0.0.1:8080",
     ///     retry_config
-    /// ).await?;
+    /// )?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn with_retry_config(
+    #[must_use]
+    pub fn with_retry_config(
         base_url: impl Into<String>,
         retry_config: RetryConfig,
     ) -> MadrpcResult<Self> {
-        Self::with_configs(base_url, retry_config, ConnectionConfig::default()).await
+        Self::with_configs(base_url, retry_config, ConnectionConfig::default())
     }
 
     /// Sets retry configuration for this client.
@@ -482,12 +486,12 @@ impl MadrpcClient {
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let client = MadrpcClient::new("http://127.0.0.1:8080")
-    ///     .await?
+    /// let client = MadrpcClient::new("http://127.0.0.1:8080")?
     ///     .with_retry(RetryConfig::new(5, 200, 10000, 2.0)?);
     /// # Ok(())
     /// # }
     /// ```
+    #[must_use]
     pub fn with_retry(mut self, retry_config: RetryConfig) -> Self {
         self.retry_config = retry_config;
         self
@@ -773,14 +777,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_creation() {
-        let client = MadrpcClient::new("http://localhost:8080").await;
+        let client = MadrpcClient::new("http://localhost:8080");
         // Will create successfully even if server doesn't exist
         assert!(client.is_ok());
     }
 
     #[tokio::test]
     async fn test_client_is_clonable() {
-        let client = MadrpcClient::new("http://localhost:8080").await.unwrap();
+        let client = MadrpcClient::new("http://localhost:8080").unwrap();
         let client2 = client.clone();
         assert_eq!(client.base_url, client2.base_url);
     }

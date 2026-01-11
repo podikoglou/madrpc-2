@@ -150,7 +150,6 @@ mod tests {
                 HealthCheckConfig::default(),
                 crate::orchestrator::RetryConfig::default(),
             )
-            .await
             .unwrap(),
         );
 

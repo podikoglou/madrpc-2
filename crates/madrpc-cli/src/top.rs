@@ -614,7 +614,7 @@ pub async fn run_top(server_address: String, interval_ms: u64) -> Result<()> {
     let mut app = TopApp::new(server_address.clone(), interval_ms);
 
     // Create client
-    let client = MadrpcClient::new(server_address).await?;
+    let client = MadrpcClient::new(server_address)?;
 
     // Initial server type detection
     app.detect_server_type(&client).await;

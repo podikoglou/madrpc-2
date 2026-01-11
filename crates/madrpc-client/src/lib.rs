@@ -26,7 +26,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Create a client with default configuration
-//!     let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
+//!     let client = MadrpcClient::new("http://127.0.0.1:8080")?;
 //!
 //!     // Make an RPC call
 //!     let result = client.call("my_method", json!({"arg": 42})).await?;

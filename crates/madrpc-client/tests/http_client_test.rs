@@ -127,7 +127,7 @@ impl Drop for TestJsonRpcServer {
 #[tokio::test]
 async fn test_client_basic_call() {
     let server = TestJsonRpcServer::new().await;
-    let client = MadrpcClient::new(&server.base_url()).await.unwrap();
+    let client = MadrpcClient::new(&server.base_url()).unwrap();
 
     let params = json!({"echo": "hello"});
     let result = client.call("echo", params.clone()).await.unwrap();
@@ -138,7 +138,7 @@ async fn test_client_basic_call() {
 #[tokio::test]
 async fn test_client_call_with_null_params() {
     let server = TestJsonRpcServer::new().await;
-    let client = MadrpcClient::new(&server.base_url()).await.unwrap();
+    let client = MadrpcClient::new(&server.base_url()).unwrap();
 
     let result = client.call("test", json!(null)).await.unwrap();
 
@@ -148,7 +148,7 @@ async fn test_client_call_with_null_params() {
 #[tokio::test]
 async fn test_client_call_with_array_params() {
     let server = TestJsonRpcServer::new().await;
-    let client = MadrpcClient::new(&server.base_url()).await.unwrap();
+    let client = MadrpcClient::new(&server.base_url()).unwrap();
 
     let params = json!([1, 2, 3, "test"]);
     let result = client.call("test", params.clone()).await.unwrap();
@@ -159,7 +159,7 @@ async fn test_client_call_with_array_params() {
 #[tokio::test]
 async fn test_client_clone_shares_connection() {
     let server = TestJsonRpcServer::new().await;
-    let client = MadrpcClient::new(&server.base_url()).await.unwrap();
+    let client = MadrpcClient::new(&server.base_url()).unwrap();
     let client2 = client.clone();
 
     let params1 = json!({"client": 1});
@@ -221,7 +221,7 @@ async fn test_client_handles_jsonrpc_error() {
     // Give server time to start
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
 
     let result = client.call("nonexistent", json!({})).await;
 
@@ -282,7 +282,7 @@ async fn test_client_no_retry_on_permanent_error() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
 
     let result = client.call("test", json!({"bad": "params"})).await;
 
@@ -354,7 +354,7 @@ async fn test_client_retry_on_transient_error() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
 
     let params = json!({"test": "retry"});
     let result = client.call("test", params.clone()).await;
@@ -373,7 +373,7 @@ async fn test_client_retry_on_transient_error() {
 #[tokio::test]
 async fn test_client_concurrent_calls() {
     let server = TestJsonRpcServer::new().await;
-    let client = MadrpcClient::new(&server.base_url()).await.unwrap();
+    let client = MadrpcClient::new(&server.base_url()).unwrap();
 
     let tasks = (0..10).map(|i| {
         let client = client.clone();
@@ -403,7 +403,7 @@ async fn test_client_with_custom_retry_config() {
     use madrpc_client::RetryConfig;
     let retry_config = RetryConfig::new(5, 50, 1000, 1.5).unwrap();
 
-    let client = MadrpcClient::with_retry_config(&server.base_url(), retry_config).await.unwrap();
+    let client = MadrpcClient::with_retry_config(&server.base_url(), retry_config).unwrap();
 
     let params = json!({"test": "config"});
     let result = client.call("test", params.clone()).await.unwrap();
@@ -419,7 +419,6 @@ async fn test_client_builder_pattern() {
     let retry_config = RetryConfig::new(2, 100, 500, 2.0).unwrap();
 
     let client = MadrpcClient::new(&server.base_url())
-        .await
         .unwrap()
         .with_retry(retry_config);
 
@@ -436,7 +435,7 @@ async fn test_client_builder_pattern() {
 #[tokio::test]
 async fn test_client_connection_refused() {
     // Try to connect to a server that doesn't exist
-    let client = MadrpcClient::new("http://127.0.0.1:19999").await.unwrap();
+    let client = MadrpcClient::new("http://127.0.0.1:19999").unwrap();
 
     let result = client.call("test", json!({"key": "value"})).await;
 
@@ -453,7 +452,7 @@ async fn test_client_connection_timeout() {
     // We use a non-routable IP address to trigger a timeout
     // Note: This test is ignored by default because it can take a long time
     // depending on OS TCP timeout settings
-    let client = MadrpcClient::new("http://192.0.2.1:8080").await.unwrap();
+    let client = MadrpcClient::new("http://192.0.2.1:8080").unwrap();
 
     let result = client.call("test", json!({})).await;
 
@@ -492,7 +491,7 @@ async fn test_client_malformed_json_response() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
     let result = client.call("test", json!({})).await;
 
     assert!(result.is_err());
@@ -533,7 +532,7 @@ async fn test_client_empty_response() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
     let result = client.call("test", json!({})).await;
 
     assert!(result.is_err());
@@ -573,7 +572,7 @@ async fn test_client_invalid_jsonrpc_response() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
     let result = client.call("test", json!({})).await;
 
     assert!(result.is_err());
@@ -610,7 +609,7 @@ async fn test_client_http_error_response() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
     let result = client.call("test", json!({})).await;
 
     assert!(result.is_err());
@@ -678,7 +677,7 @@ async fn test_client_http_server_error_with_retry() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
     let params = json!({"retry": "success"});
     let result = client.call("test", params.clone()).await;
 
@@ -715,7 +714,7 @@ async fn test_client_retry_exhausted() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
     let result = client.call("test", json!({})).await;
 
     assert!(result.is_err());
@@ -757,7 +756,7 @@ async fn test_client_response_with_wrong_id() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
     // The client will accept the response even with wrong ID
     // This test documents current behavior
     let result = client.call("test", json!({})).await;
@@ -797,7 +796,7 @@ async fn test_client_truncated_response_body() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = MadrpcClient::new(&base_url).await.unwrap();
+    let client = MadrpcClient::new(&base_url).unwrap();
     let result = client.call("test", json!({})).await;
 
     assert!(result.is_err());
@@ -812,7 +811,7 @@ async fn test_client_truncated_response_body() {
 #[tokio::test]
 async fn test_client_concurrent_connection_failures() {
     // Test multiple concurrent requests all failing
-    let client = MadrpcClient::new("http://127.0.0.1:19998").await.unwrap();
+    let client = MadrpcClient::new("http://127.0.0.1:19998").unwrap();
 
     let tasks = (0..5).map(|i| {
         let client = client.clone();
