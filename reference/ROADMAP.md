@@ -232,7 +232,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 3: Security & Performance (Month 2)
 
-### Status: In Progress (5/8 complete)
+### Status: In Progress (6/8 complete)
 **Goal**: Production-ready security and performance characteristics
 
 #### 3.1 Authentication Layer ✅
@@ -289,15 +289,16 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Benchmark before/after
 - [x] Document optimization rationale
 
-#### 3.6 Add Connection Pool Configuration
+#### 3.6 Add Connection Pool Configuration ✅
 **Crate**: `madrpc-client`
 **Effort**: 3-4 hours
+**Completed**: 2026-01-11
 
-- Expose pool size configuration
-- Add connection timeout configuration
-- Add keep-alive configuration
-- Document configuration options
-- Add tests for custom configurations
+- [x] Expose pool size configuration
+- [x] Add connection timeout configuration
+- [x] Add keep-alive configuration
+- [x] Document configuration options
+- [x] Add tests for custom configurations
 
 #### 3.7 Audit and Reduce Cloning
 **Crate**: All
