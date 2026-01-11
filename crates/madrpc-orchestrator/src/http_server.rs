@@ -253,7 +253,6 @@ mod tests {
                 HealthCheckConfig::default(),
                 RetryConfig::default(),
             )
-            .await
             .unwrap(),
         );
 
@@ -272,7 +271,6 @@ mod tests {
                 HealthCheckConfig::default(),
                 RetryConfig::default(),
             )
-            .await
             .unwrap(),
         );
 
