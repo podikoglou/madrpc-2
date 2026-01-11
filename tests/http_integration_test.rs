@@ -225,7 +225,6 @@ async fn test_real_node_client() {
     let (node_addr, _handle) = start_node_server(node).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .await
         .unwrap();
 
     let result = client.call("echo", json!({"msg": "test"})).await.unwrap();
@@ -239,7 +238,6 @@ async fn test_real_node_add() {
     let (node_addr, _handle) = start_node_server(node).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .await
         .unwrap();
 
     let result = client.call("add", json!({"a": 5, "b": 3})).await.unwrap();
@@ -267,7 +265,6 @@ async fn test_orchestrator_node_client() {
                 failure_threshold: 3,
             },
         )
-        .await
         .unwrap(),
     );
 
@@ -275,7 +272,6 @@ async fn test_orchestrator_node_client() {
 
     // Client calls through orchestrator
     let client = MadrpcClient::new(format!("http://{}", orch_addr))
-        .await
         .unwrap();
 
     let result = client.call("echo", json!({"msg": "through_orch"})).await.unwrap();
@@ -308,7 +304,6 @@ async fn test_multiple_nodes_orchestrator() {
                 failure_threshold: 3,
             },
         )
-        .await
         .unwrap(),
     );
 
@@ -316,7 +311,6 @@ async fn test_multiple_nodes_orchestrator() {
 
     // Make multiple calls and verify they all succeed
     let client = MadrpcClient::new(format!("http://{}", orch_addr))
-        .await
         .unwrap();
 
     for i in 0..10 {
@@ -336,7 +330,6 @@ async fn test_monte_carlo_pi() {
     let (node_addr, _handle) = start_node_server(node).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .await
         .unwrap();
 
     // Test single sample
@@ -372,7 +365,6 @@ async fn test_monte_carlo_aggregate() {
                 failure_threshold: 3,
             },
         )
-        .await
         .unwrap(),
     );
 
@@ -381,13 +373,11 @@ async fn test_monte_carlo_aggregate() {
     // Create a node with orchestrator support for distributed RPC
     let node_with_orch = Arc::new(
         Node::with_orchestrator(script.path().to_path_buf(), format!("http://{}", orch_addr))
-            .await
             .unwrap(),
     );
     let (node_addr, _handle) = start_node_server(node_with_orch).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .await
         .unwrap();
 
     // Test aggregate (distributed RPC)
@@ -396,7 +386,7 @@ async fn test_monte_carlo_aggregate() {
         .await
         .unwrap();
 
-    let total_inside = result["totalInside"].as_u64().unwrap();
+    let _total_inside = result["totalInside"].as_u64().unwrap();
     let total_samples = result["totalSamples"].as_u64().unwrap();
     let pi_estimate = result["piEstimate"].as_f64().unwrap();
 
@@ -424,14 +414,12 @@ async fn test_circuit_breaker() {
                 failure_threshold: 2,
             },
         )
-        .await
         .unwrap(),
     );
 
     let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
 
     let client = MadrpcClient::new(format!("http://{}", orch_addr))
-        .await
         .unwrap();
 
     // First call should succeed
@@ -453,7 +441,6 @@ async fn test_error_handling_invalid_method() {
     let (node_addr, _handle) = start_node_server(node).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .await
         .unwrap();
 
     // Call non-existent method
@@ -468,7 +455,6 @@ async fn test_error_handling_invalid_params() {
     let (node_addr, _handle) = start_node_server(node).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .await
         .unwrap();
 
     // Call add with missing params
@@ -488,7 +474,6 @@ async fn test_concurrent_requests() {
 
     let client = Arc::new(
         MadrpcClient::new(format!("http://{}", node_addr))
-            .await
             .unwrap(),
     );
 
@@ -566,7 +551,6 @@ async fn test_distributed_rpc() {
                 failure_threshold: 3,
             },
         )
-        .await
         .unwrap(),
     );
 
@@ -575,13 +559,11 @@ async fn test_distributed_rpc() {
     // Create a node with orchestrator support for distributed RPC
     let node_with_orch = Arc::new(
         Node::with_orchestrator(script.path().to_path_buf(), format!("http://{}", orch_addr))
-            .await
             .unwrap(),
     );
     let (node_addr, _handle) = start_node_server(node_with_orch).await;
 
     let client = MadrpcClient::new(format!("http://{}", node_addr))
-        .await
         .unwrap();
 
     // The aggregate function uses madrpc.call to make distributed RPC calls
@@ -614,14 +596,12 @@ async fn test_health_checking() {
                 failure_threshold: 3,
             },
         )
-        .await
         .unwrap(),
     );
 
     let (orch_addr, _orch_handle) = start_orchestrator_server(orch).await;
 
     let client = MadrpcClient::new(format!("http://{}", orch_addr))
-        .await
         .unwrap();
 
     // First call should work
