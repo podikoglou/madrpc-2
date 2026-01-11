@@ -146,6 +146,13 @@ struct NodeArgs {
     /// Defaults to 30000ms (30 seconds). Must be between 1 and 3600000 (1 hour).
     #[argh(option, long = "max-execution-time-ms", default = "30000")]
     max_execution_time_ms: u64,
+
+    /// public URL for orchestrator registration
+    ///
+    /// Overrides auto-detection. If not set, tries MADRPC_PUBLIC_URL env var,
+    /// then auto-detects from bind address. Required when using --orchestrator.
+    #[argh(option, long = "public-url")]
+    public_url: Option<String>,
 }
 
 /// Arguments for starting a MaDRPC orchestrator.
@@ -371,7 +378,8 @@ async fn main() -> Result<()> {
             };
             tracing::info!("Node created successfully from script");
 
-            let mut server = madrpc_server::HttpServer::new(std::sync::Arc::new(node));
+            let node_arc = std::sync::Arc::new(node);
+            let mut server = madrpc_server::HttpServer::new(node_arc.clone());
 
             // Configure authentication if API key is provided
             if let Some(api_key) = &args.api_key {
@@ -383,6 +391,30 @@ async fn main() -> Result<()> {
             if let Some(rps) = &args.rate_limit_rps {
                 tracing::info!("Rate limiting enabled: {} requests per second", rps);
                 server = server.with_rate_limit(madrpc_common::rate_limit::RateLimitConfig::per_second(*rps));
+            }
+
+            // Determine public URL for registration
+            let public_url = if let Some(_orch_addr) = &args.orchestrator {
+                // Priority: CLI flag > Env var > Auto-detect from bind
+                let url = args.public_url
+                    .or_else(|| std::env::var("MADRPC_PUBLIC_URL").ok())
+                    .unwrap_or_else(|| format!("http://{}", args.bind));
+
+                // Validate URL format
+                validate_http_url(&url, "public URL")?;
+                tracing::info!("Registering with public URL: {}", url);
+                Some(url)
+            } else {
+                None
+            };
+
+            // Register with orchestrator if configured
+            if let Some(url) = &public_url {
+                if let Err(e) = node_arc.register_with_orchestrator(url.clone()).await {
+                    tracing::error!("Failed to register with orchestrator: {}", e);
+                    return Err(e.into());
+                }
+                tracing::info!("Successfully registered with orchestrator");
             }
 
             let addr: SocketAddr = args.bind.parse()
@@ -504,13 +536,14 @@ mod tests {
     fn test_cli_parse_node() {
         let args: Cli = Cli::from_args(&["madrpc"], &["node", "-s", "test.js", "-b", "0.0.0.0:9001"]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms, public_url }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert!(orchestrator.is_none());
                 assert!(api_key.is_none());
                 assert!(rate_limit_rps.is_none());
                 assert_eq!(max_execution_time_ms, 30000); // default
+                assert!(public_url.is_none());
             }
             _ => panic!("Expected Node command"),
         }
@@ -525,13 +558,14 @@ mod tests {
             "--orchestrator", "127.0.0.1:8080",
         ]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms, public_url }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert_eq!(orchestrator, Some("127.0.0.1:8080".to_string()));
                 assert!(api_key.is_none());
                 assert!(rate_limit_rps.is_none());
                 assert_eq!(max_execution_time_ms, 30000); // default
+                assert!(public_url.is_none());
             }
             _ => panic!("Expected Node command"),
         }
@@ -546,13 +580,14 @@ mod tests {
             "--api-key", "my-secret-key",
         ]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms, public_url }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert!(orchestrator.is_none());
                 assert_eq!(api_key, Some("my-secret-key".to_string()));
                 assert!(rate_limit_rps.is_none());
                 assert_eq!(max_execution_time_ms, 30000); // default
+                assert!(public_url.is_none());
             }
             _ => panic!("Expected Node command"),
         }
