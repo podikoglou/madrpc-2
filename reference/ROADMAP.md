@@ -1,6 +1,6 @@
 # MaDRPC-2 Development Roadmap
 
-**Last Updated**: 2026-01-11 (Task 3.7 completed)
+**Last Updated**: 2026-01-11 (Phase 3 complete - all tasks finished)
 **Project**: MaDRPC - Massively Distributed RPC
 **Status**: Foundation Complete, Production Hardening In Progress
 
@@ -29,7 +29,7 @@ This roadmap serves as the single entry point for planning new features, adjusti
 
 ## Phase 3: Security & Performance (Month 2)
 
-### Status: In Progress (6/8 complete)
+### Status: Complete (8/8 complete) ✅
 **Goal**: Production-ready security and performance characteristics
 
 #### 3.1 Authentication Layer ✅
@@ -108,14 +108,15 @@ This roadmap serves as the single entry point for planning new features, adjusti
 - [x] Run benchmarks to verify improvements
 - [x] Document ownership changes
 
-#### 3.8 API Improvements
+#### 3.8 API Improvements ✅
 **Effort**: 3-4 hours
+**Completed**: 2026-01-11
 
-- Remove unnecessary `async` from constructors
-- Add timeout support to client methods
-- Add `#[must_use]` attributes
-- Improve help text formatting
-- Document all API changes
+- [x] Remove unnecessary `async` from constructors
+- [x] Add timeout support to client methods
+- [x] Add `#[must_use]` attributes
+- [x] Improve help text formatting
+- [x] Document all API changes
 
 **Completion Criteria**: Authentication implemented, rate limiting active, resource limits enforced, performance optimized
 
