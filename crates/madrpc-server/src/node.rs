@@ -1,10 +1,11 @@
 use madrpc_common::protocol::{Request, Response, MetricsResponse, InfoResponse, NodeInfo};
 use madrpc_common::protocol::error::{Result, MadrpcError};
 use crate::runtime::MadrpcContext;
+use crate::resource_limits::ResourceLimits;
 use madrpc_metrics::{MetricsCollector, NodeMetricsCollector};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// MaDRPC Node - runs Boa and executes JavaScript RPCs.
 ///
@@ -20,6 +21,12 @@ use std::time::Instant;
 /// Note: We cannot cache the parsed AST or compiled bytecode because Boa's
 /// string interner is tied to a specific Context. Each request must parse the
 /// script in its own Context, which has its own interner.
+///
+/// # Resource Limits
+///
+/// The node enforces resource limits on JavaScript execution to prevent
+/// runaway code from consuming excessive resources. By default, execution
+/// is limited to 30 seconds per request.
 pub struct Node {
     /// Path to the JavaScript script file
     script_path: PathBuf,
@@ -29,6 +36,8 @@ pub struct Node {
     metrics_collector: Arc<NodeMetricsCollector>,
     /// Optional orchestrator client for distributed RPC calls
     orchestrator_client: Option<Arc<madrpc_client::MadrpcClient>>,
+    /// Resource limits for JavaScript execution
+    resource_limits: ResourceLimits,
 }
 
 
@@ -42,6 +51,28 @@ impl Node {
     /// # Arguments
     /// * `script_path` - Path to the JavaScript script file
     pub fn new(script_path: PathBuf) -> Result<Self> {
+        Self::with_resource_limits(script_path, ResourceLimits::default())
+    }
+
+    /// Creates a new node with custom resource limits.
+    ///
+    /// This constructor allows specifying custom resource limits for JavaScript
+    /// execution, such as maximum execution time.
+    ///
+    /// # Arguments
+    /// * `script_path` - Path to the JavaScript script file
+    /// * `resource_limits` - Resource limits configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The script file doesn't exist
+    /// - The script cannot be read
+    /// - The resource limits configuration is invalid
+    pub fn with_resource_limits(script_path: PathBuf, resource_limits: ResourceLimits) -> Result<Self> {
+        // Validate resource limits
+        resource_limits.validate()
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Invalid resource limits: {}", e)))?;
         if !script_path.exists() {
             return Err(MadrpcError::InvalidRequest(format!(
                 "Script path does not exist: {}",
@@ -62,6 +93,7 @@ impl Node {
             script_source: Arc::new(script_source),
             metrics_collector,
             orchestrator_client: None,
+            resource_limits,
         })
     }
 
@@ -75,6 +107,38 @@ impl Node {
     /// * `script_path` - Path to the JavaScript script file
     /// * `orchestrator_addr` - Address of the orchestrator (e.g., "127.0.0.1:8080")
     pub async fn with_orchestrator(script_path: PathBuf, orchestrator_addr: String) -> Result<Self> {
+        Self::with_orchestrator_and_resource_limits(
+            script_path,
+            orchestrator_addr,
+            ResourceLimits::default()
+        ).await
+    }
+
+    /// Creates a new node with orchestrator support and custom resource limits.
+    ///
+    /// This constructor combines distributed RPC capability with custom resource limits
+    /// for maximum control over node behavior.
+    ///
+    /// # Arguments
+    /// * `script_path` - Path to the JavaScript script file
+    /// * `orchestrator_addr` - Address of the orchestrator (e.g., "127.0.0.1:8080")
+    /// * `resource_limits` - Resource limits configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The script file doesn't exist
+    /// - The script cannot be read
+    /// - The orchestrator client cannot be created
+    /// - The resource limits configuration is invalid
+    pub async fn with_orchestrator_and_resource_limits(
+        script_path: PathBuf,
+        orchestrator_addr: String,
+        resource_limits: ResourceLimits,
+    ) -> Result<Self> {
+        // Validate resource limits
+        resource_limits.validate()
+            .map_err(|e| MadrpcError::InvalidRequest(format!("Invalid resource limits: {}", e)))?;
         if !script_path.exists() {
             return Err(MadrpcError::InvalidRequest(format!(
                 "Script path does not exist: {}",
@@ -101,7 +165,37 @@ impl Node {
             script_source: Arc::new(script_source),
             metrics_collector,
             orchestrator_client: Some(Arc::new(orchestrator_client)),
+            resource_limits,
         })
+    }
+
+    /// Sets custom resource limits on the node (builder pattern).
+    ///
+    /// This method allows modifying resource limits after node creation
+    /// using the builder pattern.
+    ///
+    /// # Arguments
+    ///
+    /// * `resource_limits` - New resource limits configuration
+    ///
+    /// # Returns
+    ///
+    /// `Self` for builder pattern chaining.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource limits configuration is invalid.
+    /// Use `ResourceLimits::validate()` to check before calling.
+    pub fn and_resource_limits(mut self, resource_limits: ResourceLimits) -> Self {
+        resource_limits.validate()
+            .expect("Invalid resource limits");
+        self.resource_limits = resource_limits;
+        self
+    }
+
+    /// Gets a reference to the current resource limits.
+    pub fn resource_limits(&self) -> &ResourceLimits {
+        &self.resource_limits
     }
 
     /// Handles an incoming RPC request.
@@ -178,6 +272,9 @@ impl Node {
     /// - Method execution fails
     /// - Parameters are invalid
     pub async fn call_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        // Apply execution timeout from resource limits
+        let timeout_duration = self.resource_limits.execution_timeout;
+
         // Use spawn_blocking to move JavaScript execution to a blocking thread
         // This is necessary because MadrpcContext is !Send (Boa's Context has thread affinity)
         let script_source = self.script_source.clone();
@@ -189,7 +286,8 @@ impl Node {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("No tokio runtime: {}", e)))?;
 
-        let (result, start_time) = handle.spawn_blocking(move || {
+        // Wrap the entire execution in a timeout
+        let execution_task = handle.spawn_blocking(move || {
             let start_time = std::time::Instant::now();
 
             // Create a fresh Boa context for this request on the blocking thread
@@ -216,7 +314,15 @@ impl Node {
             let result = runtime.block_on(ctx.call_rpc_async(method_ref, params));
 
             (result, start_time)
-        }).await
+        });
+
+        // Apply timeout to the execution
+        let (result, start_time) = tokio::time::timeout(timeout_duration, execution_task)
+            .await
+            .map_err(|_| MadrpcError::JavaScriptExecution(format!(
+                "JavaScript execution exceeded time limit of {}ms",
+                timeout_duration.as_millis()
+            )))?
             .map_err(|e| MadrpcError::JavaScriptExecution(format!("Task join error: {}", e)))?;
 
         // Record metrics
@@ -359,5 +465,120 @@ mod tests {
                     "Expected client creation error, got: {}", error_msg);
             }
         }
+    }
+
+    #[test]
+    fn test_node_with_custom_resource_limits() {
+        let script = create_test_script("// empty");
+        let limits = ResourceLimits::new()
+            .with_execution_timeout(Duration::from_secs(10));
+
+        let node = Node::with_resource_limits(script, limits);
+        assert!(node.is_ok());
+
+        let node = node.unwrap();
+        assert_eq!(node.resource_limits().execution_timeout.as_secs(), 10);
+    }
+
+    #[test]
+    fn test_node_default_resource_limits() {
+        let script = create_test_script("// empty");
+        let node = Node::new(script).unwrap();
+
+        assert_eq!(node.resource_limits().execution_timeout.as_secs(), 30);
+    }
+
+    #[test]
+    fn test_node_with_invalid_resource_limits_zero_timeout() {
+        let script = create_test_script("// empty");
+        let limits = ResourceLimits::new()
+            .with_execution_timeout(Duration::ZERO);
+
+        let result = Node::with_resource_limits(script, limits);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err = e.to_string();
+            assert!(err.contains("Invalid resource limits"));
+            assert!(err.contains("greater than zero"));
+        }
+    }
+
+    #[test]
+    fn test_node_with_invalid_resource_limits_excessive_timeout() {
+        let script = create_test_script("// empty");
+        let limits = ResourceLimits::new()
+            .with_execution_timeout(Duration::from_secs(7200)); // 2 hours
+
+        let result = Node::with_resource_limits(script, limits);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            let err = e.to_string();
+            assert!(err.contains("Invalid resource limits"));
+            assert!(err.contains("1 hour"));
+        }
+    }
+
+    #[test]
+    fn test_node_builder_pattern_resource_limits() {
+        let script = create_test_script("// empty");
+        let node = Node::new(script).unwrap()
+            .and_resource_limits(ResourceLimits::new()
+                .with_execution_timeout(Duration::from_secs(15)));
+
+        assert_eq!(node.resource_limits().execution_timeout.as_secs(), 15);
+    }
+
+    #[tokio::test]
+    async fn test_execution_timeout_enforcement() {
+        let script = create_test_script(r#"
+            madrpc.register('hang', function() {
+                // Busy wait for longer than the timeout
+                const start = Date.now();
+                while (Date.now() - start < 10000) {
+                    // Busy wait for 10 seconds
+                }
+                return { done: true };
+            });
+        "#);
+
+        let limits = ResourceLimits::new()
+            .with_execution_timeout(Duration::from_millis(500)); // 500ms timeout
+
+        let node = Node::with_resource_limits(script, limits).unwrap();
+
+        let start = std::time::Instant::now();
+        let result = node.call_rpc("hang", json!({})).await;
+        let elapsed = start.elapsed();
+
+        // Should timeout with an error
+        assert!(result.is_err(), "RPC call should timeout");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exceeded time limit") || err.contains("timeout"),
+            "Error should mention timeout: {}", err);
+
+        // Verify it timed out in approximately the right amount of time
+        // (with generous tolerance for test execution time)
+        assert!(elapsed.as_millis() >= 400, "Should take at least 400ms, took {}ms", elapsed.as_millis());
+        assert!(elapsed.as_millis() <= 1500, "Should take at most 1500ms, took {}ms", elapsed.as_millis());
+    }
+
+    #[tokio::test]
+    async fn test_execution_timeout_allows_fast_operations() {
+        let script = create_test_script(r#"
+            madrpc.register('fast', function(args) {
+                return { result: args.x * 2 };
+            });
+        "#);
+
+        let limits = ResourceLimits::new()
+            .with_execution_timeout(Duration::from_millis(5000));
+
+        let node = Node::with_resource_limits(script, limits).unwrap();
+
+        let result = node.call_rpc("fast", json!({"x": 21})).await;
+
+        // Should succeed quickly
+        assert!(result.is_ok(), "RPC call should succeed");
+        assert_eq!(result.unwrap(), json!({"result": 42}));
     }
 }

@@ -33,9 +33,11 @@
 pub mod http_router;
 pub mod http_server;
 pub mod node;
+pub mod resource_limits;
 pub mod runtime;
 
 pub use http_router::NodeRouter;
 pub use http_server::HttpServer;
 pub use node::Node;
+pub use resource_limits::ResourceLimits;
 pub use runtime::MadrpcContext;

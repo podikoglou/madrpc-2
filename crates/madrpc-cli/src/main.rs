@@ -138,6 +138,14 @@ struct NodeArgs {
     /// Rate limiting is disabled by default for backward compatibility.
     #[argh(option, long = "rate-limit-rps")]
     rate_limit_rps: Option<f64>,
+
+    /// optional maximum execution time in milliseconds
+    ///
+    /// If provided, limits JavaScript execution to this many milliseconds.
+    /// Prevents runaway code from consuming excessive CPU time.
+    /// Defaults to 30000ms (30 seconds). Must be between 1 and 3600000 (1 hour).
+    #[argh(option, long = "max-execution-time-ms", default = "30000")]
+    max_execution_time_ms: u64,
 }
 
 /// Arguments for starting a MaDRPC orchestrator.
@@ -343,13 +351,23 @@ async fn main() -> Result<()> {
                 tracing::info!("Configured with orchestrator: {}", orch_addr);
             }
 
+            // Create resource limits configuration
+            let resource_limits = madrpc_server::ResourceLimits::new()
+                .with_execution_timeout(std::time::Duration::from_millis(args.max_execution_time_ms));
+
+            tracing::info!("Maximum execution time: {}ms", args.max_execution_time_ms);
+
             let node = if let Some(orch_addr) = &args.orchestrator {
-                madrpc_server::Node::with_orchestrator(
+                madrpc_server::Node::with_orchestrator_and_resource_limits(
                     std::path::PathBuf::from(&args.script),
                     orch_addr.clone(),
+                    resource_limits,
                 ).await?
             } else {
-                madrpc_server::Node::new(std::path::PathBuf::from(&args.script))?
+                madrpc_server::Node::with_resource_limits(
+                    std::path::PathBuf::from(&args.script),
+                    resource_limits,
+                )?
             };
             tracing::info!("Node created successfully from script");
 
@@ -486,12 +504,13 @@ mod tests {
     fn test_cli_parse_node() {
         let args: Cli = Cli::from_args(&["madrpc"], &["node", "-s", "test.js", "-b", "0.0.0.0:9001"]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert!(orchestrator.is_none());
                 assert!(api_key.is_none());
                 assert!(rate_limit_rps.is_none());
+                assert_eq!(max_execution_time_ms, 30000); // default
             }
             _ => panic!("Expected Node command"),
         }
@@ -506,12 +525,13 @@ mod tests {
             "--orchestrator", "127.0.0.1:8080",
         ]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert_eq!(orchestrator, Some("127.0.0.1:8080".to_string()));
                 assert!(api_key.is_none());
                 assert!(rate_limit_rps.is_none());
+                assert_eq!(max_execution_time_ms, 30000); // default
             }
             _ => panic!("Expected Node command"),
         }
@@ -526,12 +546,13 @@ mod tests {
             "--api-key", "my-secret-key",
         ]).unwrap();
         match args.command {
-            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps }) => {
+            Commands::Node(NodeArgs { script, bind, orchestrator, api_key, rate_limit_rps, max_execution_time_ms }) => {
                 assert_eq!(script, "test.js");
                 assert_eq!(bind, "0.0.0.0:9001");
                 assert!(orchestrator.is_none());
                 assert_eq!(api_key, Some("my-secret-key".to_string()));
                 assert!(rate_limit_rps.is_none());
+                assert_eq!(max_execution_time_ms, 30000); // default
             }
             _ => panic!("Expected Node command"),
         }
@@ -689,6 +710,22 @@ mod tests {
                 assert_eq!(args, "{\"samples\":1000}");
             }
             _ => panic!("Expected Call command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_node_with_execution_timeout() {
+        let args: Cli = Cli::from_args(&["madrpc"], &[
+            "node",
+            "-s", "test.js",
+            "-b", "0.0.0.0:9001",
+            "--max-execution-time-ms", "5000",
+        ]).unwrap();
+        match args.command {
+            Commands::Node(NodeArgs { max_execution_time_ms, .. }) => {
+                assert_eq!(max_execution_time_ms, 5000);
+            }
+            _ => panic!("Expected Node command"),
         }
     }
 }

@@ -182,7 +182,7 @@ impl HttpServer {
     /// # std::fs::write(script.path(), "// empty").unwrap();
     /// let node = Arc::new(Node::new(script.path().to_path_buf()).unwrap());
     /// let server = HttpServer::new(node)
-    ///     .with_rate_limit(RateLimitConfig::per_second(100));
+    ///     .with_rate_limit(RateLimitConfig::per_second(100.0));
     /// ```
     pub fn with_rate_limit(mut self, rate_limit_config: RateLimitConfig) -> Self {
         self.rate_limiter = Arc::new(RateLimiter::new(rate_limit_config));
