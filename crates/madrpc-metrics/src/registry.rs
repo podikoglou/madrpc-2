@@ -440,13 +440,13 @@ impl NodeStats {
     /// Uses `Ordering::Relaxed` for loading counter values. This is safe because:
     /// - We're taking a best-effort point-in-time snapshot
     /// - Small inconsistencies are acceptable for metrics
-    fn snapshot(&self, node_addr: String) -> NodeMetrics {
+    fn snapshot(&self, node_addr: &str) -> NodeMetrics {
         // Relaxed ordering is safe for snapshot (see MethodStats::snapshot comment)
         let request_count = self.request_count.load(Ordering::Relaxed);
         let last_request_ms = self.last_request_ms.load(Ordering::Relaxed);
 
         NodeMetrics {
-            node_addr,
+            node_addr: node_addr.to_string(),
             request_count,
             last_request_ms,
         }
@@ -865,7 +865,11 @@ impl MetricsRegistry {
             Some(
                 nodes_guard
                     .iter()
-                    .map(|(addr, stats)| (addr.clone(), stats.snapshot(addr.clone())))
+                    .map(|(addr, stats)| {
+                        // Clone once and reuse for both key and snapshot
+                        // This avoids the previous double-allocation
+                        (addr.clone(), stats.snapshot(addr))
+                    })
                     .collect(),
             )
         } else {
