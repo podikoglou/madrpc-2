@@ -80,14 +80,17 @@ async fn test_orchestrator_node_client() {
 
 #[tokio::test]
 async fn test_multiple_nodes_orchestrator() {
-    // Start multiple nodes in containers
-    let mut node_addrs = vec![];
+    // Start multiple nodes in containers and keep them alive
+    let mut nodes = vec![];
     for _ in 0..3 {
         let node = NodeContainer::start(common_test_script())
             .await
             .expect("Failed to start node container");
-        node_addrs.push(node.container_url.clone());
+        nodes.push(node);
     }
+
+    // Collect container URLs from the nodes
+    let node_addrs: Vec<String> = nodes.iter().map(|n| n.container_url.clone()).collect();
 
     // Start orchestrator with all nodes
     let orch = OrchestratorContainer::start(node_addrs)
@@ -128,14 +131,17 @@ async fn test_monte_carlo_pi() {
 
 #[tokio::test]
 async fn test_monte_carlo_aggregate() {
-    // Start multiple nodes with the same script
-    let mut node_addrs = vec![];
+    // Start multiple nodes with the same script and keep them alive
+    let mut nodes = vec![];
     for _ in 0..3 {
         let node = NodeContainer::start(monte_carlo_script())
             .await
             .expect("Failed to start node container");
-        node_addrs.push(node.container_url.clone());
+        nodes.push(node);
     }
+
+    // Collect container URLs from the nodes
+    let node_addrs: Vec<String> = nodes.iter().map(|n| n.container_url.clone()).collect();
 
     // Start orchestrator with all nodes
     let orch = OrchestratorContainer::start(node_addrs)
@@ -293,13 +299,17 @@ async fn test_metrics_endpoints() {
 #[tokio::test]
 async fn test_distributed_rpc() {
     // This tests the aggregate function which uses madrpc.call internally
-    let mut node_addrs = vec![];
+    // Start multiple nodes and keep them alive
+    let mut nodes = vec![];
     for _ in 0..2 {
         let node = NodeContainer::start(monte_carlo_script())
             .await
             .expect("Failed to start node container");
-        node_addrs.push(node.container_url.clone());
+        nodes.push(node);
     }
+
+    // Collect container URLs from the nodes
+    let node_addrs: Vec<String> = nodes.iter().map(|n| n.container_url.clone()).collect();
 
     // Start orchestrator with all nodes
     let orch = OrchestratorContainer::start(node_addrs)
