@@ -37,10 +37,5 @@ COPY --chown=madrpc:madrpc examples /app/examples
 # Switch to non-root user
 USER madrpc
 
-# Expose default ports
-# 8080 - Orchestrator
-# 9001-9002 - Nodes
-EXPOSE 8080 9001 9002
-
 # Default command shows help
 CMD ["madrpc", "--help"]

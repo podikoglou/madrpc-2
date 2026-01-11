@@ -117,18 +117,26 @@ docker build -t madrpc:0.1.0 .
 
 ### Running Individual Components
 
-**Start the orchestrator:**
+**Start the orchestrator (only port that needs to be exposed):**
 
 ```bash
 docker run -d --name madrpc-orchestrator -p 8080:8080 \
-  madrpc:latest orchestrator -b 0.0.0.0:8080 -n http://node1:9001 -n http://node2:9002
+  madrpc:latest orchestrator -b 0.0.0.0:8080
 ```
 
-**Start a compute node:**
+**Start a compute node (no host port needed, uses Docker network):**
 
 ```bash
-docker run -d --name madrpc-node1 -p 9001:9001 \
+docker run -d --name madrpc-node1 \
   madrpc:latest node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9001
+```
+
+**Connect node to orchestrator:**
+
+```bash
+docker run -d --name madrpc-node1 --network container:madrpc-orchestrator \
+  madrpc:latest node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9001 \
+  --orchestrator http://orchestrator:8080
 ```
 
 **Make an RPC call:**
@@ -150,8 +158,14 @@ docker run -it --rm \
 The easiest way to run the full MaDRPC stack is with Docker Compose:
 
 ```bash
-# Start all services (orchestrator + 3 nodes)
+# Start orchestrator + 1 node (default)
 docker compose up -d
+
+# Start orchestrator + 10 nodes
+docker compose up -d --scale node=10
+
+# Start orchestrator + 100 nodes
+docker compose up -d --scale node=100
 
 # View logs
 docker compose logs -f
@@ -160,89 +174,67 @@ docker compose logs -f
 docker compose down
 ```
 
-By default, Docker Compose starts:
-- **1 orchestrator** on port 8080
-- **3 nodes** on ports 9001-9003, all running the Monte Carlo Pi example
+**Key points:**
+- Only the orchestrator port (8080) is exposed to the host
+- Nodes communicate with the orchestrator via the Docker network
+- Nodes don't need individual host ports - you can scale to thousands
+- Each node registers itself with the orchestrator on startup
+
+### Scaling to Many Nodes
+
+To run a large number of nodes:
+
+```bash
+# Start 1000 nodes (yes, really!)
+docker compose up -d --scale node=1000
+```
+
+Nodes run on internal ports and auto-register with the orchestrator, so there's no need to manage individual port mappings.
 
 ### Customizing Docker Compose
 
-You can create multiple compose files for different configurations:
+You can create custom compose files for different configurations.
 
-**docker-compose.basic.yml** - Single orchestrator + 2 nodes:
-
-```yaml
-services:
-  orchestrator:
-    image: madrpc:latest
-    command: orchestrator -b 0.0.0.0:8080 -n http://node1:9001 -n http://node2:9002
-    ports:
-      - "8080:8080"
-
-  node1:
-    image: madrpc:latest
-    command: node -s /app/examples/basic-operations.js -b 0.0.0.0:9001
-    ports:
-      - "9001:9001"
-
-  node2:
-    image: madrpc:latest
-    command: node -s /app/examples/basic-operations.js -b 0.0.0.0:9002
-    ports:
-      - "9002:9002"
-```
-
-Run with:
-```bash
-docker compose -f docker-compose.basic.yml up -d
-```
-
-**docker-compose.scale.yml** - Orchestrator + 5 nodes:
+**Using a different script:**
 
 ```yaml
 services:
   orchestrator:
     image: madrpc:latest
-    command: >
-      orchestrator
-        -b 0.0.0.0:8080
-        -n http://node1:9001
-        -n http://node2:9002
-        -n http://node3:9003
-        -n http://node4:9004
-        -n http://node5:9005
+    command: orchestrator -b 0.0.0.0:8080
     ports:
       - "8080:8080"
 
-  node1:
+  node:
     image: madrpc:latest
-    command: node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9001
-    ports:
-      - "9001:9001"
-  # ... repeat for node2-node5
+    command: node -s /app/examples/basic-operations.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
+    depends_on:
+      - orchestrator
+```
 
-  node2:
-    image: madrpc:latest
-    command: node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9002
-    ports:
-      - "9002:9002"
+**Multiple node types with different scripts:**
 
-  node3:
+```yaml
+services:
+  orchestrator:
     image: madrpc:latest
-    command: node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9003
+    command: orchestrator -b 0.0.0.0:8080
     ports:
-      - "9003:9003"
+      - "8080:8080"
 
-  node4:
+  # Compute nodes running Monte Carlo
+  compute-node:
     image: madrpc:latest
-    command: node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9004
-    ports:
-      - "9004:9004"
+    command: node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
+    deploy:
+      replicas: 10
 
-  node5:
+  # Storage nodes running different script
+  storage-node:
     image: madrpc:latest
-    command: node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9005
-    ports:
-      - "9005:9005"
+    command: node -s /app/examples/basic-operations.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
+    deploy:
+      replicas: 5
 ```
 
 ### Using Custom Scripts
@@ -252,7 +244,7 @@ To use your own JavaScript scripts with Docker:
 1. **Mount your script as a volume:**
 
 ```bash
-docker run -d --name my-node -p 9001:9001 \
+docker run -d --name my-node \
   -v /path/to/your/script.js:/app/custom-script.js:ro \
   madrpc:latest node -s /app/custom-script.js -b 0.0.0.0:9001
 ```
