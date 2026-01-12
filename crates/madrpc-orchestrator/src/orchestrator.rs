@@ -1,4 +1,4 @@
-use madrpc_common::protocol::{Request, Response, MetricsResponse, InfoResponse, OrchestratorInfo, OrchestratorNodeInfo};
+use madrpc_common::protocol::{Request, Response, MetricsResponse, InfoResponse, OrchestratorInfo, OrchestratorNodeInfo, NodeRegistrationResponse};
 use madrpc_common::protocol::error::{MadrpcError, Result};
 use madrpc_metrics::{MetricsCollector, OrchestratorMetricsCollector};
 use crate::load_balancer::LoadBalancer;
@@ -592,6 +592,42 @@ impl Orchestrator {
         };
 
         Ok(InfoResponse::Orchestrator(info))
+    }
+
+    /// Registers a node with the orchestrator.
+    ///
+    /// This method is called by the `_register` endpoint to dynamically add nodes.
+    /// It validates the node URL, adds it to the load balancer, and enables it.
+    ///
+    /// # Arguments
+    /// * `node_url` - The URL where the node is accessible
+    ///
+    /// # Returns
+    /// - `Ok(NodeRegistrationResponse)` - Registration result with URL and is_new flag
+    /// - `Err(MadrpcError)` - Error if the URL is invalid
+    pub async fn register_node(&self, node_url: String) -> Result<NodeRegistrationResponse> {
+        // Validate URL format
+        if !node_url.starts_with("http://") && !node_url.starts_with("https://") {
+            return Err(MadrpcError::InvalidRequest(
+                "Invalid node URL: must start with http:// or https://".into()
+            ));
+        }
+
+        let mut lb = self.load_balancer.write().await;
+        let node_count_before = lb.node_count();
+
+        // Use SAME add_node() as CLI nodes for identical behavior
+        lb.add_node(node_url.clone());
+        lb.enable_node(&node_url);
+
+        let is_new = lb.node_count() > node_count_before;
+
+        info!(node_url = %node_url, is_new = is_new, "Node registered");
+
+        Ok(NodeRegistrationResponse {
+            registered_url: node_url,
+            is_new_registration: is_new,
+        })
     }
 }
 

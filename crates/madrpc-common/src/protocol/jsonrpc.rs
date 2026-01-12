@@ -112,6 +112,8 @@ pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
 /// Request entity too large
 pub const REQUEST_TOO_LARGE: i32 = -32001;
+/// Node registration error
+pub const NODE_REGISTRATION_ERROR: i32 = -32002;
 
 impl JsonRpcError {
     /// Create a parse error (-32700)
@@ -187,6 +189,17 @@ impl JsonRpcError {
         Self {
             code: REQUEST_TOO_LARGE,
             message: format!("Request body too large (max {} bytes)", limit),
+            data: None,
+        }
+    }
+
+    /// Create a node registration error (-32002)
+    ///
+    /// Used when node registration fails due to invalid URL or other registration issues.
+    pub fn node_registration_error(msg: &str) -> Self {
+        Self {
+            code: NODE_REGISTRATION_ERROR,
+            message: msg.into(),
             data: None,
         }
     }
@@ -321,6 +334,15 @@ mod tests {
         assert_eq!(error.code, -32001);
         assert!(error.message.contains("1024"));
         assert!(error.message.contains("too large"));
+        assert_eq!(error.data, None);
+    }
+
+    #[test]
+    fn test_node_registration_error() {
+        let error = JsonRpcError::node_registration_error("invalid node URL");
+        assert_eq!(error.code, NODE_REGISTRATION_ERROR);
+        assert_eq!(error.code, -32002);
+        assert_eq!(error.message, "invalid node URL");
         assert_eq!(error.data, None);
     }
 }
