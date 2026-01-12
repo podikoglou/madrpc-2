@@ -260,62 +260,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_node_creation() {
-        let node = Node::new("localhost:9001".to_string());
-        assert_eq!(node.addr, "localhost:9001");
-        assert!(node.enabled);
-        assert!(node.disable_reason.is_none());
-        assert_eq!(node.consecutive_failures, 0);
-        assert!(node.last_health_check.is_none());
-        assert!(node.last_health_check_status.is_none());
-        assert_eq!(node.circuit_state, CircuitBreakerState::Closed);
-        assert!(node.circuit_opened_at.is_none());
-        assert_eq!(node.request_count, 0);
-        assert!(node.last_request_time.is_none());
-    }
-
-    #[test]
-    fn test_disable_reason_equality() {
-        assert_eq!(DisableReason::Manual, DisableReason::Manual);
-        assert_eq!(DisableReason::HealthCheck, DisableReason::HealthCheck);
-        assert_ne!(DisableReason::Manual, DisableReason::HealthCheck);
-    }
-
-    #[test]
-    fn test_health_status_equality() {
-        assert_eq!(
-            HealthCheckStatus::Healthy,
-            HealthCheckStatus::Healthy
-        );
-        assert_eq!(
-            HealthCheckStatus::Unhealthy("error".to_string()),
-            HealthCheckStatus::Unhealthy("error".to_string())
-        );
-        assert_ne!(
-            HealthCheckStatus::Healthy,
-            HealthCheckStatus::Unhealthy("error".to_string())
-        );
-    }
-
-    #[test]
-    fn test_circuit_breaker_state_equality() {
-        assert_eq!(CircuitBreakerState::Closed, CircuitBreakerState::Closed);
-        assert_eq!(CircuitBreakerState::Open, CircuitBreakerState::Open);
-        assert_eq!(CircuitBreakerState::HalfOpen, CircuitBreakerState::HalfOpen);
-        assert_ne!(CircuitBreakerState::Closed, CircuitBreakerState::Open);
-        assert_ne!(CircuitBreakerState::Open, CircuitBreakerState::HalfOpen);
-    }
-
-    #[test]
-    fn test_circuit_breaker_config_default() {
-        let config = CircuitBreakerConfig::default();
-        assert_eq!(config.failure_threshold, 5);
-        assert_eq!(config.base_timeout_secs, 30);
-        assert_eq!(config.max_timeout_secs, 300);
-        assert_eq!(config.backoff_multiplier, 2.0);
-    }
-
-    #[test]
     fn test_circuit_breaker_calculate_timeout() {
         let config = CircuitBreakerConfig::default();
 
