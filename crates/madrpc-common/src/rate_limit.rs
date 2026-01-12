@@ -20,17 +20,23 @@
 //!
 //! ```no_run
 //! use madrpc_common::rate_limit::{RateLimiter, RateLimitConfig};
+//! use std::net::IpAddr;
+//! use std::str::FromStr;
 //!
+//! # #[tokio::main]
+//! # async fn main() {
 //! // Create a rate limiter with 10 requests per second per IP
-//! let config = RateLimitConfig::per_second(10);
+//! let config = RateLimitConfig::per_second(10.0);
 //! let limiter = RateLimiter::new(config);
 //!
 //! // Check if a request should be allowed
-//! if limiter.check_rate_limit("127.0.0.1").is_allowed() {
+//! let ip: IpAddr = FromStr::from_str("127.0.0.1").unwrap();
+//! if limiter.check_rate_limit(&ip).await.is_allowed() {
 //!     // Process the request
 //! } else {
 //!     // Return HTTP 429
 //! }
+//! # }
 //! ```
 
 use std::collections::HashMap;
@@ -118,7 +124,7 @@ impl RateLimitConfig {
     /// ```
     /// use madrpc_common::rate_limit::RateLimitConfig;
     ///
-    /// let config = RateLimitConfig::per_second(10);
+    /// let config = RateLimitConfig::per_second(10.0);
     /// assert_eq!(config.requests_per_second, 10.0);
     /// assert_eq!(config.burst_size, 20);
     /// ```
@@ -280,7 +286,7 @@ impl TokenBucket {
 /// use std::str::FromStr;
 ///
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// let config = RateLimitConfig::per_second(10);
+/// let config = RateLimitConfig::per_second(10.0);
 /// let limiter = RateLimiter::new(config);
 ///
 /// let ip: IpAddr = FromStr::from_str("127.0.0.1").unwrap();
@@ -323,7 +329,7 @@ impl RateLimiter {
     /// ```
     /// use madrpc_common::rate_limit::{RateLimiter, RateLimitConfig};
     ///
-    /// let config = RateLimitConfig::per_second(10);
+    /// let config = RateLimitConfig::per_second(10.0);
     /// let limiter = RateLimiter::new(config);
     /// ```
     pub fn new(config: RateLimitConfig) -> Self {
@@ -378,7 +384,7 @@ impl RateLimiter {
     /// use std::str::FromStr;
     ///
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// let limiter = RateLimiter::new(RateLimitConfig::per_second(5));
+    /// let limiter = RateLimiter::new(RateLimitConfig::per_second(5.0));
     /// let ip: IpAddr = FromStr::from_str("127.0.0.1").unwrap();
     ///
     /// let result = limiter.check_rate_limit(&ip).await;
@@ -445,7 +451,7 @@ impl RateLimiter {
     /// use std::str::FromStr;
     ///
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// let limiter = RateLimiter::new(RateLimitConfig::per_second(10));
+    /// let limiter = RateLimiter::new(RateLimitConfig::per_second(10.0));
     /// assert_eq!(limiter.tracked_ip_count().await, 0);
     ///
     /// let ip1: IpAddr = FromStr::from_str("127.0.0.1").unwrap();

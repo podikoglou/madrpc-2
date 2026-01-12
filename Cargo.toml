@@ -10,3 +10,5 @@ edition = "2021"
 # Dev dependencies for integration tests
 tempfile = "3.0"
 criterion = "0.5"
+testcontainers = "0.23"
+anyhow = "1.0"

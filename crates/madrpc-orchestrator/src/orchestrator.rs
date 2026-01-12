@@ -230,7 +230,7 @@ impl Orchestrator {
     /// # use madrpc_common::protocol::Request;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let orchestrator = Orchestrator::new(vec![]).await?;
+    /// # let orchestrator = Orchestrator::new(vec![])?;
     /// use serde_json::json;
     ///
     /// let request = Request::new("my_method", json!({"arg": 42}));

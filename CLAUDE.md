@@ -359,9 +359,6 @@ madrpc.register('aggregate', async (args) => {
 - **ratatui** - Terminal UI for monitoring
 - **crossterm** - Cross-platform terminal handling
 
-### External Dependencies
-- **Boa JavaScript engine** at `/tmp/boa/core/engine` (local path)
-
 ## Important Implementation Notes
 
 - **Boa Context Threading**: Boa Context has thread-local state and must be accessed from the same thread it was created on. Each request creates its own context.

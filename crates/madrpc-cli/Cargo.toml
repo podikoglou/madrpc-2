@@ -14,7 +14,7 @@ madrpc-orchestrator = { path = "../madrpc-orchestrator" }
 madrpc-client = { path = "../madrpc-client" }
 madrpc-metrics = { path = "../madrpc-metrics" }
 argh = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync", "macros", "process"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
@@ -24,3 +24,4 @@ crossterm = "0.28"
 
 [dev-dependencies]
 tempfile = "3"
+testcontainers = { workspace = true }
