@@ -338,13 +338,17 @@ async fn main() -> Result<()> {
     // Initialize tracing only for non-call and non-top commands
     // - call: keep output clean for unix tool usage (piping to jq, etc.)
     // - top: prevent logs from messing up the TUI (errors are shown in the UI instead)
+    // - RUST_LOG=off: suppress logging entirely (useful for tests)
     if !matches!(cli.command, Commands::Call(_) | Commands::Top(_)) {
-        // Set default log level to INFO, but allow RUST_LOG env var to override
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        // Check if RUST_LOG is explicitly set to "off" to suppress all logging
+        if std::env::var("RUST_LOG").as_deref() != Ok("off") {
+            // Set default log level to INFO, but allow RUST_LOG env var to override
+            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .init();
+        }
     }
 
     match cli.command {
