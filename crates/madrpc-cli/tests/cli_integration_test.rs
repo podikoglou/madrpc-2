@@ -49,6 +49,18 @@ fn madrpc_bin() -> PathBuf {
     path
 }
 
+/// Creates a Command for the madrpc binary with RUST_LOG=off to suppress logging.
+fn madrpc_command() -> Command {
+    let mut cmd = Command::new(madrpc_bin());
+    cmd.env("RUST_LOG", "off");
+    cmd
+}
+
+/// Creates a tokio::Command for the madrpc binary with RUST_LOG=off to suppress logging.
+fn madrpc_tokio_command() -> tokio::process::Command {
+    tokio::process::Command::from(madrpc_command())
+}
+
 /// Creates a temporary test script file.
 fn create_test_script(content: &str) -> tempfile::NamedTempFile {
     let file = tempfile::NamedTempFile::new().unwrap();
@@ -92,7 +104,7 @@ async fn find_available_port(base: u16) -> u16 {
 
 #[test]
 fn test_node_requires_script_argument() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["node"])
         .output();
 
@@ -112,7 +124,7 @@ fn test_node_requires_script_argument() {
 
 #[test]
 fn test_orchestrator_missing_http_prefix() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["orchestrator", "-n", "127.0.0.1:9001"])
         .output();
 
@@ -132,7 +144,7 @@ fn test_orchestrator_missing_http_prefix() {
 #[test]
 fn test_node_orchestrator_missing_http_prefix() {
     let script = create_echo_script();
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "node",
             "-s", script.path().to_str().unwrap(),
@@ -155,7 +167,7 @@ fn test_node_orchestrator_missing_http_prefix() {
 
 #[test]
 fn test_call_missing_http_prefix() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["call", "127.0.0.1:8080", "test_method"])
         .output();
 
@@ -174,7 +186,7 @@ fn test_call_missing_http_prefix() {
 
 #[test]
 fn test_top_missing_http_prefix() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["top", "127.0.0.1:8080"])
         .output();
 
@@ -193,7 +205,7 @@ fn test_top_missing_http_prefix() {
 
 #[test]
 fn test_call_with_invalid_json_args() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:8080",
@@ -218,7 +230,7 @@ fn test_call_with_invalid_json_args() {
 #[test]
 fn test_node_with_invalid_bind_address() {
     let script = create_echo_script();
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "node",
             "-s", script.path().to_str().unwrap(),
@@ -241,7 +253,7 @@ fn test_node_with_invalid_bind_address() {
 
 #[test]
 fn test_orchestrator_with_invalid_bind_address() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "orchestrator",
             "-b", "invalid-address"
@@ -273,7 +285,7 @@ async fn test_node_starts_and_listens() {
     let port = find_available_port(19001).await;
 
     // Spawn node process
-    let mut child = match Command::new(madrpc_bin())
+    let mut child = match madrpc_command()
         .args([
             "node",
             "-s", script.path().to_str().unwrap(),
@@ -308,7 +320,7 @@ async fn test_orchestrator_starts_and_listens() {
     let port = find_available_port(19002).await;
 
     // Spawn orchestrator process
-    let mut child = match Command::new(madrpc_bin())
+    let mut child = match madrpc_command()
         .args([
             "orchestrator",
             "-b", &format!("127.0.0.1:{}", port),
@@ -346,7 +358,7 @@ async fn test_node_with_orchestrator_starts() {
     let node_port = find_available_port(19004).await;
 
     // First, start an orchestrator
-    let mut orch_child = match Command::new(madrpc_bin())
+    let mut orch_child = match madrpc_command()
         .args([
             "orchestrator",
             "-b", &format!("127.0.0.1:{}", orch_port),
@@ -365,7 +377,7 @@ async fn test_node_with_orchestrator_starts() {
     sleep(Duration::from_millis(300)).await;
 
     // Start a node with orchestrator URL
-    let mut node_child = match Command::new(madrpc_bin())
+    let mut node_child = match madrpc_command()
         .args([
             "node",
             "-s", script.path().to_str().unwrap(),
@@ -408,7 +420,7 @@ async fn test_orchestrator_with_multiple_nodes_starts() {
     let node2_port = find_available_port(19007).await;
 
     // Start an orchestrator with explicit node URLs
-    let mut orch_child = match Command::new(madrpc_bin())
+    let mut orch_child = match madrpc_command()
         .args([
             "orchestrator",
             "-b", &format!("127.0.0.1:{}", orch_port),
@@ -446,7 +458,7 @@ async fn test_orchestrator_with_multiple_nodes_starts() {
 // when given a nonexistent script path. The error handling is tested elsewhere.
 //#[test]
 //fn test_node_with_nonexistent_script() {
-//    let output = Command::new(madrpc_bin())
+//    let output = madrpc_command()
 //        .args([
 //            "node",
 //            "-s", "/nonexistent/path/to/script.js"
@@ -475,7 +487,7 @@ async fn test_orchestrator_with_multiple_nodes_starts() {
 //    // Create a file with invalid JavaScript syntax
 //    let script = create_test_script("this is not valid javascript {{{");
 //
-//    let output = Command::new(madrpc_bin())
+//    let output = madrpc_command()
 //        .args([
 //            "node",
 //            "-s", script.path().to_str().unwrap()
@@ -495,12 +507,10 @@ async fn test_orchestrator_with_multiple_nodes_starts() {
 
 #[tokio::test]
 async fn test_orchestrator_health_check_parameters() {
-    use tokio::process::Command;
-
     // Run with a timeout since the orchestrator will keep running
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        Command::new(madrpc_bin())
+        madrpc_tokio_command()
             .args([
                 "orchestrator",
                 "-b", "127.0.0.1:0",  // Use port 0 to get any available port
@@ -532,7 +542,7 @@ async fn test_orchestrator_health_check_parameters() {
 
 #[test]
 fn test_top_command_interval_parameter() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "top",
             "--interval", "500",
@@ -556,7 +566,7 @@ fn test_top_command_interval_parameter() {
 
 #[test]
 fn test_call_command_with_default_args() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:8080",
@@ -580,7 +590,7 @@ fn test_call_command_with_default_args() {
 
 #[test]
 fn test_call_command_with_explicit_empty_args() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:8080",
@@ -609,7 +619,7 @@ fn test_call_command_with_explicit_empty_args() {
 
 #[test]
 fn test_help_flag() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["--help"])
         .output();
 
@@ -628,7 +638,7 @@ fn test_help_flag() {
 
 #[test]
 fn test_node_help() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["node", "--help"])
         .output();
 
@@ -647,7 +657,7 @@ fn test_node_help() {
 
 #[test]
 fn test_orchestrator_help() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["orchestrator", "--help"])
         .output();
 
@@ -666,7 +676,7 @@ fn test_orchestrator_help() {
 
 #[test]
 fn test_top_help() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["top", "--help"])
         .output();
 
@@ -685,7 +695,7 @@ fn test_top_help() {
 
 #[test]
 fn test_call_help() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args(["call", "--help"])
         .output();
 
@@ -708,7 +718,7 @@ fn test_call_help() {
 
 #[test]
 fn test_call_command_connection_refused() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:19999",
@@ -735,7 +745,7 @@ fn test_call_command_connection_refused() {
 #[test]
 #[ignore = "This test takes too long due to OS-level TCP timeouts"]
 fn test_call_command_timeout_handling() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://192.0.2.1:8080",
@@ -764,7 +774,7 @@ fn test_call_command_timeout_handling() {
 fn test_call_command_with_malformed_response_server() {
     // This test would require starting a server that returns malformed responses
     // For now, we test that the CLI handles non-existent servers gracefully
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:19997",
@@ -791,7 +801,7 @@ fn test_call_command_with_malformed_response_server() {
 
 #[test]
 fn test_call_command_with_invalid_timeout_value() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:8080",
@@ -818,7 +828,7 @@ fn test_call_command_with_invalid_timeout_value() {
 
 #[test]
 fn test_call_command_with_negative_timeout() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:8080",
@@ -845,7 +855,7 @@ fn test_call_command_with_negative_timeout() {
 
 #[test]
 fn test_top_command_connection_refused() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "top",
             "http://127.0.0.1:19996",
@@ -872,7 +882,7 @@ fn test_top_command_connection_refused() {
 #[test]
 fn test_node_command_nonexistent_bind_address() {
     let script = create_echo_script();
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "node",
             "-s", script.path().to_str().unwrap(),
@@ -898,7 +908,7 @@ fn test_node_command_nonexistent_bind_address() {
 
 #[test]
 fn test_orchestrator_command_nonexistent_bind_address() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "orchestrator",
             "-b", "256.256.256.256:8080"
@@ -926,7 +936,7 @@ fn test_node_command_port_already_in_use() {
     // This test is tricky because we need to actually bind a port first
     // For now, we just test that an invalid port format is rejected
     let script = create_echo_script();
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "node",
             "-s", script.path().to_str().unwrap(),
@@ -953,7 +963,7 @@ fn test_node_command_port_already_in_use() {
 #[test]
 fn test_orchestrator_command_port_already_in_use() {
     // Test invalid port format
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "orchestrator",
             "-b", "127.0.0.1:xyz"
@@ -979,7 +989,7 @@ fn test_orchestrator_command_port_already_in_use() {
 #[test]
 fn test_node_command_with_invalid_orchestrator_url() {
     let script = create_echo_script();
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "node",
             "-s", script.path().to_str().unwrap(),
@@ -1006,7 +1016,7 @@ fn test_node_command_with_invalid_orchestrator_url() {
 
 #[test]
 fn test_call_command_with_empty_method_name() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:8080",
@@ -1032,7 +1042,7 @@ fn test_call_command_with_empty_method_name() {
 
 #[test]
 fn test_orchestrator_with_invalid_node_url() {
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "orchestrator",
             "-b", "127.0.0.1:8080",
@@ -1060,7 +1070,7 @@ fn test_orchestrator_with_invalid_node_url() {
 #[test]
 fn test_call_command_with_very_long_method_name() {
     let long_method = "a".repeat(10000);
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:8080",
@@ -1087,7 +1097,7 @@ fn test_call_command_with_very_long_method_name() {
 fn test_call_command_with_very_long_args() {
     // Create a very large JSON argument
     let large_args = format!("{{\"data\": \"{}\"}}", "x".repeat(100000));
-    let output = Command::new(madrpc_bin())
+    let output = madrpc_command()
         .args([
             "call",
             "http://127.0.0.1:8080",
@@ -1123,7 +1133,7 @@ async fn test_node_command_starts_fails_on_script_syntax_error() {
     "#
     );
 
-    let mut child = match Command::new(madrpc_bin())
+    let mut child = match madrpc_command()
         .args([
             "node",
             "-s", script.path().to_str().unwrap(),
