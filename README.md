@@ -101,61 +101,75 @@ cargo run -r -- call http://127.0.0.1:8080 aggregate
 cargo run -r -- top http://127.0.0.1:8080
 ```
 
-## Running with Docker
+## Node Registration
 
-MaDRPC can be run using Docker or Docker Compose for easy deployment and testing.
+MaDRPC supports two methods for registering compute nodes with the orchestrator:
 
-### Building the Docker Image
+### Static Registration (CLI Arguments)
+
+The orchestrator can be started with a pre-configured list of node addresses using the `-n` or `--node` flag. This is useful when you know your node addresses in advance and want to explicitly configure the orchestrator.
 
 ```bash
-# Build the image
-docker build -t madrpc:latest .
-
-# Or build with a specific tag
-docker build -t madrpc:0.1.0 .
+cargo run -r -- orchestrator \
+  -b 0.0.0.0:8080 \
+  -n http://127.0.0.1:9001 \
+  -n http://127.0.0.1:9002 \
+  -n http://127.0.0.1:9003
 ```
 
-### Running Individual Components
+With static registration, nodes do not need to know about the orchestrator - they simply start and listen for incoming requests. The orchestrator will forward requests to each node in a round-robin fashion.
 
-**Start the orchestrator (only port that needs to be exposed):**
+### Dynamic Registration (Auto-Register)
+
+Nodes can register themselves with the orchestrator at runtime using the `--orchestrator` flag. This is particularly useful in containerized environments (like Docker Compose or Kubernetes) where node addresses may be assigned dynamically.
 
 ```bash
-docker run -d --name madrpc-orchestrator -p 8080:8080 \
-  madrpc:latest orchestrator -b 0.0.0.0:8080
+# Start the orchestrator (no nodes specified)
+cargo run -r -- orchestrator -b 0.0.0.0:8080
+
+# Start nodes with auto-registration enabled
+cargo run -r -- node \
+  -s examples/monte-carlo-pi.js \
+  -b 127.0.0.1:9001 \
+  --orchestrator http://127.0.0.1:8080
 ```
 
-**Start a compute node (no host port needed, uses Docker network):**
+When a node starts with `--orchestrator`, it will:
+1. Register itself with the orchestrator via the `_register` JSON-RPC method
+2. Retry registration with exponential backoff if the orchestrator is unavailable
+3. Become available for request routing immediately after successful registration
+
+**Custom Public URL:**
+
+By default, nodes auto-detect their public URL from the bind address. You can override this with `--public-url` or the `MADRPC_PUBLIC_URL` environment variable:
 
 ```bash
-docker run -d --name madrpc-node1 \
-  madrpc:latest node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9001
-```
+# Using CLI flag
+cargo run -r -- node \
+  -s examples/monte-carlo-pi.js \
+  -b 0.0.0.0:9001 \
+  --orchestrator http://orchestrator:8080 \
+  --public-url http://node1:9001
 
-**Connect node to orchestrator:**
-
-```bash
-docker run -d --name madrpc-node1 --network container:madrpc-orchestrator \
-  madrpc:latest node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9001 \
+# Using environment variable
+MADRPC_PUBLIC_URL=http://node1:9001 cargo run -r -- node \
+  -s examples/monte-carlo-pi.js \
+  -b 0.0.0.0:9001 \
   --orchestrator http://orchestrator:8080
 ```
 
-**Make an RPC call:**
+This is useful in Docker/Kubernetes environments where the internal bind address differs from the public-facing address.
 
-```bash
-docker run --rm \
-  madrpc:latest call http://orchestrator:8080 aggregate
-```
+### Choosing a Registration Method
 
-**Monitor with the TUI:**
+- **Static registration** is best for simple setups with known, fixed node addresses
+- **Dynamic registration** is ideal for containerized workflows where nodes scale up/down dynamically and addresses may be assigned at runtime
 
-```bash
-docker run -it --rm \
-  madrpc:latest top http://orchestrator:8080
-```
+Both methods use the same underlying load balancer and health checking infrastructure, so behavior is consistent regardless of how nodes are registered.
 
-### Running with Docker Compose
+## Running with Docker
 
-The easiest way to run the full MaDRPC stack is with Docker Compose:
+The easiest way to run MaDRPC is with Docker Compose. The included `docker-compose.yml` builds the image and configures nodes to auto-register with the orchestrator on startup.
 
 ```bash
 # Start orchestrator + 1 node (default)
@@ -175,86 +189,61 @@ docker compose down
 ```
 
 **Key points:**
+- The image builds automatically from your local source using `build: .`
 - Only the orchestrator port (8080) is exposed to the host
-- Nodes communicate with the orchestrator via the Docker network
-- Nodes don't need individual host ports - you can scale to thousands
-- Each node registers itself with the orchestrator on startup
+- Nodes auto-register with the orchestrator via `--orchestrator` flag
+- Nodes run on internal ports - no need to manage individual port mappings
+- Scale to thousands of nodes with a single command
 
-### Scaling to Many Nodes
+### Making RPC Calls
 
-To run a large number of nodes:
+Once running, make calls from the host:
 
 ```bash
-# Start 1000 nodes (yes, really!)
-docker compose up -d --scale node=1000
-```
+# Using the CLI (from the project directory)
+cargo run -r -- call http://127.0.0.1:8080 aggregate
 
-Nodes run on internal ports and auto-register with the orchestrator, so there's no need to manage individual port mappings.
+# Or using curl/any HTTP client
+curl -X POST http://127.0.0.1:8080 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"aggregate","params":{"samplesPerNode":100000,"numNodes":10},"id":1}'
+```
 
 ### Customizing Docker Compose
 
-You can create custom compose files for different configurations.
-
-**Using a different script:**
+To use a different JavaScript script or customize the configuration, create a custom compose file:
 
 ```yaml
 services:
   orchestrator:
-    image: madrpc:latest
+    build: .
     command: orchestrator -b 0.0.0.0:8080
     ports:
       - "8080:8080"
+    networks:
+      - madrpc-network
 
   node:
-    image: madrpc:latest
-    command: node -s /app/examples/basic-operations.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
+    build: .
+    command: node -s /app/examples/your-script.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
     depends_on:
       - orchestrator
+    networks:
+      - madrpc-network
+
+networks:
+  madrpc-network:
+    driver: bridge
 ```
 
-**Multiple node types with different scripts:**
+Or mount your script as a volume:
 
 ```yaml
-services:
-  orchestrator:
-    image: madrpc:latest
-    command: orchestrator -b 0.0.0.0:8080
-    ports:
-      - "8080:8080"
-
-  # Compute nodes running Monte Carlo
-  compute-node:
-    image: madrpc:latest
-    command: node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
-    deploy:
-      replicas: 10
-
-  # Storage nodes running different script
-  storage-node:
-    image: madrpc:latest
-    command: node -s /app/examples/basic-operations.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
-    deploy:
-      replicas: 5
-```
-
-### Using Custom Scripts
-
-To use your own JavaScript scripts with Docker:
-
-1. **Mount your script as a volume:**
-
-```bash
-docker run -d --name my-node \
-  -v /path/to/your/script.js:/app/custom-script.js:ro \
-  madrpc:latest node -s /app/custom-script.js -b 0.0.0.0:9001
-```
-
-2. **Or extend the Docker image:**
-
-```dockerfile
-FROM madrpc:latest
-
-COPY --chown=madrpc:madrpc your-script.js /app/your-script.js
+  node:
+    build: .
+    volumes:
+      - ./your-script.js:/app/your-script.js:ro
+    command: node -s /app/your-script.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
 ```
 
 ## Writing RPCs
@@ -440,7 +429,8 @@ cargo run -r -- node [OPTIONS]
 **Options:**
 - `-s, --script <PATH>`: JavaScript script to load (required)
 - `-b, --bind <ADDR>`: Bind address (default: `0.0.0.0:9001`)
-- `--orchestrator <ADDR>`: Orchestrator address for distributed calls
+- `--orchestrator <ADDR>`: Orchestrator address for auto-registration and distributed calls
+- `--public-url <URL>`: Public URL for this node (overrides auto-detection)
 - `--pool-size <N>`: Max concurrent connections (default: `num_cpus * 2`)
 
 ### `madrpc top`

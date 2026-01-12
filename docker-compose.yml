@@ -1,6 +1,6 @@
 services:
   orchestrator:
-    image: madrpc:latest
+    build: .
     command: orchestrator -b 0.0.0.0:8080
     ports:
       - "8080:8080"
@@ -10,7 +10,7 @@ services:
   # Nodes run on internal ports - no host port mapping needed
   # Scale with: docker compose up -d --scale node=10
   node:
-    image: madrpc:latest
+    build: .
     environment:
       - MADRPC_PUBLIC_URL=http://node:9001
     command: >
