@@ -493,28 +493,39 @@ async fn test_orchestrator_with_multiple_nodes_starts() {
 //    }
 //}
 
-#[test]
-fn test_orchestrator_health_check_parameters() {
-    let output = Command::new(madrpc_bin())
-        .args([
-            "orchestrator",
-            "--health-check-interval", "5",
-            "--health-check-timeout", "2000",
-            "--health-check-failure-threshold", "3"
-        ])
-        .output();
+#[tokio::test]
+async fn test_orchestrator_health_check_parameters() {
+    use tokio::process::Command;
 
-    match output {
-        Ok(output) => {
-            // Should start successfully (will exit immediately due to no nodes)
+    // Run with a timeout since the orchestrator will keep running
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        Command::new(madrpc_bin())
+            .args([
+                "orchestrator",
+                "-b", "127.0.0.1:0",  // Use port 0 to get any available port
+                "--health-check-interval", "5",
+                "--health-check-timeout", "2000",
+                "--health-check-failure-threshold", "3"
+            ])
+            .output()
+    ).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            // Should start successfully
             // The important part is that the arguments are accepted
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Should not have argument parsing errors
-            assert!(!stdout.contains("unexpected") || !stderr.contains("unexpected"));
+            assert!(!stdout.contains("unexpected") && !stderr.contains("unexpected"));
+        }
+        Ok(Err(_)) => {
+            // Binary not built - skip test
         }
         Err(_) => {
-            // Binary not built - skip test
+            // Timeout is OK - means the orchestrator started successfully
+            // and is running (which is what we want)
         }
     }
 }
