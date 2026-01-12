@@ -563,8 +563,8 @@ async fn test_metrics_snapshot_consistency() {
     let uptime2 = snapshot2["result"]["uptime_ms"].as_u64().unwrap();
     assert!(uptime2 > uptime1, "Uptime should increase between snapshots");
 
-    // Version should be the same
-    let version1 = snapshot1["result"]["version"].as_str().unwrap();
-    let version2 = snapshot2["result"]["version"].as_str().unwrap();
-    assert_eq!(version1, version2, "Version should be consistent");
+    // Total request count should stay the same (or increase if there are concurrent requests)
+    let total1 = snapshot1["result"]["total_requests"].as_u64().unwrap();
+    let total2 = snapshot2["result"]["total_requests"].as_u64().unwrap();
+    assert!(total2 >= total1, "Total requests should not decrease");
 }
