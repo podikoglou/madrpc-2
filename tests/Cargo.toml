@@ -20,6 +20,10 @@ path = "http_integration_test.rs"
 name = "auto_register"
 path = "auto_register_test.rs"
 
+[[test]]
+name = "metrics_info"
+path = "metrics_info_test.rs"
+
 [dev-dependencies]
 madrpc-common = { path = "../crates/madrpc-common" }
 madrpc-server = { path = "../crates/madrpc-server" }
