@@ -16,6 +16,10 @@ path = "dangerous_code_paths.rs"
 name = "http_integration"
 path = "http_integration_test.rs"
 
+[[test]]
+name = "auto_register"
+path = "auto_register_test.rs"
+
 [dev-dependencies]
 madrpc-common = { path = "../crates/madrpc-common" }
 madrpc-server = { path = "../crates/madrpc-server" }

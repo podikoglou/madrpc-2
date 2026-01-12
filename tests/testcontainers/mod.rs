@@ -148,9 +148,58 @@ impl NodeContainer {
     }
 
     /// Start a node that registers with an orchestrator.
+    ///
+    /// This method starts a node that will automatically register with the orchestrator.
+    /// The node uses its bridge IP address as the public URL for registration.
     pub async fn start_with_orchestrator(
         script_content: String,
         orchestrator_url: String,
+    ) -> anyhow::Result<Self> {
+        // Note: We can't pass the container's bridge IP as --public-url before starting
+        // the container. So we start with a placeholder and rely on the node's
+        // auto-detection (which uses the bind address).
+        // For container-to-container communication, tests should use the
+        // start_with_orchestrator_and_public_url method with an explicit URL.
+
+        let image = GenericImage::new("madrpc", "test")
+            .with_entrypoint("/usr/local/bin/madrpc")
+            .with_exposed_port(9001.tcp())
+            .with_copy_to("/app/script.js", CopyDataSource::Data(script_content.into_bytes()))
+            .with_cmd([
+                "node",
+                "-s",
+                "/app/script.js",
+                "-b",
+                "0.0.0.0:9001",
+                "--orchestrator",
+                &orchestrator_url,
+                "--public-url",
+                "http://172.17.0.2:9001", // Placeholder - will be overridden by env var if needed
+            ]);
+
+        let container = image.start().await?;
+
+        let port = container.get_host_port_ipv4(9001).await?;
+        let external_url = format!("http://127.0.0.1:{}", port);
+        let bridge_ip = container.get_bridge_ip_address().await?;
+        let container_url = format!("http://{}:9001", bridge_ip);
+
+        // Wait for the _info endpoint to be ready
+        Self::wait_for_ready(&external_url).await?;
+
+        Ok(Self {
+            container,
+            host_port: port,
+            external_url,
+            container_url,
+        })
+    }
+
+    /// Start a node that registers with an orchestrator using a custom public URL.
+    pub async fn start_with_orchestrator_and_public_url(
+        script_content: String,
+        orchestrator_url: String,
+        public_url: String,
     ) -> anyhow::Result<Self> {
         let image = GenericImage::new("madrpc", "test")
             .with_entrypoint("/usr/local/bin/madrpc")
@@ -164,6 +213,8 @@ impl NodeContainer {
                 "0.0.0.0:9001",
                 "--orchestrator",
                 &orchestrator_url,
+                "--public-url",
+                &public_url,
             ]);
 
         let container = image.start().await?;
