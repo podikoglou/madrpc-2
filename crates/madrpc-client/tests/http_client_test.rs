@@ -65,16 +65,13 @@ impl TestJsonRpcServer {
                                         async move { handler(req).await }
                                     });
 
-                                    if let Err(err) = http1::Builder::new()
+                                    let _ = http1::Builder::new()
                                         .serve_connection(io, service)
-                                        .await
-                                    {
-                                        eprintln!("Server error: {}", err);
-                                    }
+                                        .await;
                                 });
                             }
-                            Err(err) => {
-                                eprintln!("Accept error: {}", err);
+                            Err(_) => {
+                                // Ignore accept errors in test
                             }
                         }
                     }
