@@ -4,15 +4,6 @@
 //! using mock node servers.
 
 use madrpc_orchestrator::{Orchestrator, HealthCheckConfig, RetryConfig};
-
-// Suppress tracing/hyper logging during tests
-#[ctor::ctor]
-fn init_logging() {
-    use tracing_subscriber::EnvFilter;
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from("warn"))
-        .try_init();
-}
 use madrpc_common::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError, InfoResponse};
 use serde_json::json;
 use std::collections::HashMap;
