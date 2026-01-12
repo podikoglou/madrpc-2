@@ -311,7 +311,7 @@ impl RetryConfig {
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
+/// let client = MadrpcClient::new("http://127.0.0.1:8080")?;
 /// let result = client.call("compute", json!({"n": 42})).await?;
 /// # Ok(())
 /// # }
@@ -537,7 +537,7 @@ impl MadrpcClient {
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
+    /// let client = MadrpcClient::new("http://127.0.0.1:8080")?;
     ///
     /// // Call a method with parameters
     /// let result = client.call("compute", json!({"n": 42})).await?;
@@ -750,7 +750,7 @@ impl MadrpcClient {
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let client = MadrpcClient::new("http://127.0.0.1:8080").await?;
+/// let client = MadrpcClient::new("http://127.0.0.1:8080")?;
 /// let client2 = client.clone(); // Shares the same HTTP client
 ///
 /// // Both clients can make concurrent requests
@@ -758,6 +758,9 @@ impl MadrpcClient {
 /// let task2 = client2.call("method2", serde_json::json!(null));
 ///
 /// let (result1, result2) = tokio::join!(task1, task2);
+///
+/// // Use results as needed
+/// # let _ = (result1, result2);
 /// # Ok(())
 /// # }
 /// ```
