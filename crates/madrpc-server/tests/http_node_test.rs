@@ -6,83 +6,18 @@
 //! - JavaScript method execution
 //! - Error handling (method not found, invalid JSON, etc.)
 //! - Custom headers support
+//!
+//! Tests use testcontainers for proper isolation.
 
-use madrpc_server::{HttpServer, Node};
 use madrpc_common::protocol::JsonRpcRequest;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
-use std::fs;
-use std::net::SocketAddr;
-
 use reqwest::Client;
 use serde_json::json;
 
-static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-/// Helper to create a test script with a registered function
-fn create_test_script_with_register() -> tempfile::NamedTempFile {
-    let _id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let file = tempfile::NamedTempFile::new().unwrap();
-    let content = r#"
-        madrpc.register('echo', function(args) {
-            return args;
-        });
-
-        madrpc.register('compute', function(args) {
-            return { result: args.x * args.y };
-        });
-
-        madrpc.register('async_func', async function(args) {
-            // Simulate async work with a Promise
-            // Note: setTimeout is not available in Boa, so we use Promise directly
-            return Promise.resolve({ result: args.value * 2 });
-        });
-    "#;
-    fs::write(file.path(), content).unwrap();
-    file
-}
-
-/// Helper to create an empty test script
-fn create_test_script_empty() -> tempfile::NamedTempFile {
-    let _id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let file = tempfile::NamedTempFile::new().unwrap();
-    fs::write(file.path(), "// empty").unwrap();
-    file
-}
-
-/// Helper to start a test server on a random port
-async fn start_test_server(node: std::sync::Arc<Node>) -> SocketAddr {
-    let server = HttpServer::new(node);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    // Channel to signal when server is ready
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-
-    tokio::spawn(async move {
-        // Drop the listener to release the port
-        drop(listener);
-
-        // Small delay to ensure port is released
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        // Signal that we're about to start the server
-        let _ = ready_tx.send(());
-
-        server.run(addr).await.unwrap();
-    });
-
-    // Wait for server to be ready to start
-    let _ = ready_rx.await;
-
-    // Additional wait for server to actually bind and start listening
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    addr
-}
+mod testcontainers;
+use testcontainers::{server_test_script, empty_script, NodeContainer};
 
 /// Helper to make a JSON-RPC request
-async fn jsonrpc_request(addr: &SocketAddr, method: &str, params: serde_json::Value) -> serde_json::Value {
+async fn jsonrpc_request(url: &str, method: &str, params: serde_json::Value) -> serde_json::Value {
     let client = Client::new();
     let body = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -92,7 +27,7 @@ async fn jsonrpc_request(addr: &SocketAddr, method: &str, params: serde_json::Va
     };
 
     let res = client
-        .post(format!("http://{}", addr))
+        .post(url)
         .json(&body)
         .send()
         .await
@@ -107,11 +42,11 @@ async fn jsonrpc_request(addr: &SocketAddr, method: &str, params: serde_json::Va
 
 #[tokio::test]
 async fn test_single_node_builtin_info() {
-    let script = create_test_script_empty();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(empty_script())
+        .await
+        .expect("Failed to start node container");
 
-    let response = jsonrpc_request(&addr, "_info", json!({})).await;
+    let response = jsonrpc_request(node.url(), "_info", json!({})).await;
 
     assert_eq!(response["result"]["server_type"], "node");
     assert!(response["result"]["uptime_ms"].is_number());
@@ -120,11 +55,11 @@ async fn test_single_node_builtin_info() {
 
 #[tokio::test]
 async fn test_single_node_builtin_metrics() {
-    let script = create_test_script_empty();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(empty_script())
+        .await
+        .expect("Failed to start node container");
 
-    let response = jsonrpc_request(&addr, "_metrics", json!({})).await;
+    let response = jsonrpc_request(node.url(), "_metrics", json!({})).await;
 
     assert!(response["result"]["total_requests"].is_number());
     assert!(response["error"].is_null() || response["error"] == json!(null));
@@ -136,11 +71,11 @@ async fn test_single_node_builtin_metrics() {
 
 #[tokio::test]
 async fn test_single_node_javascript_method() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let response = jsonrpc_request(&addr, "echo", json!({"msg": "hello"})).await;
+    let response = jsonrpc_request(node.url(), "echo", json!({"msg": "hello"})).await;
 
     assert_eq!(response["result"]["msg"], "hello");
     assert!(response["error"].is_null() || response["error"] == json!(null));
@@ -148,11 +83,11 @@ async fn test_single_node_javascript_method() {
 
 #[tokio::test]
 async fn test_single_node_compute_method() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let response = jsonrpc_request(&addr, "compute", json!({"x": 7, "y": 6})).await;
+    let response = jsonrpc_request(node.url(), "compute", json!({"x": 7, "y": 6})).await;
 
     assert_eq!(response["result"]["result"], 42);
     assert!(response["error"].is_null() || response["error"] == json!(null));
@@ -160,11 +95,11 @@ async fn test_single_node_compute_method() {
 
 #[tokio::test]
 async fn test_single_node_async_method() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let response = jsonrpc_request(&addr, "async_func", json!({"value": 21})).await;
+    let response = jsonrpc_request(node.url(), "async_func", json!({"value": 21})).await;
 
     assert_eq!(response["result"]["result"], 42);
     assert!(response["error"].is_null() || response["error"] == json!(null));
@@ -176,11 +111,11 @@ async fn test_single_node_async_method() {
 
 #[tokio::test]
 async fn test_single_node_method_not_found() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
-    let response = jsonrpc_request(&addr, "nonexistent", json!({})).await;
+    let response = jsonrpc_request(node.url(), "nonexistent", json!({})).await;
 
     assert_eq!(response["error"]["code"], -32601); // Method not found
     assert_eq!(response["error"]["message"], "Method not found");
@@ -188,13 +123,13 @@ async fn test_single_node_method_not_found() {
 
 #[tokio::test]
 async fn test_single_node_invalid_json() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
     let client = Client::new();
     let res = client
-        .post(format!("http://{}", addr))
+        .post(node.url())
         .body("invalid json")
         .send()
         .await
@@ -207,12 +142,12 @@ async fn test_single_node_invalid_json() {
 
 #[tokio::test]
 async fn test_single_node_invalid_params() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
     // Try to compute without required parameters
-    let response = jsonrpc_request(&addr, "compute", json!({})).await;
+    let response = jsonrpc_request(node.url(), "compute", json!({})).await;
 
     // The JavaScript will handle the error - should get an error response
     assert!(response["error"].is_object() || response["result"].is_null());
@@ -224,16 +159,16 @@ async fn test_single_node_invalid_params() {
 
 #[tokio::test]
 async fn test_single_node_metrics_tracking() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
     // Make some requests
-    jsonrpc_request(&addr, "echo", json!({"msg": "test1"})).await;
-    jsonrpc_request(&addr, "echo", json!({"msg": "test2"})).await;
+    jsonrpc_request(node.url(), "echo", json!({"msg": "test1"})).await;
+    jsonrpc_request(node.url(), "echo", json!({"msg": "test2"})).await;
 
     // Check metrics
-    let response = jsonrpc_request(&addr, "_metrics", json!({})).await;
+    let response = jsonrpc_request(node.url(), "_metrics", json!({})).await;
 
     assert!(response["result"]["total_requests"].as_u64().unwrap() >= 2);
 }
@@ -244,13 +179,13 @@ async fn test_single_node_metrics_tracking() {
 
 #[tokio::test]
 async fn test_single_node_sequential_requests() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
     // Make multiple sequential requests
     for i in 0..5 {
-        let response = jsonrpc_request(&addr, "compute", json!({"x": i, "y": 2})).await;
+        let response = jsonrpc_request(node.url(), "compute", json!({"x": i, "y": 2})).await;
         assert_eq!(response["result"]["result"], i * 2);
     }
 }
@@ -261,16 +196,33 @@ async fn test_single_node_sequential_requests() {
 
 #[tokio::test]
 async fn test_single_node_concurrent_requests() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
+
+    let url = node.url().to_string();
 
     // Spawn multiple concurrent requests
     let mut handles = vec![];
     for i in 0..10 {
-        let addr_clone = addr;
+        let url_clone = url.clone();
         let handle = tokio::spawn(async move {
-            jsonrpc_request(&addr_clone, "compute", json!({"x": i, "y": 2})).await
+            let client = Client::new();
+            let body = JsonRpcRequest {
+                jsonrpc: "2.0".into(),
+                method: "compute".into(),
+                params: json!({"x": i, "y": 2}),
+                id: json!(1),
+            };
+
+            let res = client
+                .post(&url_clone)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+
+            res.json().await.unwrap()
         });
         handles.push(handle);
     }
@@ -278,7 +230,7 @@ async fn test_single_node_concurrent_requests() {
     // Wait for all requests to complete
     let mut results = vec![];
     for handle in handles {
-        let response = handle.await.unwrap();
+        let response: serde_json::Value = handle.await.unwrap();
         results.push(response);
     }
 
@@ -295,15 +247,15 @@ async fn test_single_node_concurrent_requests() {
 
 #[tokio::test]
 async fn test_single_node_only_post_allowed() {
-    let script = create_test_script_with_register();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(server_test_script())
+        .await
+        .expect("Failed to start node container");
 
     let client = Client::new();
 
     // Try GET request
     let res = client
-        .get(format!("http://{}", addr))
+        .get(node.url())
         .send()
         .await
         .unwrap();
@@ -318,14 +270,13 @@ async fn test_single_node_only_post_allowed() {
 
 #[tokio::test]
 async fn test_request_size_limit_enforcement() {
-    let script = create_test_script_empty();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(empty_script())
+        .await
+        .expect("Failed to start node container");
 
     let client = Client::new();
 
     // Create a request with a body that exceeds 10 MB
-    // Use a large JSON object to exceed the limit
     let large_data = "x".repeat(11 * 1024 * 1024); // 11 MB
     let body = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -335,7 +286,7 @@ async fn test_request_size_limit_enforcement() {
     };
 
     let res = client
-        .post(format!("http://{}", addr))
+        .post(node.url())
         .json(&body)
         .send()
         .await
@@ -348,9 +299,9 @@ async fn test_request_size_limit_enforcement() {
 
 #[tokio::test]
 async fn test_request_within_size_limit() {
-    let script = create_test_script_empty();
-    let node = std::sync::Arc::new(Node::new(script.path().to_path_buf()).unwrap());
-    let addr = start_test_server(node).await;
+    let node = NodeContainer::start(empty_script())
+        .await
+        .expect("Failed to start node container");
 
     let client = Client::new();
 
@@ -363,7 +314,7 @@ async fn test_request_within_size_limit() {
     };
 
     let res = client
-        .post(format!("http://{}", addr))
+        .post(node.url())
         .json(&body)
         .send()
         .await

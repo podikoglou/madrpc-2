@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for MaDRPC
 # Stage 1: Build the Rust binary
-FROM rust:1.83-alpine AS builder
+FROM rust:1.88-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache musl-dev
@@ -11,6 +11,7 @@ WORKDIR /build
 # Copy Cargo files
 COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates
+COPY tests ./tests
 
 # Build the project in release mode
 RUN cargo build --release

@@ -1,5 +1,3 @@
 [test]
-# this exists for various reasons, including not breaking I/O when running
-# tests because of multiple servers running at the same time, and also for the
-# servers not to interfere with eachother
-threads = 1
+# Parallel execution enabled - testcontainers provide proper isolation
+# for integration tests that spin up servers.
