@@ -7,17 +7,15 @@ services:
     networks:
       - madrpc-network
 
-  # Nodes run on internal ports - no host port mapping needed
-  # Scale with: docker compose up -d --scale node=10
   node:
     build: .
-    environment:
-      - MADRPC_PUBLIC_URL=http://node:9001
-    command: >
-      node
-        -s /app/examples/monte-carlo-pi.js
-        -b 0.0.0.0:9001
-        --orchestrator http://orchestrator:8080
+    entrypoint: [""]
+    command:
+      - sh
+      - -c
+      - |
+        export MADRPC_PUBLIC_URL=http://$${HOSTNAME}:9001
+        exec /usr/local/bin/madrpc node -s /app/examples/monte-carlo-pi.js -b 0.0.0.0:9001 --orchestrator http://orchestrator:8080
     depends_on:
       - orchestrator
     networks:

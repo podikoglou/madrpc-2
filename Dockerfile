@@ -38,5 +38,5 @@ COPY --chown=madrpc:madrpc examples /app/examples
 # Switch to non-root user
 USER madrpc
 
-# Default command shows help
-CMD ["madrpc", "--help"]
+# Set entrypoint so commands can be specified in docker-compose
+ENTRYPOINT ["madrpc"]
