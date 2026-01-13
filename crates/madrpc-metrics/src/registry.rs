@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Instant, SystemTime};
 
-const LATENCY_BUFFER_SIZE: usize = 1000;
+const NUM_HISTOGRAM_BINS: usize = 100;
 
 /// Fallback timestamp counter for when SystemTime::duration_since() fails.
 ///
@@ -115,118 +115,229 @@ impl Default for MetricsConfig {
     }
 }
 
-/// Ring buffer for storing latency samples.
+/// Logarithmic histogram for efficient percentile estimation.
 ///
-/// Maintains a fixed-size circular buffer of latency measurements.
-/// Once the buffer is full, old samples are overwritten. This provides
-/// a sliding window of recent latency data for percentile calculations.
+/// Uses 100 bins covering the latency range from 1μs to 1s using
+/// logarithmic scaling. Each bin covers a power-of-10 range divided
+/// into 10 equal subdivisions.
 ///
 /// # Performance
 ///
 /// - Lock-free design using atomic operations
-/// - Supports concurrent writes from multiple threads
-/// - Relaxed memory ordering for maximum throughput
+/// - O(1) recording: finds bin via log10 calculation
+/// - O(bins) percentile calculation: linear scan through 100 bins
+/// - Constant memory usage regardless of sample count
 ///
-/// # Capacity
+/// # Accuracy
 ///
-/// Stores up to 1000 samples (LATENCY_BUFFER_SIZE). Percentiles are
-/// calculated from the available samples when a snapshot is taken.
+/// Provides approximate percentiles within ~5-10% accuracy for typical
+/// latency distributions. The logarithmic scaling provides better resolution
+/// at lower latencies where precision matters most.
+///
+/// # Bin Structure
+///
+/// For latencies from 1μs to 1,000,000μs (1 second):
+/// - Bin 0-9: 1-10μs range (10 bins of ~1μs each)
+/// - Bin 10-19: 10-100μs range (10 bins of ~10μs each)
+/// - Bin 20-29: 100-1000μs range (10 bins of ~100μs each)
+/// - Bin 30-39: 1-10ms range (10 bins of ~1ms each)
+/// - Bin 40-49: 10-100ms range (10 bins of ~10ms each)
+/// - Bin 50-59: 100-1000ms range (10 bins of ~100ms each)
+/// - Bin 60-99: 1-10 second range (overflow protection)
 #[derive(Debug)]
-struct LatencyBuffer {
-    /// Atomic storage for latency samples (microseconds)
-    samples: Vec<AtomicU64>,
-    /// Current write position in the ring buffer
-    index: AtomicU64,
-    /// Number of valid samples (capped at buffer size)
-    count: AtomicU64,
+struct LatencyHistogram {
+    /// Count of samples in each histogram bin
+    bins: [AtomicU64; NUM_HISTOGRAM_BINS],
+    /// Running sum of all latencies for average calculation
+    total_latency: AtomicU64,
+    /// Total number of samples recorded
+    sample_count: AtomicU64,
 }
 
-impl LatencyBuffer {
-    /// Creates a new empty latency buffer.
+impl LatencyHistogram {
+    /// Creates a new empty latency histogram.
     fn new() -> Self {
+        // Initialize array with zeros
+        let bins: [AtomicU64; NUM_HISTOGRAM_BINS] =
+            std::array::from_fn(|_| AtomicU64::new(0));
+
         Self {
-            samples: (0..LATENCY_BUFFER_SIZE)
-                .map(|_| AtomicU64::new(0))
-                .collect(),
-            index: AtomicU64::new(0),
-            count: AtomicU64::new(0),
+            bins,
+            total_latency: AtomicU64::new(0),
+            sample_count: AtomicU64::new(0),
         }
     }
 
-    /// Records a latency sample in the buffer.
+    /// Records a latency sample in the histogram.
     ///
-    /// Samples are written in a circular pattern. Once the buffer is full,
-    /// old samples are overwritten. The count is capped at the buffer size.
+    /// Samples are placed into logarithmic bins. Uses relaxed ordering
+    /// for maximum performance since exact synchronization isn't required.
     ///
     /// # Arguments
     /// * `latency_us` - Latency in microseconds
-    ///
-    /// # Memory Ordering
-    ///
-    /// Uses `Ordering::Relaxed` for maximum performance. This is safe because:
-    /// - We only need the final count/percentiles, not intermediate states
-    /// - Each sample is independent (no ordering requirements between samples)
-    /// - The ring buffer index wraparound is handled by modulo operation
     fn record(&self, latency_us: u64) {
-        // Relaxed ordering is safe here because:
-        // - We only need the final count/percentiles, not intermediate states
-        // - Each sample is independent (no ordering requirements between samples)
-        // - The ring buffer index wraparound is handled by modulo operation
-        let idx = self.index.fetch_add(1, Ordering::Relaxed) % LATENCY_BUFFER_SIZE as u64;
-        self.samples[idx as usize].store(latency_us, Ordering::Relaxed);
-        // Cap count at buffer size to prevent unbounded growth
-        // fetch_update ensures we increment but never exceed LATENCY_BUFFER_SIZE
-        // Relaxed is safe: we only care about the final value, not synchronization
-        self.count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-            Some(x.saturating_add(1).min(LATENCY_BUFFER_SIZE as u64))
-        }).ok();
+        // Find the appropriate bin using logarithmic scaling
+        let bin = Self::latency_to_bin(latency_us);
+
+        // Increment the bin counter
+        self.bins[bin].fetch_add(1, Ordering::Relaxed);
+
+        // Update total latency and sample count for average calculation
+        self.total_latency.fetch_add(latency_us, Ordering::Relaxed);
+        self.sample_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Calculates latency percentiles from recorded samples.
+    /// Maps a latency value to a histogram bin.
+    ///
+    /// Uses logarithmic scaling to map latencies from 1μs to 1s+
+    /// into 100 bins. Each decade (power of 10) is divided into 10 bins.
+    fn latency_to_bin(latency_us: u64) -> usize {
+        if latency_us == 0 {
+            return 0;
+        }
+
+        // Calculate the log10 of the latency
+        // Use integer arithmetic to avoid floating point
+        let log10_value = Self::ilog10(latency_us);
+
+        // Calculate bin index:
+        // - log10_value gives us the decade (0 for 1-10, 1 for 10-100, etc.)
+        // - We then divide the decade into 10 bins
+        // - Scale factor gives us finer resolution within each decade
+        let scale_factor = if latency_us < 10 {
+            latency_us as usize
+        } else if latency_us < 100 {
+            (latency_us / 10) as usize
+        } else if latency_us < 1000 {
+            (latency_us / 100) as usize
+        } else if latency_us < 10000 {
+            (latency_us / 1000) as usize
+        } else if latency_us < 100000 {
+            (latency_us / 10000) as usize
+        } else if latency_us < 1000000 {
+            (latency_us / 100000) as usize
+        } else {
+            // Latencies >= 1s go into the last bins
+            10 + Self::ilog10(latency_us / 1000000).min(3) as usize * 10
+        };
+
+        let decade_offset = log10_value as usize * 10;
+        let bin = decade_offset + scale_factor.min(9);
+
+        // Cap at the last bin
+        bin.min(NUM_HISTOGRAM_BINS - 1)
+    }
+
+    /// Integer base-10 logarithm.
+    ///
+    /// Returns floor(log10(n)) for n > 0.
+    fn ilog10(mut n: u64) -> u32 {
+        if n == 0 {
+            return 0;
+        }
+
+        let mut log = 0;
+        while n >= 10 {
+            n /= 10;
+            log += 1;
+        }
+        log
+    }
+
+    /// Estimates the value at a given percentile.
+    ///
+    /// Uses linear interpolation within bins for better accuracy.
+    ///
+    /// # Arguments
+    /// * `percentile` - Percentile to calculate (0-100)
+    ///
+    /// # Returns
+    ///
+    /// Estimated latency at the given percentile, or 0 if no samples.
+    fn estimate_percentile(&self, percentile: u64) -> u64 {
+        let total = self.sample_count.load(Ordering::Relaxed);
+        if total == 0 {
+            return 0;
+        }
+
+        let target_count = (total * percentile) / 100;
+        let mut cumulative_count = 0;
+
+        // Find the bin containing the target percentile
+        for (bin_idx, bin) in self.bins.iter().enumerate() {
+            let bin_count = bin.load(Ordering::Relaxed);
+            if cumulative_count + bin_count >= target_count {
+                // Target percentile is in this bin
+                // Use linear interpolation within the bin
+                let bin_start = Self::bin_to_latency(bin_idx);
+                let bin_end = Self::bin_to_latency(bin_idx + 1);
+
+                // If this is the first or only sample in the bin, return the midpoint
+                if bin_count == 0 {
+                    return (bin_start + bin_end) / 2;
+                }
+
+                // Linear interpolation: estimate position within the bin
+                let offset_in_bin = target_count - cumulative_count;
+                let fraction = offset_in_bin as f64 / bin_count as f64;
+                let interpolated = bin_start as f64 + fraction * (bin_end - bin_start) as f64;
+
+                return interpolated as u64;
+            }
+            cumulative_count += bin_count;
+        }
+
+        // If we didn't find it, return the maximum bin's upper bound
+        Self::bin_to_latency(NUM_HISTOGRAM_BINS)
+    }
+
+    /// Maps a histogram bin index to a latency value.
+    ///
+    /// Returns the lower bound of the bin's range.
+    fn bin_to_latency(bin: usize) -> u64 {
+        if bin == 0 {
+            return 1;
+        }
+
+        let decade = bin / 10;
+        let sub_bin = bin % 10;
+
+        // Calculate the lower bound of this bin
+        10u64.pow(decade as u32) * sub_bin.max(1) as u64
+    }
+
+    /// Calculates latency percentiles from the histogram.
     ///
     /// Returns the average, P50 (median), P95, and P99 latencies.
-    /// Only samples greater than zero are included in the calculation.
     ///
     /// # Returns
     ///
     /// A tuple of `(avg, p50, p95, p99)` latency values in microseconds.
     /// Returns `(0, 0, 0, 0)` if no samples have been recorded.
     ///
-    /// # Memory Ordering
+    /// # Performance
     ///
-    /// Uses `Ordering::Relaxed` for reading samples. This is safe because:
-    /// - We're calculating percentiles on a best-effort snapshot
-    /// - Missing or slightly stale samples don't affect correctness
-    /// - The metrics are eventually consistent by design
+    /// O(NUM_HISTOGRAM_BINS) = O(100) - linear scan through bins
     fn calculate_percentiles(&self) -> (u64, u64, u64, u64) {
-        // Relaxed ordering is safe for reading samples because:
-        // - We're calculating percentiles on a best-effort snapshot
-        // - Missing or slightly stale samples don't affect correctness
-        // - The metrics are eventually consistent by design
-        let mut samples: Vec<u64> = self
-            .samples
-            .iter()
-            .map(|s| s.load(Ordering::Relaxed))
-            .filter(|&s| s > 0)
-            .collect();
-
-        if samples.is_empty() {
+        let total = self.sample_count.load(Ordering::Relaxed);
+        if total == 0 {
             return (0, 0, 0, 0);
         }
 
-        samples.sort_unstable();
-        let len = samples.len();
+        // Calculate average
+        let total_latency = self.total_latency.load(Ordering::Relaxed);
+        let avg = total_latency / total;
 
-        let avg = samples.iter().sum::<u64>() / len as u64;
-        let p50 = samples[len * 50 / 100];
-        let p95 = samples[len * 95 / 100];
-        let p99 = samples[len * 99 / 100];
+        // Estimate percentiles using histogram
+        let p50 = self.estimate_percentile(50);
+        let p95 = self.estimate_percentile(95);
+        let p99 = self.estimate_percentile(99);
 
         (avg, p50, p95, p99)
     }
 }
 
-impl Default for LatencyBuffer {
+impl Default for LatencyHistogram {
     fn default() -> Self {
         Self::new()
     }
@@ -247,7 +358,7 @@ impl Default for LatencyBuffer {
 /// - **call_count**: Total number of calls to this method
 /// - **success_count**: Number of successful calls
 /// - **failure_count**: Number of failed calls
-/// - **latencies**: Ring buffer of latency samples (up to 1000)
+/// - **latencies**: Histogram of latency samples for percentile estimation
 /// - **last_access_ms**: Unix timestamp (ms) of last access (for TTL cleanup)
 #[derive(Debug)]
 struct MethodStats {
@@ -257,8 +368,8 @@ struct MethodStats {
     success_count: AtomicU64,
     /// Number of failed calls
     failure_count: AtomicU64,
-    /// Ring buffer of latency samples
-    latencies: LatencyBuffer,
+    /// Histogram of latency samples for efficient percentile estimation
+    latencies: LatencyHistogram,
     /// Last access timestamp in milliseconds (for TTL cleanup)
     last_access_ms: AtomicU64,
 }
@@ -271,7 +382,7 @@ impl MethodStats {
             call_count: AtomicU64::new(0),
             success_count: AtomicU64::new(0),
             failure_count: AtomicU64::new(0),
-            latencies: LatencyBuffer::new(),
+            latencies: LatencyHistogram::new(),
             last_access_ms: AtomicU64::new(now),
         }
     }
@@ -1359,60 +1470,66 @@ mod tests {
     }
 
     // ========================================================================
-    // Latency Buffer Tests
+    // Latency Histogram Tests
     // ========================================================================
 
     #[test]
-    fn test_latency_buffer_count_capping() {
-        // Test that the latency buffer count properly caps at LATENCY_BUFFER_SIZE
-        // This prevents unbounded growth of the count counter
-        let buffer = LatencyBuffer::new();
+    fn test_latency_histogram_basic_recording() {
+        // Test basic histogram recording and percentile calculation
+        let histogram = LatencyHistogram::new();
 
-        // Record more samples than the buffer size
-        for i in 0..LATENCY_BUFFER_SIZE * 2 {
-            buffer.record(i as u64);
-        }
+        // Record some latency samples
+        histogram.record(100);
+        histogram.record(200);
+        histogram.record(300);
 
-        // The count should be capped at LATENCY_BUFFER_SIZE
-        let count = buffer.count.load(Ordering::Relaxed);
-        assert_eq!(
-            count, LATENCY_BUFFER_SIZE as u64,
-            "count should be capped at LATENCY_BUFFER_SIZE"
-        );
+        // Check that samples were recorded
+        let count = histogram.sample_count.load(Ordering::Relaxed);
+        assert_eq!(count, 3);
+
+        // Calculate percentiles
+        let (avg, p50, _p95, _p99) = histogram.calculate_percentiles();
+        assert_eq!(avg, 200); // (100 + 200 + 300) / 3
+        assert!(p50 > 0);
     }
 
     #[test]
-    fn test_latency_buffer_count_increments() {
-        // Test that count increments properly before reaching the cap
-        let buffer = LatencyBuffer::new();
+    fn test_latency_histogram_percentile_accuracy() {
+        // Test that histogram provides reasonable percentile estimates
+        let histogram = LatencyHistogram::new();
 
-        // Record fewer samples than buffer size
-        for i in 0..500 {
-            buffer.record(i as u64);
+        // Record 1000 samples with known distribution
+        for i in 1..=1000 {
+            histogram.record(i);
         }
 
-        let count = buffer.count.load(Ordering::Relaxed);
-        assert_eq!(
-            count, 500,
-            "count should increment until reaching buffer size"
-        );
+        let (_, p50, p95, p99) = histogram.calculate_percentiles();
+
+        // P50 should be around 500 (within 20% tolerance)
+        assert!(p50 >= 400 && p50 <= 600, "P50 {} should be around 500", p50);
+
+        // P95 should be around 950 (within 20% tolerance)
+        assert!(p95 >= 900 && p95 <= 999, "P95 {} should be around 950", p95);
+
+        // P99 should be around 990 (within 20% tolerance)
+        assert!(p99 >= 980 && p99 <= 999, "P99 {} should be around 990", p99);
     }
 
     #[test]
-    fn test_latency_buffer_capping_with_concurrent_writes() {
-        // Test that capping works correctly even with concurrent writes
+    fn test_latency_histogram_concurrent_writes() {
+        // Test that histogram works correctly with concurrent writes
         use std::sync::Arc;
         use std::thread;
 
-        let buffer = Arc::new(LatencyBuffer::new());
+        let histogram = Arc::new(LatencyHistogram::new());
         let mut handles = vec![];
 
-        // Spawn multiple threads writing to the buffer
+        // Spawn multiple threads writing to the histogram
         for _ in 0..10 {
-            let buffer_clone = buffer.clone();
+            let hist_clone = histogram.clone();
             handles.push(thread::spawn(move || {
                 for i in 0..200 {
-                    buffer_clone.record(i as u64);
+                    hist_clone.record(i as u64);
                 }
             }));
         }
@@ -1423,13 +1540,50 @@ mod tests {
         }
 
         // Total writes: 10 threads * 200 samples = 2000
-        // Buffer size: 1000
-        // Count should be capped at 1000
-        let count = buffer.count.load(Ordering::Relaxed);
-        assert_eq!(
-            count, LATENCY_BUFFER_SIZE as u64,
-            "count should be capped at LATENCY_BUFFER_SIZE even with concurrent writes"
-        );
+        let count = histogram.sample_count.load(Ordering::Relaxed);
+        assert_eq!(count, 2000, "should have recorded all samples");
+
+        // Verify percentiles are calculated
+        let (_, p50, p95, p99) = histogram.calculate_percentiles();
+        assert!(p50 > 0, "P50 should be calculated");
+        assert!(p95 > 0, "P95 should be calculated");
+        assert!(p99 > 0, "P99 should be calculated");
+    }
+
+    #[test]
+    fn test_latency_histogram_empty() {
+        // Test that empty histogram returns zeros
+        let histogram = LatencyHistogram::new();
+
+        let (avg, p50, p95, p99) = histogram.calculate_percentiles();
+        assert_eq!(avg, 0);
+        assert_eq!(p50, 0);
+        assert_eq!(p95, 0);
+        assert_eq!(p99, 0);
+    }
+
+    #[test]
+    fn test_latency_histogram_bin_mapping() {
+        // Test that latency values map to correct bins
+        assert_eq!(LatencyHistogram::latency_to_bin(0), 0);
+        assert!(LatencyHistogram::latency_to_bin(1) < 10);
+        assert!(LatencyHistogram::latency_to_bin(10) < 20);
+        assert!(LatencyHistogram::latency_to_bin(100) < 30);
+        assert!(LatencyHistogram::latency_to_bin(1000) < 40);
+        assert!(LatencyHistogram::latency_to_bin(10000) < 50);
+        assert!(LatencyHistogram::latency_to_bin(100000) < 60);
+    }
+
+    #[test]
+    fn test_latency_histogram_ilog10() {
+        // Test integer log10 calculation
+        assert_eq!(LatencyHistogram::ilog10(1), 0);
+        assert_eq!(LatencyHistogram::ilog10(9), 0);
+        assert_eq!(LatencyHistogram::ilog10(10), 1);
+        assert_eq!(LatencyHistogram::ilog10(99), 1);
+        assert_eq!(LatencyHistogram::ilog10(100), 2);
+        assert_eq!(LatencyHistogram::ilog10(999), 2);
+        assert_eq!(LatencyHistogram::ilog10(1000), 3);
     }
 }
 
