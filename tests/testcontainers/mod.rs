@@ -320,6 +320,36 @@ impl OrchestratorContainer {
         })
     }
 
+    /// Start a new orchestrator container with API key authentication.
+    pub async fn start_with_auth(node_urls: Vec<String>, api_key: &str) -> anyhow::Result<Self> {
+        let mut cmd = vec!["orchestrator", "-b", "0.0.0.0:8080", "--api-key", api_key];
+        for node_url in &node_urls {
+            cmd.extend(["-n", node_url.as_str()]);
+        }
+
+        let image = GenericImage::new("madrpc", "test")
+            .with_entrypoint("/usr/local/bin/madrpc")
+            .with_exposed_port(8080.tcp())
+            .with_cmd(cmd);
+
+        let container = image.start().await?;
+
+        let port = container.get_host_port_ipv4(8080).await?;
+        let external_url = format!("http://127.0.0.1:{}", port);
+        let bridge_ip = container.get_bridge_ip_address().await?;
+        let container_url = format!("http://{}:8080", bridge_ip);
+
+        // Wait for the __health endpoint to be ready
+        Self::wait_for_ready(&external_url).await?;
+
+        Ok(Self {
+            container,
+            host_port: port,
+            external_url,
+            container_url,
+        })
+    }
+
     /// Wait for the orchestrator to be ready by polling the __health endpoint.
     async fn wait_for_ready(url: &str) -> anyhow::Result<()> {
         let client = reqwest::Client::new();
@@ -368,6 +398,16 @@ pub async fn jsonrpc_call(
     method: &str,
     params: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
+    jsonrpc_call_with_auth(url, method, params, None).await
+}
+
+/// Make a raw HTTP JSON-RPC call to the given URL with optional authentication.
+pub async fn jsonrpc_call_with_auth(
+    url: &str,
+    method: &str,
+    params: serde_json::Value,
+    api_key: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
     let client = reqwest::Client::new();
     let request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -376,9 +416,13 @@ pub async fn jsonrpc_call(
         "id": 1
     });
 
-    let response = client
-        .post(url)
-        .json(&request)
+    let mut req_builder = client.post(url).json(&request);
+
+    if let Some(key) = api_key {
+        req_builder = req_builder.header("X-API-Key", key);
+    }
+
+    let response = req_builder
         .send()
         .await?
         .json()

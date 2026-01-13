@@ -295,4 +295,56 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn test_auth_config_is_respected() {
+        // This test verifies that authentication configuration is properly stored
+        // and will be used for all JSON-RPC requests including _register
+
+        let orchestrator = Arc::new(
+            Orchestrator::with_retry_config(
+                vec![],
+                HealthCheckConfig::default(),
+                RetryConfig::default(),
+            )
+            .unwrap(),
+        );
+
+        // Server with auth enabled
+        let server_with_auth = HttpServer::new(orchestrator.clone())
+            .with_auth(AuthConfig::with_api_key("secret-key"));
+
+        // Server with auth disabled (default)
+        let server_no_auth = HttpServer::new(orchestrator.clone());
+
+        // Verify auth is enabled
+        assert!(server_with_auth.auth_config.requires_auth());
+        assert!(server_with_auth.auth_config.validate_api_key("secret-key"));
+        assert!(!server_with_auth.auth_config.validate_api_key("wrong-key"));
+
+        // Verify no auth is default
+        assert!(!server_no_auth.auth_config.requires_auth());
+        assert!(server_no_auth.auth_config.validate_api_key("any-key")); // Always returns true when disabled
+    }
+
+    #[tokio::test]
+    async fn test_unauthorized_response_format() {
+        // Verify the unauthorized response returns proper JSON-RPC error format
+        let response = unauthorized_response();
+        let status = response.status();
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Extract body
+        let body = response.into_body();
+        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        // Verify it's valid JSON-RPC error
+        let json: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(json["jsonrpc"], "2.0");
+        assert!(json["error"].is_object());
+        assert_eq!(json["error"]["code"], -401);
+        assert!(json["error"]["message"].as_str().unwrap().contains("Unauthorized"));
+    }
 }
