@@ -315,6 +315,10 @@ impl LoadBalancer {
     /// checks to determine if any nodes in Open state should transition to
     /// HalfOpen based on exponential backoff timeout.
     ///
+    /// The transition from Open to HalfOpen is atomic using `try_transition_to_half_open()`,
+    /// which prevents race conditions where multiple concurrent health checkers could
+    /// all transition the same node simultaneously.
+    ///
     /// # Returns
     /// - `true` - At least one node transitioned from Open to HalfOpen
     /// - `false` - No transitions occurred
@@ -323,8 +327,9 @@ impl LoadBalancer {
 
         for node in self.nodes.values_mut() {
             if node.should_attempt_half_open(&self.circuit_config) {
-                node.transition_circuit_state(CircuitBreakerState::HalfOpen);
-                any_transitioned = true;
+                if node.try_transition_to_half_open() {
+                    any_transitioned = true;
+                }
             }
         }
 
@@ -1053,6 +1058,75 @@ mod tests {
         assert_eq!(
             lb.circuit_state("node1"),
             Some(CircuitBreakerState::Open)
+        );
+    }
+
+    #[test]
+    fn test_concurrent_check_circuit_timeouts_prevents_race() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let config = CircuitBreakerConfig {
+            failure_threshold: 2,
+            base_timeout_secs: 1,
+            ..Default::default()
+        };
+        let lb = Arc::new(Mutex::new(LoadBalancer::with_config(
+            vec!["node1".to_string()],
+            config,
+        )));
+
+        // Trip the circuit
+        {
+            let mut lb = lb.lock().unwrap();
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+            lb.update_health_status("node1", HealthCheckStatus::Unhealthy("err".to_string()));
+            assert_eq!(
+                lb.circuit_state("node1"),
+                Some(CircuitBreakerState::Open)
+            );
+        }
+
+        // Set opened_at to past to allow transition
+        {
+            let mut lb = lb.lock().unwrap();
+            lb.with_node_state("node1", |node| {
+                node.circuit_opened_at =
+                    Some(std::time::SystemTime::now() - std::time::Duration::from_secs(2));
+            });
+        }
+
+        let mut handles = vec![];
+        let transition_count = Arc::new(Mutex::new(0));
+
+        // Spawn multiple threads calling check_circuit_timeouts
+        for _ in 0..10 {
+            let lb_clone = Arc::clone(&lb);
+            let transition_count_clone = Arc::clone(&transition_count);
+            let handle = thread::spawn(move || {
+                let mut lb = lb_clone.lock().unwrap();
+                if lb.check_circuit_timeouts() {
+                    let mut count = transition_count_clone.lock().unwrap();
+                    *count += 1;
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Only one thread should have reported a transition
+        let count = *transition_count.lock().unwrap();
+        assert_eq!(count, 1, "Only one thread should report transition");
+
+        // Verify the node is in HalfOpen state
+        let lb = lb.lock().unwrap();
+        assert_eq!(
+            lb.circuit_state("node1"),
+            Some(CircuitBreakerState::HalfOpen)
         );
     }
 

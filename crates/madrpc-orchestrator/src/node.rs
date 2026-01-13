@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Instant, SystemTime};
 
 /// Reason why a node is disabled.
@@ -138,7 +139,7 @@ impl CircuitBreakerConfig {
 /// Each node tracks its own health status, circuit breaker state, and failure history.
 /// This state is updated by the health checker and used by the load balancer for
 /// routing decisions.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Node {
     /// Node address (e.g., "127.0.0.1:9001")
     pub addr: String,
@@ -172,6 +173,35 @@ pub struct Node {
     pub request_count: u64,
     /// Timestamp of the last request to this node
     pub last_request_time: Option<SystemTime>,
+    /// Atomic flag to prevent race conditions in Open→HalfOpen transitions
+    ///
+    /// When a circuit transitions from Open to HalfOpen, only one caller should
+    /// perform the transition. This flag is used to atomically claim the transition
+    /// using compare-and-swap operations.
+    ///
+    /// - `true`: A transition to HalfOpen has been claimed/attempted
+    /// - `false`: No transition has been claimed
+    ///
+    /// The flag is reset when transitioning back to Closed or Open.
+    half_open_attempted: AtomicBool,
+}
+
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        Self {
+            addr: self.addr.clone(),
+            enabled: self.enabled,
+            disable_reason: self.disable_reason,
+            consecutive_failures: self.consecutive_failures,
+            last_health_check: self.last_health_check,
+            last_health_check_status: self.last_health_check_status.clone(),
+            circuit_state: self.circuit_state,
+            circuit_opened_at: self.circuit_opened_at,
+            request_count: self.request_count,
+            last_request_time: self.last_request_time,
+            half_open_attempted: AtomicBool::new(self.half_open_attempted.load(Ordering::Acquire)),
+        }
+    }
 }
 
 impl Node {
@@ -187,6 +217,7 @@ impl Node {
     /// - enabled: true
     /// - circuit_state: Closed
     /// - consecutive_failures: 0
+    /// - half_open_attempted: false
     pub fn new(addr: String) -> Self {
         Self {
             addr,
@@ -199,6 +230,7 @@ impl Node {
             circuit_opened_at: None,
             request_count: 0,
             last_request_time: None,
+            half_open_attempted: AtomicBool::new(false),
         }
     }
 
@@ -237,7 +269,7 @@ impl Node {
     ///
     /// This method handles the side effects of state transitions:
     /// - **Open**: Sets `circuit_opened_at` to now (for timeout calculation)
-    /// - **Closed**: Clears `circuit_opened_at`
+    /// - **Closed**: Clears `circuit_opened_at` and resets `half_open_attempted` flag
     /// - **HalfOpen**: Clears `circuit_opened_at`
     ///
     /// # Arguments
@@ -247,9 +279,60 @@ impl Node {
         match new_state {
             CircuitBreakerState::Open => {
                 self.circuit_opened_at = Some(SystemTime::now());
+                // Reset the flag when transitioning to Open (e.g., from HalfOpen failure)
+                self.half_open_attempted.store(false, Ordering::Release);
             }
-            CircuitBreakerState::Closed | CircuitBreakerState::HalfOpen => {
+            CircuitBreakerState::Closed => {
                 self.circuit_opened_at = None;
+                // Reset the flag when circuit is fully closed (recovery complete)
+                self.half_open_attempted.store(false, Ordering::Release);
+            }
+            CircuitBreakerState::HalfOpen => {
+                self.circuit_opened_at = None;
+            }
+        }
+    }
+
+    /// Atomically attempts to transition from Open to HalfOpen state.
+    ///
+    /// This method uses a compare-and-swap operation on the `half_open_attempted` flag
+    /// to ensure that only one caller can successfully claim the transition from Open
+    /// to HalfOpen, preventing race conditions where multiple concurrent requests
+    /// could all transition the node simultaneously.
+    ///
+    /// # Returns
+    /// - `true` - Successfully claimed and performed the transition
+    /// - `false` - Transition was already claimed by another caller
+    ///
+    /// # Behavior
+    /// - Returns `false` if circuit is not in Open state
+    /// - Uses atomic CAS to claim the transition (only one caller succeeds)
+    /// - Sets `circuit_state` to HalfOpen on successful claim
+    /// - Clears `circuit_opened_at` on successful claim
+    pub fn try_transition_to_half_open(&mut self) -> bool {
+        // Only allow transition from Open state
+        if self.circuit_state != CircuitBreakerState::Open {
+            return false;
+        }
+
+        // Use compare-and-swap to atomically claim the transition
+        // If the flag is currently false, set it to true and proceed
+        // If it's already true, another caller claimed it
+        match self.half_open_attempted.compare_exchange(
+            false,  // Expected value
+            true,   // New value
+            Ordering::Acquire,  // Success ordering
+            Ordering::Relaxed,  // Failure ordering
+        ) {
+            Ok(_) => {
+                // Successfully claimed the transition
+                self.circuit_state = CircuitBreakerState::HalfOpen;
+                self.circuit_opened_at = None;
+                true
+            }
+            Err(_) => {
+                // Another caller already claimed the transition
+                false
             }
         }
     }
@@ -359,5 +442,111 @@ mod tests {
         let config = CircuitBreakerConfig::default();
         // Should attempt half-open after timeout
         assert!(node.should_attempt_half_open(&config));
+    }
+
+    #[test]
+    fn test_try_transition_to_half_open_succeeds_once() {
+        let mut node = Node::new("node1".to_string());
+        node.consecutive_failures = 1;
+        node.transition_circuit_state(CircuitBreakerState::Open);
+
+        // First attempt should succeed
+        assert!(node.try_transition_to_half_open());
+        assert_eq!(node.circuit_state, CircuitBreakerState::HalfOpen);
+
+        // Second attempt should fail (already claimed)
+        assert!(!node.try_transition_to_half_open());
+        assert_eq!(node.circuit_state, CircuitBreakerState::HalfOpen);
+    }
+
+    #[test]
+    fn test_try_transition_to_half_open_fails_when_not_open() {
+        let mut node = Node::new("node1".to_string());
+
+        // Closed state
+        assert!(!node.try_transition_to_half_open());
+        assert_eq!(node.circuit_state, CircuitBreakerState::Closed);
+
+        // HalfOpen state
+        node.transition_circuit_state(CircuitBreakerState::HalfOpen);
+        assert!(!node.try_transition_to_half_open());
+        assert_eq!(node.circuit_state, CircuitBreakerState::HalfOpen);
+    }
+
+    #[test]
+    fn test_try_transition_to_half_open_resets_flag_on_closed() {
+        let mut node = Node::new("node1".to_string());
+        node.transition_circuit_state(CircuitBreakerState::Open);
+
+        // Transition to HalfOpen
+        assert!(node.try_transition_to_half_open());
+        assert!(node.half_open_attempted.load(std::sync::atomic::Ordering::Acquire));
+
+        // Transition to Closed (e.g., on successful health check)
+        node.transition_circuit_state(CircuitBreakerState::Closed);
+        assert!(!node.half_open_attempted.load(std::sync::atomic::Ordering::Acquire));
+
+        // Should be able to transition again after circuit re-opens
+        node.transition_circuit_state(CircuitBreakerState::Open);
+        assert!(node.try_transition_to_half_open());
+    }
+
+    #[test]
+    fn test_try_transition_to_half_open_resets_flag_on_open() {
+        let mut node = Node::new("node1".to_string());
+        node.transition_circuit_state(CircuitBreakerState::Open);
+
+        // Transition to HalfOpen
+        assert!(node.try_transition_to_half_open());
+        assert!(node.half_open_attempted.load(std::sync::atomic::Ordering::Acquire));
+
+        // Transition back to Open (e.g., on failed HalfOpen health check)
+        node.transition_circuit_state(CircuitBreakerState::Open);
+        assert!(!node.half_open_attempted.load(std::sync::atomic::Ordering::Acquire));
+
+        // Should be able to transition again
+        assert!(node.try_transition_to_half_open());
+    }
+
+    #[test]
+    fn test_concurrent_try_transition_to_half_open() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let node = Arc::new(Mutex::new(Node::new("node1".to_string())));
+        {
+            let mut n = node.lock().unwrap();
+            n.transition_circuit_state(CircuitBreakerState::Open);
+        }
+
+        let mut handles = vec![];
+        let success_count = Arc::new(Mutex::new(0));
+
+        // Spawn multiple threads trying to transition simultaneously
+        for _ in 0..10 {
+            let node_clone = Arc::clone(&node);
+            let success_count_clone = Arc::clone(&success_count);
+            let handle = thread::spawn(move || {
+                let mut n = node_clone.lock().unwrap();
+                if n.try_transition_to_half_open() {
+                    let mut count = success_count_clone.lock().unwrap();
+                    *count += 1;
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Only one thread should have succeeded
+        let count = *success_count.lock().unwrap();
+        assert_eq!(count, 1, "Only one thread should successfully transition");
+
+        // Verify the node is in HalfOpen state
+        let node = node.lock().unwrap();
+        assert_eq!(node.circuit_state, CircuitBreakerState::HalfOpen);
     }
 }
