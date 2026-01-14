@@ -39,7 +39,7 @@ struct ClientWrapper(Arc<madrpc_client::MadrpcClient>);
 // and doesn't contain any garbage-collected objects that need to be traced.
 // The Arc ensures the client lives as long as needed.
 unsafe impl Trace for ClientWrapper {
-    custom_trace!(this, _mark, {
+    custom_trace!(_this, _mark, {
         // Empty - we don't trace through the Arc since it's not garbage-collected
     });
 }
